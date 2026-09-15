@@ -1,23 +1,33 @@
 import { env } from "cloudflare:workers";
 
 import { getDbBinding } from "../../../db/index.ts";
-import { callDeepSeek, type DeepSeekMessage } from "./deepseek.ts";
+import { parseAgentResult, type AgentRequest, type AgentResult } from "../agent/protocol.ts";
 import { createD1Store } from "./session-store.ts";
 import { TurnError, type TurnDeps } from "./turns.ts";
 
-const FAKE_COPY = {
-  externalName: "母亲节 · 金饰心意",
-  icsName: "母亲节金饰礼遇",
-  content: "活动期间，华东区指定门店黄金类商品满 3000 元减 300 元。",
-  slogan: "把心意戴在身边",
-};
+const DEFAULT_AGENT_URL = "http://127.0.0.1:8788";
 
-// 仅开发环境：CAMPAIGN_FAKE_MODEL=1 时不请求 DeepSeek，给 E2E 用。
-function fakeModel(messages: DeepSeekMessage[]): Promise<string> {
-  const system = messages[0]?.content ?? "";
-  if (system.includes("你只负责文案")) return Promise.resolve(JSON.stringify(FAKE_COPY));
-  if (system.includes("返回 {summary, fields, unresolved}")) return Promise.resolve(JSON.stringify({ summary: "", fields: {}, unresolved: [] }));
-  return Promise.resolve(JSON.stringify({ ops: [] }));
+// Agent 服务（agent/server.ts）跑 Claude Agent SDK；这里只负责把这一轮发过去、把结果拿回来。
+async function runAgentRemote(request: AgentRequest): Promise<AgentResult> {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  let response: Response;
+  try {
+    response = await fetch(`${base}/turn`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(env.AGENT_SERVICE_TOKEN ? { authorization: `Bearer ${env.AGENT_SERVICE_TOKEN}` } : {}),
+      },
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(150_000),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") throw new Error("Agent 超时了，请重试");
+    throw new Error("连不上 Agent 服务，请先运行 npm run dev:agent");
+  }
+  const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
+  if (!response.ok) throw new Error(typeof body?.error === "string" ? body.error : `Agent 服务出错（${response.status}）`);
+  return parseAgentResult(body);
 }
 
 export function todayInShanghai(date = new Date()): string {
@@ -25,11 +35,9 @@ export function todayInShanghai(date = new Date()): string {
 }
 
 export function runtimeDeps(): TurnDeps {
-  const isDev = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
-  const useFakeModel = isDev && env.CAMPAIGN_FAKE_MODEL === "1";
   return {
     store: createD1Store(getDbBinding()),
-    callModel: useFakeModel ? fakeModel : (messages) => callDeepSeek({ messages }),
+    runAgent: runAgentRemote,
     today: todayInShanghai(),
   };
 }

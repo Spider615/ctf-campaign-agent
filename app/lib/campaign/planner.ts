@@ -48,3 +48,17 @@ export function noIcsReason(draft: CampaignDraft): string {
     ? "顾客动作只到「看到」，属于品牌曝光。报名、互动、到场由 CRM 或活动系统承接，不在 ICS 开单。"
     : "这次没有成交优惠，ICS 只管成交规则，所以不用开单。";
 }
+
+const PURCHASE_MECHANISMS: readonly string[] = ["门槛型", "直接价格", "以旧换新换购", "券核销"];
+const NON_PURCHASE_ACTIONS: readonly string[] = ["参与互动", "到场", "留资"];
+
+// 顾客动作不需要下单，让利却要下单才能触发：前后矛盾，要请用户确认。
+export function intentConflicts(draft: CampaignDraft): string[] {
+  const action = draft.intent.customerAction;
+  const mechanism = draft.offer.mechanism;
+  if (action.provenance === "pending" || mechanism.provenance === "pending") return [];
+  if (NON_PURCHASE_ACTIONS.includes(action.value) && PURCHASE_MECHANISMS.includes(mechanism.value)) {
+    return [`顾客动作是「${action.value}」，不需要下单；但让利机制是「${mechanism.value}」，要下单才能触发。`];
+  }
+  return [];
+}

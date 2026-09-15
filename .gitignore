@@ -57,3 +57,4 @@ dist/
 *.sqlite3
 .worktrees/
 .playwright-mcp/
+agent/.claude-runtime/

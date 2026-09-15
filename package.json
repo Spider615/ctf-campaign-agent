@@ -7,7 +7,10 @@
   },
   "scripts": {
     "install:ci": "node scripts/install-ci.mjs",
+    "install:agent": "npm install --prefix agent --no-audit --no-fund",
     "dev": "node scripts/run-framework.mjs dev",
+    "dev:agent": "node --experimental-strip-types --disable-warning=ExperimentalWarning agent/server.ts",
+    "dev:all": "node scripts/dev-all.mjs",
     "build": "node scripts/run-framework.mjs build",
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "test": "node --test --experimental-strip-types tests/*.test.ts",

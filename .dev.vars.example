@@ -1,1 +1,5 @@
 DEEPSEEK_API_KEY=
+# Agent 服务地址，留空时用 http://127.0.0.1:8788
+AGENT_SERVICE_URL=
+# 可选：页面服务和 Agent 服务之间的共享口令，两边读同一个值
+AGENT_SERVICE_TOKEN=

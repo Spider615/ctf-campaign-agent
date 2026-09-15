@@ -3,6 +3,7 @@ declare namespace Cloudflare {
     DB?: D1Database;
     BUCKET?: R2Bucket;
     DEEPSEEK_API_KEY?: string;
-    CAMPAIGN_FAKE_MODEL?: string;
+    AGENT_SERVICE_URL?: string;
+    AGENT_SERVICE_TOKEN?: string;
   }
 }

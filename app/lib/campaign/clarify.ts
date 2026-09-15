@@ -165,11 +165,20 @@ function providedByUser(draft: CampaignDraft, key: ClarifyKey): boolean {
   }
 }
 
-// 问哪些项：开单必需但还缺的项一律保留（兜底），再加上模型认为值得问、用户还没明确说过的项。
-export function buildClarifyQuestions(draft: CampaignDraft, ask: readonly string[], options: ClarifyOptions): ClarifyQuestion[] {
+export const CARD_INTRO = {
+  first: "补充一下会更准，每一项都可以不填。填完点「确认提交」，我按已有信息生成方案。",
+  later: "要开出 ICS 单还差这几项。补上后点「确认提交」，我会更新方案；暂时不补也没关系。",
+};
+
+// 问哪些项：开单必需但还缺的项一律保留（兜底），再加上模型认为值得问、用户还没明确说过的项；
+// confirm 里的项即使用户说过也要问，用来确认前后矛盾的信息。
+export function buildClarifyQuestions(draft: CampaignDraft, ask: readonly string[], options: ClarifyOptions, confirm: readonly string[] = []): ClarifyQuestion[] {
   const wanted = new Set<ClarifyKey>(missingFields(draft).map(toClarifyKey));
   for (const key of ask) {
     if (isClarifyKey(key) && !providedByUser(draft, key)) wanted.add(key);
+  }
+  for (const key of confirm) {
+    if (isClarifyKey(key)) wanted.add(key);
   }
   if (wanted.has("mechanism")) wanted.add("tier");
   if (noIcsOrders(draft)) OFFER_CLARIFY_KEYS.forEach((key) => wanted.delete(key));

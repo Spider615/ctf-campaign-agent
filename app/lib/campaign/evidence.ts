@@ -1,7 +1,8 @@
-const THOUSANDS_SEPARATOR = /[,，]/g;
+// 只去掉千分位里的逗号（3,000、1，000，000）；「减 200，12 月」这种分句的逗号要保留，否则两个数字会粘成一个。
+const GROUPED_NUMBER = /(?<![\d.])\d{1,3}(?:[,，]\d{3})+(?!\d)/g;
 
 export function normalizeText(text: string): string {
-  return text.replace(THOUSANDS_SEPARATOR, "");
+  return text.replace(GROUPED_NUMBER, (match) => match.replace(/[,，]/g, ""));
 }
 
 function containsNumberToken(text: string, token: string): boolean {

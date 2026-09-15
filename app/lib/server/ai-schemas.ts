@@ -262,12 +262,15 @@ function sanitizeReply(reply: unknown): string | null {
 const numberOrNull = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const SCOPE_PATHS = new Set(["/scope/level", "/scope/regionCode", "/scope/divisionCode"]);
 
-export function guardTextTurn(
-  content: string,
-  context: { draft: CampaignDraft; userText: string; openFields: FieldKey[]; trustedFields?: FieldKey[] },
-): TextTurnGuard {
+export type GuardContext = { draft: CampaignDraft; userText: string; openFields: FieldKey[]; trustedFields?: FieldKey[] };
+
+export function guardTextTurn(content: string, context: GuardContext): TextTurnGuard {
   const parsed = objectFromJson(content);
-  const rawOps = Array.isArray(parsed.ops) ? parsed.ops : [];
+  return { ...guardOps(Array.isArray(parsed.ops) ? parsed.ops : [], context), reply: sanitizeReply(parsed.reply) };
+}
+
+// 模型提出的字段改动逐条过守卫：路径白名单、取值类型、原话依据；范围类改动统一按选项回答的规则规整。
+export function guardOps(rawOps: readonly unknown[], context: GuardContext): Omit<TextTurnGuard, "reply"> {
   const text = context.userText;
   const ops: PatchOperation[] = [];
   const dropped: string[] = [];
@@ -374,19 +377,5 @@ export function guardTextTurn(
     ops.splice(0, ops.length, ...ops.filter((op) => !SCOPE_PATHS.has(op.path)), ...normalizedOps);
   }
 
-  return { ops, dropped: [...new Set(dropped)], undecided: [...new Set(undecided)], reply: sanitizeReply(parsed.reply) };
-}
-
-export type TurnIntent = "edit" | "generate" | "confirm" | "undo" | "question" | "other";
-const TURN_INTENTS: readonly TurnIntent[] = ["edit", "generate", "confirm", "undo", "question", "other"];
-
-// 模型判断的用户意图；解析不出来时，有改动算修改，否则算其他。
-export function parseTurnIntent(content: string, hasOps: boolean): TurnIntent {
-  try {
-    const parsed = JSON.parse(content) as { intent?: unknown };
-    if (includesOption(TURN_INTENTS, parsed.intent)) return parsed.intent;
-  } catch {
-    // 非法 JSON 按默认处理。
-  }
-  return hasOps ? "edit" : "other";
+  return { ops, dropped: [...new Set(dropped)], undecided: [...new Set(undecided)] };
 }
