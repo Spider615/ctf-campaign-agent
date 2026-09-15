@@ -28,19 +28,18 @@ test("interpretation preserves only explicit offer values", () => {
   assert.equal(result.fields.amountOff, 300);
 });
 
-test("interpretation rejects an offer number absent from the user text", () => {
-  assert.throws(
-    () =>
-      parseInterpretation(
-        JSON.stringify({
-          summary: "母亲节满减",
-          fields: { thresholdAmount: 3000, amountOff: 300 },
-          unresolved: [],
-        }),
-        "母亲节做个满减",
-      ),
-    /让利数值必须来自用户原话/,
+test("interpretation drops offer numbers absent from the user text", () => {
+  const result = parseInterpretation(
+    JSON.stringify({
+      summary: "母亲节满减",
+      fields: { thresholdAmount: 3000, amountOff: 300 },
+      unresolved: [],
+    }),
+    "母亲节做个满减",
   );
+
+  assert.equal(result.fields.thresholdAmount, undefined);
+  assert.equal(result.fields.amountOff, undefined);
 });
 
 test("generated copy cannot contain code-table fields", () => {

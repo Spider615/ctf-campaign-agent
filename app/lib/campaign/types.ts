@@ -10,6 +10,7 @@ export type FieldValue<T> = {
   value: T;
   provenance: Provenance;
   vintage?: Vintage;
+  suggested?: boolean;
 };
 
 export type CustomerAction =

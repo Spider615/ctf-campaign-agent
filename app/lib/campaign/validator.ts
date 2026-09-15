@@ -1,3 +1,4 @@
+import { noIcsOrders } from "./topics.ts";
 import type { CampaignDraft, IcsOrderDraft, ValidationIssue } from "./types.ts";
 
 const issue = (
@@ -53,10 +54,11 @@ export function validateDraft(draft: CampaignDraft, orders: IcsOrderDraft[]): Va
     issues.push(issue("R12", "blocker", "/products/assignedItemMode", "指定货号前必须打开指定牌仔总开关"));
   }
 
-  if (draft.operations.concessionRate.value === null) {
+  // 不建 ICS 单时没有合约参数，R13 不适用。
+  if (!noIcsOrders(draft) && draft.operations.concessionRate.value === null) {
     issues.push(issue("R13", "blocker", "/operations/concessionRate", "让扣点必须明确填写，0 也是合法值"));
   }
-  if (draft.operations.collectionRate.value === null) {
+  if (!noIcsOrders(draft) && draft.operations.collectionRate.value === null) {
     issues.push(issue("R13", "blocker", "/operations/collectionRate", "回款率必须明确填写，0 也是合法值"));
   }
   if ((draft.operations.concessionRate.value ?? 0) > 1) {

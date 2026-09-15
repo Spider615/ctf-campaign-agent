@@ -1,5 +1,5 @@
-import { CampaignAgent } from "./components/campaign-agent";
+import { EmptyState } from "./components/chat/empty-state";
 
 export default function Home() {
-  return <CampaignAgent />;
+  return <EmptyState />;
 }

@@ -151,14 +151,19 @@ test("AI interpretation prefills only understood fields and keeps explicit value
   assert.equal(draft.offer.tiers[0].amountOff, 300);
   assert.equal(draft.offer.tiers[0].discountRate, null);
   assert.equal(draft.scope.regionCode, "华东区（请在生产界面选择）");
-  assert.equal(draft.intent.occasion.provenance, "user");
+  // 由头分类是模型的归纳，不是用户原话。
+  assert.equal(draft.intent.occasion.provenance, "ai");
   assert.deepEqual(draft.audience.segments.value, []);
   assert.equal(draft.audience.segments.provenance, "pending");
   assert.equal(draft.products.series, "");
   assert.equal(draft.audience.membership.value, "还没定");
   assert.equal(draft.schedule.batches[0].startDate, "");
   assert.equal(draft.schedule.batches[0].endDate, "");
-  assert.deepEqual(draft.unresolved, ["结束日期", "区域编码需在 1811 生产界面确认"]);
+  // 让扣点、回款率不再静默默认。
+  assert.equal(draft.operations.concessionRate.value, null);
+  assert.equal(draft.operations.concessionRate.provenance, "pending");
+  // 草稿只保留代码生成的待界面选择项；模型提到的「结束日期」只进回读。
+  assert.deepEqual(draft.unresolved, ["区域编码需在 1811 生产界面确认"]);
 });
 
 test("saved session rows rehydrate immutable version history", () => {
