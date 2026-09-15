@@ -1,0 +1,410 @@
+{
+  "dictionary_version": "0.1.0-research",
+  "source": {
+    "file": "/Users/hukui/Desktop/H_MKTD24_附件：优惠开单 2.pptx",
+    "document_updated_at": "2024-04-22",
+    "warning": "本字典来自操作指引与截图，不是接口文档。字段ID、API枚举、鉴权方式和当前生产值仍需向系统负责人核验。"
+  },
+  "format_rules": {
+    "unknown_value": "省略字段，不得猜测；若系统要求显式空值，由接口适配层转换",
+    "multiple_values": "1811界面文字要求英文逗号分隔；研究层统一存数组，提交前再序列化",
+    "rule_rows": "rule_rows是研究数据的保留结构键，不是系统字段；用于容纳同一活动的多条优惠明细，每一行的业务键仍必须来自fields",
+    "percentages": "研究层统一存0到1小数；示例2%存0.02，80%存0.80",
+    "discount_rates": "研究层统一存0到1小数；9折存0.9。1816模板另要求两位小数",
+    "dates": "ISO 8601。PPT说明结束日期当天有效，1816实际结束时间为次日00:00:00",
+    "evidence": "每个非空业务值必须能追溯至活动规则、用户确认或系统读取结果"
+  },
+  "fields": {
+    "system_module": {
+      "system_label": "1811新增 / 1816汇入 / 1815维护",
+      "layer": "system_meta",
+      "type": "enum",
+      "required": true,
+      "source_slides": [2, 3, 21, 26],
+      "validation": "manual、bulk、maintenance三类路由；新增通常选1811或1816"
+    },
+    "activity_sequence": {
+      "system_label": "活动序号",
+      "layer": "system_meta",
+      "type": "integer",
+      "required": "1816_only",
+      "source_slides": [27, 28],
+      "validation": "同一活动多条规则使用相同序号；不同活动使用不同序号；禁止合并单元格"
+    },
+    "approval_number": {
+      "system_label": "审批编号",
+      "layer": "system_meta",
+      "type": "string",
+      "required": false,
+      "source_slides": [8, 21, 22],
+      "validation": "系统生成；连续新增可共用审批编号，清空后再录入可产生不同审批编号"
+    },
+    "activity_number": {
+      "system_label": "活动编号",
+      "layer": "system_meta",
+      "type": "string",
+      "required": false,
+      "source_slides": [21, 22],
+      "validation": "审批完成后生成"
+    },
+    "activity_name": {
+      "system_label": "活动名称 / 开单模式名称",
+      "layer": "header",
+      "type": "string",
+      "required": true,
+      "source_slides": [3, 26, 28],
+      "validation": "不超过13个字；1816说明写13个汉字；不可含特殊字符。精确白名单未提供"
+    },
+    "activity_slogan_cn": {
+      "system_label": "活动标语",
+      "layer": "header",
+      "type": "string",
+      "required": false,
+      "source_slides": [3, 28, 29],
+      "validation": "展示在保证单上；添加前须经法务确认"
+    },
+    "activity_slogan_en": {
+      "system_label": "活动标语英文",
+      "layer": "header",
+      "type": "string",
+      "required": false,
+      "source_slides": [29],
+      "validation": "只在1816上传预览中可见，是否必填未说明"
+    },
+    "activity_content": {
+      "system_label": "活动内容",
+      "layer": "header",
+      "type": "string",
+      "required": false,
+      "source_slides": [3],
+      "validation": "不可含特殊字符；精确白名单未提供"
+    },
+    "start_date": {
+      "system_label": "活动开始时间",
+      "layer": "header",
+      "type": "date",
+      "required": true,
+      "source_slides": [3, 28, 29],
+      "validation": "不得晚于结束日期"
+    },
+    "end_date": {
+      "system_label": "活动结束时间",
+      "layer": "header",
+      "type": "date",
+      "required": true,
+      "source_slides": [3, 26, 28, 29],
+      "validation": "结束日期当天有效；导入后的实际结束时点为次日00:00:00"
+    },
+    "channel_mode": {
+      "system_label": "线上/线下",
+      "layer": "header",
+      "type": "enum",
+      "required": true,
+      "source_slides": [3, 23],
+      "validation": "截图展示线下活动；完整枚举未提供"
+    },
+    "promotion_nature": {
+      "system_label": "优惠类型 / 优惠性质",
+      "layer": "header",
+      "type": "enum",
+      "required": true,
+      "source_slides": [3, 23, 26, 29],
+      "validation": "截图含0一般销售、1营销活动；完整枚举与代码表未提供"
+    },
+    "brand": {
+      "system_label": "品牌",
+      "layer": "header",
+      "type": "enum",
+      "required": true,
+      "source_slides": [3, 30],
+      "validation": "需与审批流匹配；多品牌活动会取最高审批等级"
+    },
+    "discount_stacking": {
+      "system_label": "计折上折",
+      "layer": "header",
+      "type": "enum",
+      "required": true,
+      "source_slides": [3, 23],
+      "validation": "不计折上折时销售提成按实际售价；计折上折时按实际售价乘折扣"
+    },
+    "participates_in_discount": {
+      "system_label": "是否参与打折",
+      "layer": "header",
+      "type": "enum",
+      "required": true,
+      "source_slides": [3, 17],
+      "validation": "截图值含可参加活动货类；字段语义与完整枚举需核验"
+    },
+    "advance_notice_days": {
+      "system_label": "预告时间",
+      "layer": "header",
+      "type": "integer",
+      "required": false,
+      "source_slides": [17, 19],
+      "validation": "0至7天"
+    },
+    "cycle_weekdays": {
+      "system_label": "周期",
+      "layer": "header",
+      "type": "array<integer>",
+      "required": true,
+      "source_slides": [17, 19],
+      "validation": "0表示无循环；1至7表示周一至周日；多日用英文逗号分隔"
+    },
+    "approval_flow": {
+      "system_label": "审批流",
+      "layer": "approval",
+      "type": "enum",
+      "required": true,
+      "source_slides": [19, 30],
+      "validation": "按品牌选择；提交前可在1815修改。枚举和审批人未提供"
+    },
+    "activity_group": {
+      "system_label": "活动分组",
+      "layer": "approval",
+      "type": "enum",
+      "required": true,
+      "source_slides": [12, 14, 20, 23],
+      "validation": "铂金/钻石货品回购示例要求17货品回购；黄金以旧换新要求改为增值服务"
+    },
+    "product_scope": {
+      "system_label": "货品范围",
+      "layer": "header",
+      "type": "enum",
+      "required": "outlet_only",
+      "source_slides": [19, 29],
+      "validation": "至少含全部货品、outlet货品；代码表未提供"
+    },
+    "outlet_tag_conversion": {
+      "system_label": "转换餐牌 / 转换牌仔",
+      "layer": "header",
+      "type": "enum",
+      "required": "outlet_only",
+      "source_slides": [19, 29],
+      "validation": "全部货品只能不转餐牌；outlet货品可选不转或转outlet餐牌"
+    },
+    "coupon_allowed": {
+      "system_label": "是否券使用",
+      "layer": "header",
+      "type": "boolean_or_enum",
+      "required": false,
+      "source_slides": [19],
+      "validation": "截图可见，文档没有解释"
+    },
+    "region_code": {
+      "system_label": "区域",
+      "layer": "scope",
+      "type": "string",
+      "required": "scope_dependent",
+      "source_slides": [3, 19, 28],
+      "validation": "全区域开展时只填区域；分区和店号留空"
+    },
+    "division_code": {
+      "system_label": "分区",
+      "layer": "scope",
+      "type": "string",
+      "required": "scope_dependent",
+      "source_slides": [3, 28],
+      "validation": "整分区开展时填区域和分区；店号留空"
+    },
+    "district_code": {
+      "system_label": "小区",
+      "layer": "scope",
+      "type": "string",
+      "required": false,
+      "source_slides": [3, 29],
+      "validation": "截图可见；1816汇入规则未解释"
+    },
+    "city_code": {
+      "system_label": "城市",
+      "layer": "scope",
+      "type": "string",
+      "required": false,
+      "source_slides": [3],
+      "validation": "截图可见；1816汇入规则未解释"
+    },
+    "store_codes": {
+      "system_label": "分行 / 行号",
+      "layer": "scope",
+      "type": "array<string>",
+      "required": "scope_dependent",
+      "source_slides": [3, 28, 29],
+      "validation": "不同分店开展时填店号与店名，区域和分区不填；无权限店号会汇入失败"
+    },
+    "payment_methods": {
+      "system_label": "支付方式",
+      "layer": "header",
+      "type": "array<string>",
+      "required": true,
+      "source_slides": [3, 17, 23],
+      "validation": "默认含现金、银行卡、支票、外币卡、购物卡、消费券、抵扣券、折扣券、礼品券、微信、支付宝、会员积分抵扣、积分券、GLP积分抵现；其他方式须业务确认"
+    },
+    "settlement_letters": {
+      "system_label": "结算说明函",
+      "layer": "attachment",
+      "type": "array<file>",
+      "required": false,
+      "source_slides": [4, 5, 29],
+      "validation": "最多30个；多店活动建议上传；文件名按区域+分区+简写店名+店号+月份且不得重名"
+    },
+    "discount_mode": {
+      "system_label": "折扣模式",
+      "layer": "rule",
+      "type": "enum",
+      "required": true,
+      "source_slides": [5, 9, 11, 13, 20, 24],
+      "validation": "固定折扣或浮动折扣"
+    },
+    "offer_type": {
+      "system_label": "优惠类型",
+      "layer": "rule",
+      "type": "enum",
+      "required": true,
+      "source_slides": [9, 11, 13, 16, 20, 28],
+      "validation": "已见金价克减、黄金工费折扣、满减/满折、赠品、分克重段、铂金换购、钻石以小换大、黄金以旧换新等；完整代码表缺失"
+    },
+    "discount_rate": {
+      "system_label": "折扣 / 开单折扣 / 折扣值",
+      "layer": "rule",
+      "type": "number",
+      "required": "offer_dependent",
+      "source_slides": [6, 9, 11, 13, 16, 20, 24, 28, 29],
+      "validation": "0至1；9折填0.9；固定金额优惠不要误填到此字段"
+    },
+    "amount_off": {
+      "system_label": "优惠金额 / 金价每克减免",
+      "layer": "rule",
+      "type": "number",
+      "required": "offer_dependent",
+      "source_slides": [16, 29],
+      "validation": "币种和单位须由活动规则确认"
+    },
+    "threshold_type": {
+      "system_label": "减免类型 / 判断类型",
+      "layer": "rule",
+      "type": "enum",
+      "required": "offer_dependent",
+      "source_slides": [24, 28, 29],
+      "validation": "金额、克重、件数等；完整枚举缺失"
+    },
+    "threshold_value": {
+      "system_label": "判断值 / 判断金额 / 判断克重 / 判断件数",
+      "layer": "rule",
+      "type": "number",
+      "required": "offer_dependent",
+      "source_slides": [11, 28, 29],
+      "validation": "优惠类型12时判断克重不可为0；判断件数有值时优惠类型需为17"
+    },
+    "trade_in_upgrade_ratio": {
+      "system_label": "换大比例",
+      "layer": "rule",
+      "type": "number",
+      "required": "trade_in_only",
+      "source_slides": [11, 20],
+      "validation": "50%填0.5，80%填0.8，100%填1"
+    },
+    "goods_categories": {
+      "system_label": "货类",
+      "layer": "rule",
+      "type": "array<string>",
+      "required": true,
+      "source_slides": [5, 6, 11, 13, 20, 24],
+      "validation": "按活动选择；铂金换购示例货类为不适用"
+    },
+    "goods_details": {
+      "system_label": "货类明细",
+      "layer": "rule",
+      "type": "array<string>",
+      "required": false,
+      "source_slides": [5, 11, 13, 24],
+      "validation": "铂金换购示例HP；钻石以小换大示例HA"
+    },
+    "member_levels": {
+      "system_label": "会员级别",
+      "layer": "rule",
+      "type": "array<string>",
+      "required": false,
+      "source_slides": [5, 11, 13, 24],
+      "validation": "不限制则不勾选；截图枚举可能已过期，提交前从当前系统读取"
+    },
+    "price_types": {
+      "system_label": "售价类型",
+      "layer": "rule",
+      "type": "array<string>",
+      "required": false,
+      "source_slides": [11, 13, 22, 24],
+      "validation": "不限制则不勾选；完整枚举缺失"
+    },
+    "business_categories": {
+      "system_label": "业务大类",
+      "layer": "rule",
+      "type": "array<string>",
+      "required": true,
+      "source_slides": [6, 9, 11, 13, 24, 29],
+      "validation": "文档列出镶嵌类、素金类、黄金类、赠品、赠品，存在重复疑点；不得自行修正枚举"
+    },
+    "concession_rate": {
+      "system_label": "让扣点",
+      "layer": "rule",
+      "type": "number",
+      "required": true,
+      "source_slides": [6, 9, 11, 13, 24],
+      "validation": "0至1；无则填0"
+    },
+    "collection_rate": {
+      "system_label": "回款率",
+      "layer": "rule",
+      "type": "number",
+      "required": true,
+      "source_slides": [6, 9, 11, 13, 24],
+      "validation": "0至1；无则填0"
+    },
+    "allowed_model_numbers": {"system_label": "允许模号", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6, 24], "validation": "英文逗号分隔"},
+    "denied_model_numbers": {"system_label": "不允许模号", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6, 24], "validation": "英文逗号分隔"},
+    "allowed_product_series": {"system_label": "允许产品系列", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6, 24], "validation": "英文逗号分隔"},
+    "denied_product_series": {"system_label": "不允许产品系列", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6, 24], "validation": "英文逗号分隔"},
+    "allowed_inlay_materials": {"system_label": "允许镶嵌原料", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6, 24], "validation": "英文逗号分隔"},
+    "denied_inlay_materials": {"system_label": "不允许镶嵌原料", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6, 24], "validation": "英文逗号分隔"},
+    "denied_head_codes": {"system_label": "不允许号头", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6], "validation": "英文逗号分隔"},
+    "denied_goods_groups": {"system_label": "不允许货组", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [18, 24], "validation": "货组+货类编码，如15A、16A、18AS、21AU；多个值用英文逗号"},
+    "allowed_model_group": {"system_label": "允许模号分组", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6], "validation": "英文逗号分隔"},
+    "allowed_product_segment": {"system_label": "允许产品细分 / 允许产品板块", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6], "validation": "截图出现两个近似字段，提交前核验字段ID"},
+    "denied_product_segment": {"system_label": "不允许产品细分 / 不允许产品板块", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6], "validation": "截图出现两个近似字段，提交前核验字段ID"},
+    "allowed_model_goods_type": {"system_label": "允许模号货类", "layer": "constraint", "type": "string", "required": false, "source_slides": [6, 24], "validation": "单个货类，最多3个大写英文字母"},
+    "tag_gold_position_min": {"system_label": "牌仔价位下限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6, 24], "validation": "单位未说明"},
+    "tag_gold_position_max": {"system_label": "牌仔价位上限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6, 24], "validation": "单位未说明"},
+    "order_amount_min": {"system_label": "整单金额下限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6], "validation": "币种未说明"},
+    "order_amount_max": {"system_label": "整单金额上限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6], "validation": "币种未说明"},
+    "order_item_count_min": {"system_label": "整单件数下限", "layer": "constraint", "type": "integer", "required": false, "source_slides": [6], "validation": "非负整数"},
+    "order_item_count_max": {"system_label": "整单件数上限", "layer": "constraint", "type": "integer", "required": false, "source_slides": [6], "validation": "非负整数"},
+    "order_weight_min": {"system_label": "整单克重下限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6], "validation": "单位克"},
+    "order_weight_max": {"system_label": "整单克重上限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6], "validation": "单位克"},
+    "item_weight_min": {"system_label": "单件克重下限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6], "validation": "单位克"},
+    "item_weight_max": {"system_label": "单件克重上限", "layer": "constraint", "type": "number", "required": false, "source_slides": [6], "validation": "单位克"},
+    "diamond_count_min": {"system_label": "钻石主石份数下限", "layer": "constraint", "type": "integer", "required": false, "source_slides": [6], "validation": "非负整数"},
+    "diamond_count_max": {"system_label": "钻石主石份数上限", "layer": "constraint", "type": "integer", "required": false, "source_slides": [6], "validation": "非负整数"},
+    "denied_skus": {"system_label": "不允许SKU", "layer": "constraint", "type": "array<string>", "required": false, "source_slides": [6], "validation": "英文逗号分隔"},
+    "assigned_item_codes": {"system_label": "指定牌仔绑定活动 / 货品编号", "layer": "binding", "type": "array<string>", "required": false, "source_slides": [27], "validation": "1816指定牌仔sheet中以活动序号绑定货品编号"},
+    "approval_status": {"system_label": "审批状态", "layer": "approval", "type": "enum", "required": false, "source_slides": [21, 25, 29, 31, 32, 35], "validation": "待审批、拒绝、通过、取消等；完整枚举未提供"}
+  },
+  "cross_field_rules": [
+    "start_date <= end_date",
+    "cycle_weekdays=[0]与任何1至7值互斥",
+    "trade_in_upgrade_ratio只用于以旧换新或换购类offer_type",
+    "product_scope=全部货品时outlet_tag_conversion必须为不转餐牌",
+    "offer_type代码14时折扣规则不得加入HP货类",
+    "offer_type代码12时threshold_value对应判断克重且不得为0",
+    "判断件数有值时offer_type代码需为17",
+    "买钻石享黄金克减在1816示例中需要组合规则行；仅有单行不能完整表达",
+    "多品牌货类活动需确认系统自动最高审批级别是否符合业务意图",
+    "OA拒绝后才可修改；全部审批通过后才在活动时间触发POS开单模式"
+  ],
+  "known_gaps": [
+    "接口地址、请求方法、鉴权、字段ID、错误码、幂等规则",
+    "1816最新版Excel模板及全部列",
+    "优惠类型、会员级别、售价类型、货类、品牌、支付方式、审批流的当前代码表",
+    "活动名称和活动内容允许字符的精确正则",
+    "业务大类列表中重复出现赠品，缺少可核对的第五个枚举",
+    "截图日期多为2021年，不能据此认定2026年生产界面和值域未变化"
+  ]
+}
