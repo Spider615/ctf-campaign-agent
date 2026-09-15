@@ -25,14 +25,7 @@ declare global {
 
 export type CampaignWebMcpActions = {
   startCampaign: (input: { mode: "blank" | "example"; prompt?: string }) => Promise<string>;
-  updateFields: (input: {
-    title?: string;
-    externalName?: string;
-    content?: string;
-    slogan?: string;
-    startDate?: string;
-    endDate?: string;
-  }) => Promise<string>;
+  updateFields: (input: { name?: string; content?: string; startDate?: string; endDate?: string }) => Promise<string>;
   readSummary: () => Promise<Record<string, unknown> | string>;
 };
 
@@ -52,7 +45,7 @@ export function registerCampaignTools(actions: CampaignWebMcpActions): () => voi
   const tools: RegisteredTool[] = [
     {
       name: "start_campaign_draft",
-      description: "在周大福营销活动 Agent 中新建活动对话，或打开一段完整示例对话。",
+      description: "在周大福 1811 开单助手中新建活动对话，或打开一段完整示例对话。",
       inputSchema: {
         type: "object",
         properties: {
@@ -69,31 +62,27 @@ export function registerCampaignTools(actions: CampaignWebMcpActions): () => voi
     },
     {
       name: "update_campaign_fields",
-      description: "修改当前活动的标题、文案或首批档期；不会修改内部码表和优惠数字。",
+      description: "修改当前活动的名称、内容或起止日期。不会修改优惠、门店、标语和代码表，这些要在对话里说。",
       inputSchema: {
         type: "object",
         properties: {
-          title: { type: "string" },
-          externalName: { type: "string" },
+          name: { type: "string", description: "活动名称，不超过 13 个字，不含特殊字符" },
           content: { type: "string" },
-          slogan: { type: "string" },
-          startDate: { type: "string", description: "YYYY-MM-DD" },
-          endDate: { type: "string", description: "YYYY-MM-DD" },
+          startDate: { type: "string", description: "YYYY-MM-DD，和 endDate 一起给" },
+          endDate: { type: "string", description: "YYYY-MM-DD，和 startDate 一起给" },
         },
         additionalProperties: false,
       },
       execute: async (input) => textResult(await actions.updateFields({
-        title: optionalText(input.title),
-        externalName: optionalText(input.externalName),
+        name: optionalText(input.name),
         content: optionalText(input.content),
-        slogan: optionalText(input.slogan),
         startDate: optionalText(input.startDate),
         endDate: optionalText(input.endDate),
       })),
     },
     {
       name: "read_campaign_summary",
-      description: "读取当前活动的状态、拆单数量、还缺的主题、待界面选择项和规则校验摘要。",
+      description: "读取当前活动的状态、明细条数、已追问轮数、仍缺的项和阻断原因。",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true },
       execute: async () => textResult(await actions.readSummary()),

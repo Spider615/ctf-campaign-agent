@@ -1,4 +1,3 @@
-import type { TopicId } from "../campaign/topics";
 import type { Snapshot } from "../server/turns";
 
 export const SESSIONS_CHANGED = "campaign:sessions-changed";
@@ -28,10 +27,11 @@ const json = (body: unknown): RequestInit => ({
 
 export type TurnBody =
   | { type: "text"; text: string }
-  | { type: "answer"; topic: TopicId; values: Record<string, unknown>; origin: "chat" | "panel" | "tool" }
-  | { type: "clarify_submit"; answers: Record<string, unknown> }
+  | { type: "card"; answers: Record<string, unknown> }
+  | { type: "edit"; answers?: Record<string, unknown>; copy?: { name?: string; content?: string }; origin: "panel" | "tool" }
   | { type: "interpret" }
-  | { type: "generate" }
+  | { type: "confirm" }
+  | { type: "dismiss"; noteId: string }
   | { type: "undo"; versionSeq: number }
   | { type: "rollback"; seq: number };
 

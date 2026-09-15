@@ -16,7 +16,7 @@ export function EmptyState() {
   // 建会话只保存这句话，不等模型；理解过程在对话页里以思考动画展示。
   const start = async (body: { entryMode: "new"; text: string } | { entryMode: "example" }) => {
     if (body.entryMode === "new" && body.text.trim().length < 4) {
-      setError("请用一句话说明活动，例如由头、范围和优惠");
+      setError("请用一句话说明活动，例如日期、门店和优惠");
       return;
     }
     setBusy(true);
@@ -36,10 +36,10 @@ export function EmptyState() {
       <div data-testid="chat" className="mx-auto w-full max-w-[760px]">
         <span className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-[#8b6b3b]">
           <span className="h-px w-8 bg-[#b99050]" />
-          营销活动 Agent
+          1811 开单助手
         </span>
-        <h1 className="text-[clamp(2rem,4.5vw,3.6rem)] font-semibold leading-[1.08] tracking-[-0.04em] text-[#2c1720]">今天要做什么活动？</h1>
-        <p className="mt-3 text-base leading-7 text-[#766b6d]">说清由头、范围和优惠，Agent 会边问边帮你把方案和 ICS 开单草稿补齐。</p>
+        <h1 className="text-[clamp(2rem,4.5vw,3.6rem)] font-semibold leading-[1.08] tracking-[-0.04em] text-[#2c1720]">今天要建什么优惠活动？</h1>
+        <p className="mt-3 text-base leading-7 text-[#766b6d]">说清日期、门店、优惠和货类，Agent 最多追问两轮，复述确认后给出 ICS-1811 的逐项填写值。</p>
 
         <div className="mt-7">
           <Composer
@@ -47,7 +47,7 @@ export function EmptyState() {
             onChange={setText}
             onSubmit={() => void start({ entryMode: "new", text })}
             busy={busy}
-            placeholder="例如：母亲节华东区线下黄金类满 3000 减 300"
+            placeholder="例如：5 月 1 日到 5 日，闽深区 7590 门店，一般足金类黄金按实际克重每克减 15 元"
           />
         </div>
         {error ? (
@@ -69,8 +69,8 @@ export function EmptyState() {
         </div>
 
         <p className="mt-12 rounded-xl border border-[#e4d9cd] bg-[#fbf8f3] px-4 py-3 text-[13px] leading-6 text-[#766b6d]">
-          <strong className="font-semibold text-[#4b3037]">ICS 开单草稿</strong>
-          ：要在周大福 ICS 系统新建优惠活动的界面（编号 1811）里逐条录入的优惠规则清单。本工具不连接 ICS，由你照清单录入。
+          <strong className="font-semibold text-[#4b3037]">1811 填写值</strong>
+          ：在周大福 ICS 系统「1811 优惠开单活动新增」页面上逐项要填的内容，包括活动信息和每条明细。本工具不连接 ICS，代码表为演示编造，由你照着录入。
         </p>
       </div>
     </div>

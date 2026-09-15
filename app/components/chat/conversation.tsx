@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { missingFields, TYPING_HINT, type TopicId } from "../../lib/campaign/topics";
+import type { RetryInput } from "../../lib/campaign/ics1811/messages";
 import {
   ApiError,
   fetchSnapshot,
@@ -16,40 +16,47 @@ import {
   type TurnBody,
 } from "../../lib/client/api";
 import type { Snapshot } from "../../lib/server/turns";
-import { DraftPanel } from "../draft/draft-panel";
+import { DraftPanel, PHASE_LABEL, type PanelEdit } from "../draft/draft-panel";
 import { Composer } from "./composer";
 import { MessageList, UserBubble } from "./message-view";
 import { ThinkingIndicator } from "./thinking-indicator";
-
-const STATUS_LABEL: Record<string, string> = { collecting: "收集中", ready: "待生成", generated: "已生成" };
 
 type TurnKind = TurnBody["type"];
 
 const THINKING_LABEL: Partial<Record<TurnKind, string>> = {
   interpret: "正在理解你的需求",
   text: "正在思考",
-  clarify_submit: "正在根据补充信息生成方案",
-  generate: "正在生成方案",
+  confirm: "正在生成填写值",
+};
+
+const PLACEHOLDER: Record<Snapshot["flow"]["phase"], string> = {
+  interpreting: "Agent 正在理解你的需求…",
+  asking: "也可以直接打字补充，例如：5 月 1 日到 5 日，7590 门店，没有让扣点",
+  readback: "有不对的地方直接说，例如：改成每克减 20 元",
+  blocked: "把仍缺的项直接告诉我，例如：提成按实际售价算",
+  confirmed: "还想改哪里直接说，改完会重新复述",
+  out_of_scope: "说说这次活动的优惠方式，例如：黄金每克减 15 元",
 };
 
 export function Conversation({ sessionId }: { sessionId: string }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "error">("loading");
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "legacy" | "error">("loading");
   const [busy, setBusy] = useState<TurnKind | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
-  const [panelTab, setPanelTab] = useState("fields");
+  const [panelTab, setPanelTab] = useState("sheet");
   const endRef = useRef<HTMLDivElement>(null);
+
+  const stateOf = (caught: unknown) => (caught instanceof ApiError && caught.status === 404 ? "missing" : caught instanceof ApiError && caught.status === 410 ? "legacy" : "error");
 
   const load = useCallback(async () => {
     try {
-      const next = await fetchSnapshot(sessionId);
-      setSnapshot(next);
+      setSnapshot(await fetchSnapshot(sessionId));
       setLoadState("ready");
     } catch (caught) {
-      setLoadState(caught instanceof ApiError && caught.status === 404 ? "missing" : "error");
+      setLoadState(stateOf(caught));
     }
   }, [sessionId]);
 
@@ -62,7 +69,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
         setLoadState("ready");
       })
       .catch((caught: unknown) => {
-        if (!cancelled) setLoadState(caught instanceof ApiError && caught.status === 404 ? "missing" : "error");
+        if (!cancelled) setLoadState(stateOf(caught));
       });
     return () => {
       cancelled = true;
@@ -111,7 +118,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   });
 
   // 刚建好的会话只有用户那句话：进入对话页后自动开始理解，期间显示思考动画。
-  const needsInterpretation = Boolean(snapshot?.plan.pendingInterpretation && !snapshot.messages.some((message) => message.role === "assistant"));
+  const needsInterpretation = Boolean(snapshot?.flow.pendingInterpretation && !snapshot.messages.some((message) => message.role === "assistant"));
   const autoStarted = useRef<string | null>(null);
   useEffect(() => {
     if (!needsInterpretation) return;
@@ -136,11 +143,12 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     );
   }
 
-  if (loadState === "missing" || loadState === "error" || !snapshot) {
+  if (loadState !== "ready" || !snapshot) {
+    const title = loadState === "missing" ? "找不到这个活动" : loadState === "legacy" ? "这个活动是旧版本创建的" : "活动暂时打不开";
     return (
       <div className="grid h-[calc(100dvh-4rem)] place-items-center px-4 text-center md:h-screen">
         <div>
-          <p className="text-lg font-semibold text-[#35262a]">{loadState === "missing" ? "找不到这个活动" : "活动暂时打不开"}</p>
+          <p className="text-lg font-semibold text-[#35262a]">{title}</p>
           <div className="mt-4 flex justify-center gap-2">
             {loadState === "error" ? <Button variant="outline" onClick={() => void load()}>重试</Button> : null}
             <Button asChild className="bg-[#651427] text-white hover:bg-[#791a30]"><Link href="/">新建活动</Link></Button>
@@ -150,26 +158,18 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     );
   }
 
-  const draft = snapshot.latest.draft;
-  const pendingInterpretation = snapshot.plan.pendingInterpretation;
-  const placeholder = pendingInterpretation
-    ? needsInterpretation || busy === "interpret" ? "Agent 正在理解你的需求…" : "没理解成功，点上面的「重试」"
-    : snapshot.plan.openClarifyId
-      ? "也可以直接打字补充，例如：10 月 1 日到 7 日，全国线下黄金满 5000 减 500"
-      : draft.brief.externalName
-        ? TYPING_HINT.brief
-        : "继续说说这次活动…";
-  const missingCount = missingFields(draft).length;
+  const { flow } = snapshot;
+  const pendingInterpretation = flow.pendingInterpretation;
+  const placeholder = pendingInterpretation && !needsInterpretation && busy !== "interpret" ? "没理解成功，点上面的「重试」" : PLACEHOLDER[flow.phase];
   const thinkingLabel = busy ? THINKING_LABEL[busy] : needsInterpretation ? THINKING_LABEL.interpret : undefined;
 
   const actions = {
     busy: busy !== null,
-    onAnswer: (topic: TopicId, values: Record<string, unknown>) => void send({ type: "answer", topic, values, origin: "chat" }),
-    onClarifySubmit: (answers: Record<string, unknown>) => void send({ type: "clarify_submit", answers }),
-    onGenerate: () => void send({ type: "generate" }),
+    onCardSubmit: (answers: Record<string, unknown>) => void send({ type: "card", answers }),
+    onConfirm: () => void send({ type: "confirm" }),
+    onDismiss: (noteId: string) => void send({ type: "dismiss", noteId }),
     onUndo: (versionSeq: number) => void send({ type: "undo", versionSeq }),
-    onRetry: (retry: { type: "text"; text: string } | { type: "generate" } | { type: "interpret" }) =>
-      void send(retry.type === "text" ? { type: "text", text: retry.text } : retry.type === "interpret" ? { type: "interpret" } : { type: "generate" }),
+    onRetry: (retry: RetryInput) => void send(retry.type === "text" ? { type: "text", text: retry.text } : { type: "interpret" }),
     onOpenPanel: openPanel,
   };
 
@@ -179,7 +179,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       busy={busy !== null}
       tab={panelTab}
       onTabChange={setPanelTab}
-      onAnswer={(topic, values) => send({ type: "answer", topic, values, origin: "panel" })}
+      onEdit={(edit: PanelEdit) => send({ type: "edit", origin: "panel", ...edit })}
       onRollback={(seq) => void send({ type: "rollback", seq })}
     />
   );
@@ -189,16 +189,16 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       <section data-testid="chat" className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[#ded5cb] bg-[#fffdfa]/85 px-4 backdrop-blur md:px-6">
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-[#35262a]">{draft.brief.externalName || snapshot.session.title}</p>
+            <p className="truncate text-sm font-semibold text-[#35262a]">{snapshot.latest.draft.facts.offer ? snapshot.latest.fill.info.name.value : snapshot.session.title}</p>
             <p className="text-[12px] text-[#8a7d80]">
-              {pendingInterpretation ? "理解中" : STATUS_LABEL[snapshot.session.status] ?? snapshot.session.status}
-              {pendingInterpretation ? "" : snapshot.session.noIcs ? " · 不建 ICS 单" : ` · ${snapshot.latest.orders.length} 条 ICS 单`}
-              {!pendingInterpretation && missingCount ? ` · 还差 ${missingCount} 项` : ""}
+              {PHASE_LABEL[flow.phase]}
+              {pendingInterpretation ? "" : ` · ${snapshot.latest.fill.details.length} 条明细`}
+              {!pendingInterpretation && flow.missing.length ? ` · 还差 ${flow.missing.length} 项` : ""}
             </p>
           </div>
           <Button variant="outline" size="sm" className="bg-white xl:hidden" onClick={() => setPanelOpen(true)}>
             <PanelRight />
-            草稿
+            填写值
           </Button>
         </header>
 
@@ -232,13 +232,13 @@ export function Conversation({ sessionId }: { sessionId: string }) {
         </div>
       </section>
 
-      <aside className="hidden w-[400px] shrink-0 border-l border-[#ded5cb] bg-[#fffdfa] xl:block">{panel}</aside>
+      <aside className="hidden w-[420px] shrink-0 border-l border-[#ded5cb] bg-[#fffdfa] xl:block">{panel}</aside>
 
       <Sheet open={panelOpen} onOpenChange={setPanelOpen}>
-        <SheetContent side="right" className="w-full gap-0 bg-[#fffdfa] p-0 sm:max-w-[420px]">
+        <SheetContent side="right" className="w-full gap-0 bg-[#fffdfa] p-0 sm:max-w-[440px]">
           <SheetHeader className="sr-only">
-            <SheetTitle>活动草稿</SheetTitle>
-            <SheetDescription>随对话实时更新的结构化草稿</SheetDescription>
+            <SheetTitle>1811 填写值</SheetTitle>
+            <SheetDescription>随对话实时更新的 1811 填写值草稿</SheetDescription>
           </SheetHeader>
           {panel}
         </SheetContent>

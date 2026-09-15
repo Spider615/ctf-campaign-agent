@@ -18,8 +18,8 @@ import { registerCampaignTools } from "../lib/webmcp";
 
 const STATUS_LABEL: Record<string, string> = {
   collecting: "收集中",
-  ready: "待生成",
-  generated: "已生成",
+  readback: "待确认",
+  confirmed: "已生成填写值",
 };
 
 function Brand() {
@@ -30,7 +30,7 @@ function Brand() {
       </span>
       <div>
         <p className="text-sm font-semibold tracking-wide text-white">周大福</p>
-        <p className="text-[11px] text-[#c8aeb5]">营销活动 Agent</p>
+        <p className="text-[11px] text-[#c8aeb5]">1811 开单助手</p>
       </div>
     </div>
   );
@@ -76,25 +76,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       navigate.push(`/c/${snapshot.session.id}`);
       return mode === "example" ? "已打开完整示例对话。" : "已按这句话新建活动，Agent 正在追问缺的信息。";
     },
-    updateFields: async (updates) => {
+    // 只改名称、内容和起止日期；标语只能由用户照抄法务确认过的原文，优惠和门店在对话里改。
+    updateFields: async ({ name, content, startDate, endDate }) => {
       const id = locationRef.current.activeId;
       if (!id) return "当前没有打开的活动。";
-      let seq = (await fetchSnapshot(id)).latest.seq;
-      const brief = Object.fromEntries(
-        (["title", "externalName", "content", "slogan"] as const).filter((key) => updates[key] !== undefined).map((key) => [key, updates[key]]),
-      );
-      if (Object.keys(brief).length) {
-        seq = (await postTurn(id, { type: "answer", topic: "brief", values: brief, origin: "tool", expectedSeq: seq })).latest.seq;
-      }
-      const schedule = Object.fromEntries(
-        (["startDate", "endDate"] as const).filter((key) => updates[key] !== undefined).map((key) => [key, updates[key]]),
-      );
-      if (Object.keys(schedule).length) {
-        await postTurn(id, { type: "answer", topic: "schedule", values: schedule, origin: "tool", expectedSeq: seq });
-      }
+      if ((startDate && !endDate) || (!startDate && endDate)) return "开始、结束日期要一起给。";
+      const seq = (await fetchSnapshot(id)).latest.seq;
+      const copy = { ...(name !== undefined ? { name } : {}), ...(content !== undefined ? { content } : {}) };
+      await postTurn(id, {
+        type: "edit",
+        origin: "tool",
+        ...(startDate && endDate ? { answers: { Q1: { start: startDate, end: endDate } } } : {}),
+        ...(Object.keys(copy).length ? { copy } : {}),
+        expectedSeq: seq,
+      });
       notifySessionUpdated(id);
       notifySessionsChanged();
-      return "已更新当前活动，并重新计算拆单与校验结果。";
+      return "已更新当前活动，并重新复述。";
     },
     readSummary: async () => {
       const id = locationRef.current.activeId;
@@ -102,12 +100,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const snapshot = await fetchSnapshot(id);
       return {
         status: snapshot.session.status,
-        title: snapshot.latest.draft.brief.externalName || snapshot.session.title,
-        orderCount: snapshot.latest.orders.length,
-        noIcs: snapshot.session.noIcs,
-        missingTopics: snapshot.plan.missingTopics,
-        unresolved: snapshot.latest.draft.unresolved,
-        blockers: snapshot.latest.issues.filter((issue) => issue.severity === "blocker").map((issue) => issue.message),
+        phase: snapshot.flow.phase,
+        name: snapshot.latest.fill.info.name.value,
+        detailCount: snapshot.latest.fill.details.length,
+        roundsUsed: snapshot.flow.roundsUsed,
+        missing: snapshot.flow.missing,
+        canConfirm: snapshot.flow.canConfirm,
+        blockers: snapshot.latest.checks.filter((check) => check.severity === "blocker").map((check) => check.message),
       };
     },
   }), []);
@@ -161,10 +160,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     className={`block rounded-xl px-3 py-2.5 transition ${session.id === activeId ? "bg-[#7a1d32] text-white" : "text-[#e4d5d9] hover:bg-white/8 hover:text-white"}`}
                   >
                     <span className="line-clamp-1 text-sm">{session.title}</span>
-                    <span className="mt-0.5 block text-[11px] text-[#c9b1b8]">
-                      {STATUS_LABEL[session.status] ?? session.status}
-                      {session.noIcs ? " · 无需 ICS" : ""}
-                    </span>
+                    <span className="mt-0.5 block text-[11px] text-[#c9b1b8]">{STATUS_LABEL[session.status] ?? "旧版本"}</span>
                   </Link>
                 ))
               ) : (
@@ -191,7 +187,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Sparkles className="size-4 text-[#d9b36b]" />
               DeepSeek V4.1 Flash
             </div>
-            <p className="mt-2 text-[12px] leading-5 text-[#cbb6bc]">模型负责理解和写文案，拆单与规则由代码校验。</p>
+            <p className="mt-2 text-[12px] leading-5 text-[#cbb6bc]">模型负责理解需求和起草名称；追问、复述、填写值和校验由代码完成。</p>
           </div>
         </aside>
 

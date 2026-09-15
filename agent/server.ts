@@ -7,8 +7,8 @@ import { z } from "zod";
 
 import { buildAgentSystemPrompt, buildAgentUserPrompt } from "../app/lib/agent/prompt.ts";
 import { isAgentRequest, type AgentRequest, type AgentResult } from "../app/lib/agent/protocol.ts";
-import { AGENT_TOOL_NAMES, createAgentState, finishAgentTurn, runAgentTool, type AgentToolName } from "../app/lib/agent/tools.ts";
-import { CLARIFY_ORDER, type ClarifyKey } from "../app/lib/campaign/clarify.ts";
+import { AGENT_TOOL_NAMES, createAgentState, FACT_KEYS, finishAgentTurn, runAgentTool, type AgentToolName } from "../app/lib/agent/tools.ts";
+import type { FactKey } from "../app/lib/campaign/ics1811/types.ts";
 
 const envFile = fileURLToPath(new URL("../.dev.vars", import.meta.url));
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -25,7 +25,7 @@ const DEBUG = process.env.AGENT_DEBUG === "1";
 // SDK 子进程的配置目录，和本机 ~/.claude 隔离：不读用户自己的设置、插件和钩子。
 const RUNTIME_DIR = fileURLToPath(new URL("./.claude-runtime/", import.meta.url));
 
-const clarifyKey = z.enum(CLARIFY_ORDER as [ClarifyKey, ...ClarifyKey[]]);
+const factKey = z.enum(FACT_KEYS as [FactKey, ...FactKey[]]);
 
 async function runAgentTurn(request: AgentRequest): Promise<AgentResult> {
   const state = createAgentState(request);
@@ -38,30 +38,20 @@ async function runAgentTurn(request: AgentRequest): Promise<AgentResult> {
   // SDK 自带的文件、命令行等工具全部关掉，只挂活动工具；工具在本进程里执行，改的是这一轮的工作区。
   const campaign = createSdkMcpServer({
     name: "campaign",
-    version: "1.0.0",
+    version: "2.0.0",
     tools: [
-      tool("update_fields", "写入用户明确说过的活动信息；工具校验原话依据后返回最新状态", {
-        changes: z.array(z.object({
-          path: z.string(),
+      tool("update_fields", "记下用户这一轮明确说过的活动信息，每项附原话片段；工具核对后返回还缺什么", {
+        facts: z.array(z.object({
+          key: factKey,
           value: z.unknown().optional(),
-          op: z.enum(["replace", "add", "remove"]).optional(),
-          reason: z.string().optional(),
+          quote: z.string(),
         })),
-        title: z.string().optional(),
       }, handle("update_fields")),
-      tool("ask_user", "给用户出一张补充卡片，然后结束本轮，等用户提交", {
-        keys: z.array(clarifyKey),
-        confirm: z.array(clarifyKey).optional(),
-        intro: z.string().optional(),
-        segments: z.array(z.string()).optional(),
-        series: z.array(z.string()).optional(),
-      }, handle("ask_user")),
-      tool("write_plan", "写方案文案并保存；没通过开单规则会返回原因", {
-        externalName: z.string(),
-        icsName: z.string(),
+      tool("draft_copy", "起草活动名称（不超过 13 个字）和活动内容，只写用户说过的数字，不写标语", {
+        name: z.string(),
         content: z.string(),
-        slogan: z.string(),
-      }, handle("write_plan")),
+      }, handle("draft_copy")),
+      tool("confirm_readback", "用户在对话里明确确认了上面的复述时调用", {}, handle("confirm_readback")),
       tool("undo_last_change", "撤销上一次修改", {}, handle("undo_last_change")),
     ],
   });
@@ -143,7 +133,7 @@ const server = createServer(async (request, response) => {
   const started = Date.now();
   try {
     const result = await runAgentTurn(body);
-    console.log(`[agent] ${body.trigger.kind} ${Date.now() - started}ms 工具：${result.tools.join(" → ") || "无"}`);
+    console.log(`[agent] ${body.trigger.kind} ${Date.now() - started}ms 工具：${result.tools.join(" → ") || "无"}${result.dropped.length ? ` 丢弃 ${result.dropped.length} 项` : ""}`);
     send(response, 200, result);
   } catch (error) {
     const message = error instanceof Error && error.message ? error.message : "Agent 执行失败";

@@ -1,17 +1,17 @@
-import type { AgentCard, AgentRequest, AgentResult, AgentTrigger } from "../agent/protocol.ts";
-import { answerLabel, answerToOps, parseAnswer } from "../campaign/answers.ts";
-import { applyClarifyAnswers, buildClarifyQuestions, CARD_INTRO, missingLabels, type ClarifyKey, type ClarifyOptions } from "../campaign/clarify.ts";
-import { lastQuestion, messageToText, openClarify, summarizeChanges, type ChatMessage, type StoredMessage } from "../campaign/messages.ts";
-import { applyPatch, diffDrafts } from "../campaign/patcher.ts";
-import { deriveStatus, noIcsReason, readbackItems } from "../campaign/planner.ts";
-import { buildIcsDrafts, calculateOrderCount } from "../campaign/split-orders.ts";
-import { missingFields, missingTopics, noIcsOrders, type TopicId } from "../campaign/topics.ts";
-import type { CampaignDraft, FieldDiff, IcsOrderDraft, PatchOperation, ValidationIssue } from "../campaign/types.ts";
-import { validateDraft } from "../campaign/validator.ts";
-import { createEmptyDraft, deriveDraft, EXAMPLE_INTERPRETATION, EXAMPLE_PREFILL, EXAMPLE_TEXT, mergeInterpretation } from "../campaign/workspace-state.ts";
-import { ConflictError, type SessionBundle, type SessionStore, type TurnWrite } from "./session-store.ts";
+import type { AgentPhase, AgentRequest, AgentResult, AgentTrigger } from "../agent/protocol.ts";
+import { applyCardAnswers } from "../campaign/ics1811/card.ts";
+import { checkDraft } from "../campaign/ics1811/checks.ts";
+import { deriveFill } from "../campaign/ics1811/derive.ts";
+import { EXAMPLES } from "../campaign/ics1811/examples.ts";
+import { applyFactWrites, createEmptyDraft } from "../campaign/ics1811/facts.ts";
+import { renderFillSheet, type FillSheet } from "../campaign/ics1811/fill-sheet.ts";
+import { flowOf, messageToText, summarizeFactChanges, type ChatMessage, type StoredMessage } from "../campaign/ics1811/messages.ts";
+import { planNext } from "../campaign/ics1811/questions.ts";
+import { buildReadback } from "../campaign/ics1811/readback.ts";
+import type { Check, FactKey, FillModel, Gap, Ics1811Draft } from "../campaign/ics1811/types.ts";
+import { ConflictError, type SessionBundle, type SessionStatus, type SessionStore, type TurnWrite } from "./session-store.ts";
 
-// 需要模型的回合交给 Agent 服务（Claude Agent SDK）；这里负责校验请求、组装展示的消息和落库。
+// 需要模型的回合（理解首句、用户打字）交给 Agent 服务；出卡、复述、确认、落库都由这里的代码决定（设计文档 4.3 节）。
 export type AgentRunner = (request: AgentRequest) => Promise<AgentResult>;
 
 export type TurnDeps = {
@@ -33,32 +33,40 @@ export class TurnError extends Error {
 
 export type TurnInput =
   | { type: "text"; text: string; expectedSeq: number }
-  | { type: "answer"; topic: unknown; values: unknown; origin: "chat" | "panel" | "tool"; expectedSeq: number }
-  | { type: "clarify_submit"; answers: unknown; expectedSeq: number }
+  | { type: "card"; answers: Record<string, unknown>; expectedSeq: number }
+  | { type: "edit"; answers: Record<string, unknown>; copy: { name?: string; content?: string } | null; origin: "panel" | "tool"; expectedSeq: number }
   | { type: "interpret"; expectedSeq: number }
-  | { type: "generate"; expectedSeq: number }
+  | { type: "confirm"; expectedSeq: number }
+  | { type: "dismiss"; noteId: string; expectedSeq: number }
   | { type: "undo"; versionSeq: number; expectedSeq: number }
   | { type: "rollback"; seq: number; expectedSeq: number };
 
 export type VersionSummary = { seq: number; source: string; createdAt: string; diffCount: number };
 
+export type FlowPhase = "interpreting" | "asking" | "readback" | "blocked" | "confirmed" | "out_of_scope";
+
 export type Snapshot = {
-  session: { id: string; title: string; status: string; entryMode: string; noIcs: boolean; createdAt: string; updatedAt: string };
+  session: { id: string; title: string; status: string; entryMode: string; createdAt: string; updatedAt: string };
   messages: ChatMessage[];
   versions: VersionSummary[];
-  latest: { seq: number; draft: CampaignDraft; orders: IcsOrderDraft[]; issues: ValidationIssue[] };
-  plan: { missingTopics: TopicId[]; openQuestionId: string | null; openClarifyId: string | null; pendingInterpretation: boolean };
-};
-
-const EXAMPLE_OPTIONS: ClarifyOptions = {
-  segments: ["为母亲选礼的人", "家庭赠礼客群", "悦己自购客群"],
-  series: ["足金吊坠", "足金手镯", "黄金转运珠"],
+  latest: { seq: number; draft: Ics1811Draft; fill: FillModel; checks: Check[]; sheet: FillSheet };
+  flow: {
+    phase: FlowPhase;
+    roundsUsed: number;
+    openCardId: string | null;
+    openQuestions: Gap[]; // 开着的卡片上还没答的题
+    readbackId: string | null; // 对应最新版本的复述
+    canConfirm: boolean;
+    missing: string[];
+    confirmedSeq: number | null;
+    pendingInterpretation: boolean;
+  };
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const integer = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
 const errorText = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
-const agentText = (text: string): StoredMessage => ({ v: 1, kind: "agent_text", text });
+const agentText = (text: string): StoredMessage => ({ v: 2, kind: "agent_text", text });
 
 export function parseTurnInput(body: unknown): TurnInput {
   if (!isRecord(body) || !integer(body.expectedSeq)) throw new TurnError(400, "请求内容不完整");
@@ -67,14 +75,25 @@ export function parseTurnInput(body: unknown): TurnInput {
     case "text":
       if (typeof body.text !== "string" || !body.text.trim()) throw new TurnError(400, "请输入内容");
       return { type: "text", text: body.text.trim().slice(0, 1000), expectedSeq };
-    case "answer":
-      return { type: "answer", topic: body.topic, values: body.values, origin: body.origin === "panel" || body.origin === "tool" ? body.origin : "chat", expectedSeq };
-    case "clarify_submit":
-      return { type: "clarify_submit", answers: isRecord(body.answers) ? body.answers : {}, expectedSeq };
+    case "card":
+      return { type: "card", answers: isRecord(body.answers) ? body.answers : {}, expectedSeq };
+    case "edit": {
+      const copy = isRecord(body.copy) ? body.copy : null;
+      return {
+        type: "edit",
+        answers: isRecord(body.answers) ? body.answers : {},
+        copy: copy ? { ...(typeof copy.name === "string" ? { name: copy.name.trim() } : {}), ...(typeof copy.content === "string" ? { content: copy.content.trim() } : {}) } : null,
+        origin: body.origin === "tool" ? "tool" : "panel",
+        expectedSeq,
+      };
+    }
     case "interpret":
       return { type: "interpret", expectedSeq };
-    case "generate":
-      return { type: "generate", expectedSeq };
+    case "confirm":
+      return { type: "confirm", expectedSeq };
+    case "dismiss":
+      if (typeof body.noteId !== "string" || !body.noteId) throw new TurnError(400, "请求内容不完整");
+      return { type: "dismiss", noteId: body.noteId, expectedSeq };
     case "undo":
       if (!integer(body.versionSeq)) throw new TurnError(400, "请求内容不完整");
       return { type: "undo", versionSeq: body.versionSeq, expectedSeq };
@@ -93,39 +112,70 @@ export function isPendingInterpretation(bundle: SessionBundle): boolean {
     !bundle.messages.some((message) => message.role === "assistant" && message.content.kind !== "agent_error");
 }
 
-function versionSource(index: number, trigger: StoredMessage | undefined, createdBy: string): string {
-  if (index === 0) return "初始";
-  if (trigger?.kind === "user_text") return createdBy === "rollback" ? "版本恢复" : "对话修改";
-  if (trigger?.kind === "user_clarify_submit") return "补充信息并生成";
-  if (trigger?.kind === "user_answer") return trigger.origin === "panel" ? "草稿手改" : "选项回答";
-  if (trigger?.kind === "user_event") return trigger.event === "generate" ? "生成方案" : "版本恢复";
-  if (trigger?.kind.startsWith("agent_")) return "理解需求";
-  return createdBy === "rollback" ? "版本恢复" : createdBy === "ai" ? "对话修改" : "手动修改";
+function evaluate(draft: Ics1811Draft, messages: readonly ChatMessage[], today: string) {
+  const fill = deriveFill(draft);
+  const checks = checkDraft(draft, fill, today);
+  const flow = flowOf(messages);
+  const plan = planNext(draft, fill, checks, flow.roundsUsed, flow.askedBefore);
+  return { fill, checks, flow, plan };
 }
 
-export function buildSnapshot(bundle: SessionBundle): Snapshot {
+function versionSource(index: number, trigger: StoredMessage | undefined, createdBy: string): string {
+  if (index === 0) return "初始";
+  if (createdBy === "rollback") return "版本恢复";
+  switch (trigger?.kind) {
+    case "user_text":
+      return "对话修改";
+    case "user_card_submit":
+      return "补充卡片";
+    case "user_edit":
+      return trigger.origin === "panel" ? "草稿手改" : "工具修改";
+    case "user_event":
+      return trigger.event === "dismiss" ? "处理提示" : "版本恢复";
+    default:
+      return trigger?.kind.startsWith("agent_") ? "理解需求" : "修改";
+  }
+}
+
+export function buildSnapshot(bundle: SessionBundle, today: string): Snapshot {
+  if (bundle.legacy) throw new TurnError(410, "这个活动是旧版本创建的，请新建活动");
   const latest = bundle.versions.at(-1);
   if (!latest) throw new TurnError(404, "活动还没有可打开的版本");
-  const orders = buildIcsDrafts(latest.draft);
-  const issues = validateDraft(latest.draft, orders);
+  const { fill, checks, flow, plan } = evaluate(latest.draft, bundle.messages, today);
+  const pendingInterpretation = isPendingInterpretation(bundle);
+  const confirmed = flow.confirmedSeq === latest.seq;
+  const gaps = plan.action === "ask" ? plan.questions : plan.action === "readback" ? plan.missing : [];
+  const openIds = flow.openCard?.content.questions.map((question) => question.id) ?? [];
+  const phase: FlowPhase = pendingInterpretation
+    ? "interpreting"
+    : confirmed
+      ? "confirmed"
+      : plan.action === "out_of_scope"
+        ? "out_of_scope"
+        : flow.openCard || plan.action === "ask"
+          ? "asking"
+          : plan.canConfirm ? "readback" : "blocked";
   const triggers = new Map(bundle.messages.filter((message) => message.producedVersionId).map((message) => [message.producedVersionId as string, message.content]));
-  const missing = missingTopics(latest.draft);
-  const question = lastQuestion(bundle.messages);
   return {
-    session: { ...bundle.session, status: deriveStatus(latest.draft, issues), noIcs: noIcsOrders(latest.draft) },
+    session: { ...bundle.session },
     messages: bundle.messages.map(({ id, role, createdAt, content }) => ({ id, role, createdAt, content })),
     versions: bundle.versions.map((version, index) => ({
       seq: version.seq,
       source: versionSource(index, triggers.get(version.id), version.createdBy),
       createdAt: version.createdAt,
-      diffCount: index === 0 ? 0 : summarizeChanges(bundle.versions[index - 1].draft, version.draft).length,
+      diffCount: index === 0 ? 0 : summarizeFactChanges(bundle.versions[index - 1].draft, version.draft).length,
     })),
-    latest: { seq: latest.seq, draft: latest.draft, orders, issues },
-    plan: {
-      missingTopics: missing,
-      openQuestionId: question && missing.includes(question.content.topic) ? question.id : null,
-      openClarifyId: openClarify(bundle.messages)?.id ?? null,
-      pendingInterpretation: isPendingInterpretation(bundle),
+    latest: { seq: latest.seq, draft: latest.draft, fill, checks, sheet: renderFillSheet(fill, checks) },
+    flow: {
+      phase,
+      roundsUsed: flow.roundsUsed,
+      openCardId: flow.openCard?.id ?? null,
+      openQuestions: gaps.filter((gap) => openIds.includes(gap.id)),
+      readbackId: flow.latestReadback?.content.versionSeq === latest.seq ? flow.latestReadback.id : null,
+      canConfirm: plan.action === "readback" && plan.canConfirm,
+      missing: gaps.map((gap) => gap.title),
+      confirmedSeq: flow.confirmedSeq,
+      pendingInterpretation,
     },
   };
 }
@@ -139,66 +189,26 @@ async function commitAndLoad(deps: TurnDeps, write: TurnWrite): Promise<Snapshot
   }
   const bundle = await deps.store.load(write.session.id);
   if (!bundle) throw new TurnError(404, "找不到这个活动");
-  return buildSnapshot(bundle);
-}
-
-function planMessage(draft: CampaignDraft, orders: IcsOrderDraft[], issues: ValidationIssue[], versionSeq: number): StoredMessage {
-  const split = calculateOrderCount(draft);
-  const blockedOrders = draft.unresolved.length ? orders.length : 0;
-  return {
-    v: 1,
-    kind: "agent_plan",
-    versionSeq,
-    brief: draft.brief,
-    total: split.total,
-    readyOrders: orders.length - blockedOrders,
-    blockedOrders,
-    warnings: issues.filter((issue) => issue.severity === "warning").map((issue) => issue.message),
-    missing: missingLabels(draft),
-  };
-}
-
-function missingCard(draft: CampaignDraft, intro: string): StoredMessage | null {
-  const questions = buildClarifyQuestions(draft, [], { segments: [], series: [] });
-  return questions.length ? { v: 1, kind: "agent_clarify", intro, stated: [], inferred: [], questions } : null;
-}
-
-// 最近一次方案之后，活动信息（文案以外的字段）有没有变过。
-function factsChangedSincePlan(bundle: SessionBundle, draft: CampaignDraft): boolean {
-  const plan = [...bundle.messages].reverse().find((message) => message.content.kind === "agent_plan");
-  if (!plan || plan.content.kind !== "agent_plan") return true;
-  const planSeq = plan.content.versionSeq;
-  const version = bundle.versions.find((item) => item.seq === planSeq);
-  if (!version) return true;
-  return diffDrafts(version.draft, draft).some((diff) => !diff.path.startsWith("/brief") && diff.path !== "/title");
+  return buildSnapshot(bundle, deps.today);
 }
 
 // 最近的对话，给 Agent 当上下文。
-function historyForAgent(messages: ChatMessage[]): AgentRequest["history"] {
+function historyForAgent(messages: readonly ChatMessage[]): AgentRequest["history"] {
   return messages.slice(-12).flatMap((message) => {
     const text = messageToText(message.content).trim();
     return text ? [{ role: message.role, text: text.slice(0, 400) }] : [];
   });
 }
 
-// 生成了方案时，这些字段的变化由方案卡片展示，不再列进「改了几处」。
-const COPY_LABELS = new Set(["活动标题", "对外传播名", "ICS 开单名", "活动内容", "活动标语"]);
+// 这些事实变了，模型之前起草的名称和内容可能过时，退回模板，等下一次对话再重拟。
+const COPY_FACTS: readonly FactKey[] = ["offer", "categories", "productScope", "gramBasis", "thresholdRepeat", "discountEditable", "stores", "dates"];
 
-// 手动修改（选项、草稿面板）之后的提示：补充卡片还开着时什么都不追加；生成过方案、改了事实字段时提议重新生成。
-function followUps(prev: CampaignDraft, next: CampaignDraft, diffs: FieldDiff[], history: ChatMessage[]): StoredMessage[] {
-  const out: StoredMessage[] = [];
-  if (noIcsOrders(next) && !noIcsOrders(prev)) out.push({ v: 1, kind: "agent_no_ics", reason: noIcsReason(next) });
-  if (openClarify(history) || diffs.length === 0) return out;
-  if (next.brief.externalName) {
-    const copyTouched = diffs.some((diff) => diff.path.startsWith("/brief"));
-    const factsTouched = diffs.some((diff) => !diff.path.startsWith("/brief") && diff.path !== "/title");
-    if (factsTouched && !copyTouched) out.push({ v: 1, kind: "agent_regenerate_offer" });
-  } else {
-    const split = calculateOrderCount(next);
-    out.push({ v: 1, kind: "agent_ready", total: split.total, factors: split.factors, pendingUi: next.unresolved });
-  }
-  return out;
+function copyOutdated(before: Ics1811Draft, after: Ics1811Draft): boolean {
+  return COPY_FACTS.some((key) => JSON.stringify(before.facts[key]?.value ?? null) !== JSON.stringify(after.facts[key]?.value ?? null));
 }
+
+const changeLabel = (before: Ics1811Draft, after: Ics1811Draft, empty: string) =>
+  summarizeFactChanges(before, after).map((item) => `${item.label}：${item.after}`).join("；") || empty;
 
 export async function createSession(body: unknown, deps: TurnDeps): Promise<Snapshot> {
   const newId = deps.newId ?? (() => crypto.randomUUID());
@@ -206,7 +216,6 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
   const input = isRecord(body) ? body : {};
   const entryMode = input.entryMode === "example" ? "example" : input.entryMode === "new" ? "new" : null;
   if (!entryMode) throw new TurnError(400, "不支持的新建方式");
-
   const sessionId = newId();
   const versionId = newId();
 
@@ -214,38 +223,30 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
   if (entryMode === "new") {
     const text = typeof input.text === "string" ? input.text.trim().slice(0, 1000) : "";
     if (text.length < 4) throw new TurnError(400, "请用一句话说明活动");
-    const draft = deriveDraft(createEmptyDraft());
-    draft.title = text.slice(0, 28);
-    const orders = buildIcsDrafts(draft);
+    const draft = createEmptyDraft(newId(), text);
     return commitAndLoad(deps, {
       isNew: true,
       now,
-      session: { id: sessionId, title: draft.title, entryMode, status: deriveStatus(draft, validateDraft(draft, orders)), createdAt: now, updatedAt: now },
-      version: { id: versionId, seq: 1, draft, orders, createdBy: "human", patch: null },
-      messages: [{ id: newId(), role: "user", content: { v: 1, kind: "user_text", text }, producedVersionId: versionId }],
+      session: { id: sessionId, title: text.slice(0, 28), entryMode, status: "collecting", createdAt: now, updatedAt: now },
+      version: { id: versionId, seq: 1, draft, sheet: null, createdBy: "human", patch: null },
+      messages: [{ id: newId(), role: "user", content: { v: 2, kind: "user_text", text }, producedVersionId: versionId }],
     });
   }
 
-  // 示例：固定的理解结果，直接出补充卡片，不调 Agent。
-  const draft = mergeInterpretation(EXAMPLE_TEXT, EXAMPLE_INTERPRETATION);
-  const orders = buildIcsDrafts(draft);
-  const issues = validateDraft(draft, orders);
-  const card: StoredMessage = {
-    v: 1,
-    kind: "agent_clarify",
-    intro: CARD_INTRO.first,
-    ...readbackItems(draft),
-    questions: buildClarifyQuestions(draft, [], EXAMPLE_OPTIONS),
-    prefill: EXAMPLE_PREFILL,
-  };
+  // 示例：SOP 第九部分的复述示例（T1），信息齐全，不调 Agent，直接复述。
+  const example = EXAMPLES[0];
+  const draft = applyFactWrites(createEmptyDraft(newId(), example.first), example.firstWrites, { text: example.first, today: deps.today }).draft;
+  const { fill, checks, plan } = evaluate(draft, [], deps.today);
+  const readback = buildReadback(draft, fill, checks, plan.action === "readback" ? plan.missing : []);
   return commitAndLoad(deps, {
     isNew: true,
     now,
-    session: { id: sessionId, title: draft.title, entryMode, status: deriveStatus(draft, issues), createdAt: now, updatedAt: now },
-    version: { id: versionId, seq: 1, draft, orders, createdBy: "human", patch: null },
+    session: { id: sessionId, title: fill.info.name.value, entryMode, status: readback.canConfirm ? "readback" : "collecting", createdAt: now, updatedAt: now },
+    version: { id: versionId, seq: 1, draft, sheet: renderFillSheet(fill, checks), createdBy: "human", patch: null },
     messages: [
-      { id: newId(), role: "user", content: { v: 1, kind: "user_text", text: EXAMPLE_TEXT }, producedVersionId: versionId },
-      { id: newId(), role: "assistant", content: card, producedVersionId: null },
+      { id: newId(), role: "user", content: { v: 2, kind: "user_text", text: example.first }, producedVersionId: versionId },
+      { id: newId(), role: "assistant", content: agentText("信息都齐了，不用追问。下面是我的理解，确认无误就生成 1811 填写值。"), producedVersionId: null },
+      { id: newId(), role: "assistant", content: { v: 2, kind: "agent_readback", versionSeq: 1, readback }, producedVersionId: null },
     ],
   });
 }
@@ -256,18 +257,23 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   const now = (deps.now ?? (() => new Date().toISOString()))();
   const bundle = await deps.store.load(sessionId);
   if (!bundle) throw new TurnError(404, "找不到这个活动");
+  if (bundle.legacy) throw new TurnError(410, "这个活动是旧版本创建的，请新建活动");
   const latest = bundle.versions.at(-1);
   if (!latest) throw new TurnError(404, "活动还没有可打开的版本");
   if (input.expectedSeq !== latest.seq) throw new TurnError(409, "页面已更新，请重试");
 
+  const before = evaluate(latest.draft, bundle.messages, deps.today);
   const prev = latest.draft;
-  const prevIssues = validateDraft(prev, buildIcsDrafts(prev));
-  const sessionBase = { ...bundle.session, updatedAt: now };
+  const previousVersion = () => {
+    const target = bundle.versions.find((version) => version.seq === latest.seq - 1);
+    if (!target) throw new TurnError(404, "找不到要恢复的版本");
+    return structuredClone(target.draft);
+  };
 
   const commitMessagesOnly = (userContent: StoredMessage | null, messages: StoredMessage[]) => commitAndLoad(deps, {
     isNew: false,
     now,
-    session: { ...sessionBase, status: deriveStatus(prev, prevIssues) },
+    session: { ...bundle.session, updatedAt: now },
     version: null,
     messages: [
       ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: null }] : []),
@@ -275,193 +281,159 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     ],
   });
 
-  let next: CampaignDraft = prev;
+  let next: Ics1811Draft = prev;
   let userContent: StoredMessage | null = null;
-  let ops: PatchOperation[] = [];
   let createdBy: "ai" | "human" | "rollback" = "human";
-  let patchReason = "";
-  let generated = false;
-  // 需要模型的回合：base 是交给 Agent 的草稿（卡片提交时已写入选项），openCard 是还没提交的卡片问的项。
-  let agent: { trigger: AgentTrigger; base: CampaignDraft; openCard: ClarifyKey[] | null } | null = null;
+  let patch: { ops: unknown; source: "ai" | "human"; reason: string } | null = null;
+  let trigger: AgentTrigger | null = null;
+  let confirm = false;
   const notes: StoredMessage[] = [];
 
   switch (input.type) {
-    case "answer": {
-      let answer;
-      try {
-        answer = parseAnswer(input.topic, input.values, prev);
-      } catch (error) {
-        throw new TurnError(400, errorText(error, "回答内容不正确"));
-      }
-      ops = answerToOps(answer, prev);
-      next = applyPatch(prev, ops);
-      patchReason = answerLabel(answer);
-      userContent = { v: 1, kind: "user_answer", topic: answer.topic, label: patchReason, values: answer.values as Record<string, unknown>, origin: input.origin };
-      break;
-    }
-    case "interpret": {
+    case "interpret":
       if (!isPendingInterpretation(bundle)) throw new TurnError(409, "这句话已经理解过了");
-      const first = bundle.messages.find((message) => message.content.kind === "user_text");
-      const text = first?.content.kind === "user_text" ? first.content.text : bundle.session.title;
+      trigger = { kind: "first_message", text: prev.requestText };
       createdBy = "ai";
-      agent = { trigger: { kind: "first_message", text }, base: prev, openCard: null };
+      break;
+    case "text":
+      userContent = { v: 2, kind: "user_text", text: input.text };
+      trigger = { kind: "user_message", text: input.text };
+      createdBy = "ai";
+      break;
+    case "card": {
+      const card = before.flow.openCard;
+      if (!card) throw new TurnError(409, "这张卡片已经提交过了");
+      const asked = card.content.questions.map((question) => question.id as string);
+      const result = applyCardAnswers(prev, Object.fromEntries(Object.entries(input.answers).filter(([id]) => asked.includes(id))));
+      next = result.draft;
+      if (result.ignored.length) notes.push(agentText(`有 ${result.ignored.length} 项没记下：${result.ignored.map((item) => item.reason).join("；")}`));
+      userContent = { v: 2, kind: "user_card_submit", round: card.content.round, label: changeLabel(prev, next, "先不补充") };
+      patch = { ops: { answers: input.answers, applied: result.applied }, source: "human", reason: `第 ${card.content.round} 轮卡片` };
       break;
     }
-    case "text": {
-      userContent = { v: 1, kind: "user_text", text: input.text };
-      createdBy = "ai";
-      patchReason = input.text;
-      const card = openClarify(bundle.messages);
-      agent = { trigger: { kind: "user_message", text: input.text }, base: prev, openCard: card ? card.content.questions.map((item) => item.key) : null };
-      break;
-    }
-    case "clarify_submit": {
-      const card = openClarify(bundle.messages);
-      if (!card) throw new TurnError(409, "这张补充卡片已经提交过了");
-      const application = applyClarifyAnswers(input.answers, prev, card.content.questions.map((item) => item.key));
-      // 方案已经生成过、这次什么都没补、方案之后也没在对话里改过：不重复生成，只收起卡片。
-      if (prev.brief.externalName && application.ops.length === 0 && application.customs.length === 0 && !factsChangedSincePlan(bundle, prev)) {
-        userContent = { v: 1, kind: "user_clarify_submit", label: "先不补充" };
-        notes.push(agentText("好，这几项先空着。之后想补，直接在对话里说就行。"));
-        break;
+    case "edit": {
+      const result = applyCardAnswers(prev, input.answers);
+      next = result.draft;
+      if (input.copy) {
+        next = { ...next, copy: { name: input.copy.name ?? before.fill.info.name.value, content: input.copy.content ?? before.fill.info.content.value, source: "user" } };
       }
-      if (application.ignored.length) notes.push(agentText(`${application.ignored.join("、")}填得不完整或不合规，已忽略。`));
-      userContent = { v: 1, kind: "user_clarify_submit", label: application.summary.length ? application.summary.join("；") : "先不补充，直接生成" };
-      createdBy = "ai";
-      patchReason = "补充卡片提交";
-      ops = [...application.ops];
-      next = application.draft;
-      agent = { trigger: { kind: "card_submitted", summary: application.summary, customs: application.customs }, base: application.draft, openCard: null };
+      if (result.ignored.length) throw new TurnError(400, result.ignored.map((item) => item.reason).join("；"));
+      userContent = { v: 2, kind: "user_edit", label: changeLabel(prev, next, "没有改动"), origin: input.origin };
+      patch = { ops: { answers: input.answers, copy: input.copy }, source: "human", reason: input.origin === "panel" ? "草稿手改" : "工具修改" };
       break;
     }
-    case "generate": {
-      userContent = { v: 1, kind: "user_event", event: "generate", label: prev.brief.externalName ? "重新生成方案" : "生成活动方案" };
-      createdBy = "ai";
-      agent = { trigger: { kind: "generate_clicked" }, base: prev, openCard: null };
+    case "confirm":
+      confirm = true;
+      userContent = { v: 2, kind: "user_event", event: "confirm", label: "确认无误，生成填写值" };
       break;
-    }
-    case "undo": {
+    case "dismiss":
+      if (!before.fill.notes.some((note) => note.id === input.noteId && note.kind === "restriction_unresolved")) throw new TurnError(400, "这条提示不能直接跳过");
+      next = { ...prev, dismissedNotes: [...prev.dismissedNotes, input.noteId] };
+      userContent = { v: 2, kind: "user_event", event: "dismiss", label: "这条限制不限定" };
+      break;
+    case "undo":
       if (input.versionSeq !== latest.seq || latest.seq <= 1) throw new TurnError(409, "之后已有新的修改，可以在版本页签里恢复");
-      const target = bundle.versions.find((version) => version.seq === latest.seq - 1);
-      if (!target) throw new TurnError(404, "找不到要恢复的版本");
-      next = structuredClone(target.draft);
+      next = previousVersion();
       createdBy = "rollback";
-      userContent = { v: 1, kind: "user_event", event: "undo", label: "撤销上一次修改" };
+      userContent = { v: 2, kind: "user_event", event: "undo", label: "撤销上一次修改" };
       break;
-    }
     case "rollback": {
       const target = bundle.versions.find((version) => version.seq === input.seq);
       if (!target) throw new TurnError(404, "找不到要恢复的版本");
       next = structuredClone(target.draft);
       createdBy = "rollback";
-      userContent = { v: 1, kind: "user_event", event: "rollback", label: `恢复到版本 ${input.seq}` };
+      userContent = { v: 2, kind: "user_event", event: "rollback", label: `恢复到版本 ${input.seq}` };
       break;
     }
   }
 
   let reply: string | null = null;
-  let agentCard: AgentCard | null = null;
-  if (agent) {
-    let result: AgentResult | null = null;
+  let copyDrafted = false;
+  if (trigger) {
+    const phase: AgentPhase = input.type === "interpret"
+      ? "interpreting"
+      : before.flow.confirmedSeq === latest.seq ? "output" : before.flow.openCard ? "asking" : before.flow.latestReadback ? "readback" : "asking";
+    let result: AgentResult;
     try {
       result = await deps.runAgent({
         today: deps.today,
-        draft: agent.base,
+        draft: next,
         history: historyForAgent(bundle.messages),
-        trigger: agent.trigger,
-        openCard: agent.openCard,
-        planIsCurrent: Boolean(agent.base.brief.externalName) && !factsChangedSincePlan(bundle, agent.base),
+        trigger,
+        phase,
+        roundsUsed: before.flow.roundsUsed,
+        openQuestions: before.flow.openCard?.content.questions.map((question) => question.id) ?? [],
+        readbackSeq: before.flow.latestReadback?.content.versionSeq === latest.seq ? latest.seq : null,
+        canConfirm: before.plan.action === "readback" && before.plan.canConfirm,
         canUndo: latest.seq > 1,
       });
     } catch (error) {
       const reason = errorText(error, "Agent 服务暂时不可用");
-      if (input.type === "interpret") return commitMessagesOnly(null, [{ v: 1, kind: "agent_error", text: `没理解成功：${reason}`, retry: { type: "interpret" } }]);
-      if (input.type === "text") return commitMessagesOnly(userContent, [{ v: 1, kind: "agent_error", text: `这句没处理成功：${reason}`, retry: { type: "text", text: input.text } }]);
-      if (input.type === "generate") return commitMessagesOnly(userContent, [{ v: 1, kind: "agent_error", text: `方案生成失败：${reason}`, retry: { type: "generate" } }]);
-      // 卡片提交：选项已经写进草稿，先保存下来，方案可以重试生成。
-      notes.push({ v: 1, kind: "agent_error", text: `方案生成失败：${reason}`, retry: { type: "generate" } });
+      if (input.type === "interpret") return commitMessagesOnly(null, [{ v: 2, kind: "agent_error", text: `没理解成功：${reason}`, retry: { type: "interpret" } }]);
+      return commitMessagesOnly(userContent, [{ v: 2, kind: "agent_error", text: `这句没处理成功：${reason}`, retry: { type: "text", text: input.type === "text" ? input.text : "" } }]);
     }
-    if (result?.undo) {
-      const target = bundle.versions.find((version) => version.seq === latest.seq - 1);
-      if (target) {
-        next = structuredClone(target.draft);
-        createdBy = "rollback";
-      }
-    } else if (result) {
+    if (result.undo) {
+      next = previousVersion();
+      createdBy = "rollback";
+    } else {
       next = result.draft;
-      ops = [...ops, ...result.ops];
-      generated = result.generated;
+      copyDrafted = result.copyDrafted;
+      if (result.applied.length || result.dropped.length) patch = { ops: { applied: result.applied, dropped: result.dropped }, source: "ai", reason: trigger.text.slice(0, 200) };
     }
-    reply = result?.reply ?? null;
-    agentCard = result?.card ?? null;
+    reply = result.reply;
+    confirm = result.confirmRequested && !result.undo;
   }
 
-  next = deriveDraft(next);
-  const orders = buildIcsDrafts(next);
-  const issues = validateDraft(next, orders);
-  const diffs = diffDrafts(prev, next);
-  const changed = diffs.length > 0;
-  const versionSeq = latest.seq + 1;
+  if (next.copy?.source === "ai" && !copyDrafted && copyOutdated(prev, next)) next = { ...next, copy: null };
+
+  const changed = JSON.stringify(prev) !== JSON.stringify(next);
+  const versionSeq = changed ? latest.seq + 1 : latest.seq;
   const versionId = changed ? newId() : null;
-
+  const after = evaluate(next, bundle.messages, deps.today);
   const agentMessages: StoredMessage[] = [];
-  // 卡片提交的内容已经写在用户那条消息里，理解需求的结果写在卡片的复述里，都不再单独列改动。
-  const listChanges = changed && input.type !== "interpret" && input.type !== "clarify_submit";
-  const items = listChanges ? summarizeChanges(prev, next).filter((item) => !generated || !COPY_LABELS.has(item.label)) : [];
-  if (items.length) {
-    agentMessages.push({
-      v: 1,
-      kind: "agent_change",
-      title: input.type === "rollback" ? `已恢复到版本 ${input.seq}` : createdBy === "rollback" ? "已撤销" : items.length === 1 ? "记下了" : `改了 ${items.length} 处`,
-      items,
-      versionSeq,
-    });
+
+  if (changed && input.type !== "interpret" && input.type !== "card") {
+    const items = summarizeFactChanges(prev, next);
+    if (items.length) {
+      const title = input.type === "rollback" ? `已恢复到版本 ${input.seq}` : createdBy === "rollback" ? "已撤销" : items.length === 1 ? "记下了" : `改了 ${items.length} 处`;
+      agentMessages.push({ v: 2, kind: "agent_change", title, items, versionSeq });
+    }
   }
-  if (agent && noIcsOrders(next) && !noIcsOrders(prev)) agentMessages.push({ v: 1, kind: "agent_no_ics", reason: noIcsReason(next) });
   if (reply) agentMessages.push(agentText(reply));
   agentMessages.push(...notes);
-  // 生成的文案和上一版完全一样时不产生新版本，方案指向当前版本。
-  if (generated) agentMessages.push(planMessage(next, orders, issues, changed ? versionSeq : latest.seq));
 
-  if (agentCard) {
-    agentMessages.push(agentCard);
-  } else if (generated && missingFields(next).length > 0) {
-    const card = missingCard(next, CARD_INTRO.later);
-    if (card) agentMessages.push(card);
-  } else if (input.type === "interpret" && !generated) {
-    // 兜底：第一轮 Agent 没出卡片也没出方案时，照样给出理解结果和要补的项。
-    const questions = buildClarifyQuestions(next, [], { segments: [], series: [] });
-    if (questions.length) agentMessages.push({ v: 1, kind: "agent_clarify", intro: CARD_INTRO.first, ...readbackItems(next), questions });
+  let status: SessionStatus = "collecting";
+  if (confirm) {
+    if (changed || before.flow.latestReadback?.content.versionSeq !== latest.seq) throw new TurnError(409, "复述已经更新，请看最新的复述再确认");
+    if (!(after.plan.action === "readback" && after.plan.canConfirm)) throw new TurnError(409, "还有没补齐或没通过的项，不能确认");
+    agentMessages.push({ v: 2, kind: "agent_fill_sheet", versionSeq: latest.seq, sheet: renderFillSheet(after.fill, after.checks) });
+    status = "confirmed";
+  } else if (after.plan.action === "out_of_scope") {
+    if (trigger) agentMessages.push(agentText(after.plan.reason));
+  } else if (after.plan.action === "ask") {
+    // 卡片还开着时打字或手改，不出新卡片，已答的题在卡片上隐藏。
+    const keepOpen = Boolean(before.flow.openCard) && input.type !== "card";
+    if (!keepOpen) agentMessages.push({ v: 2, kind: "agent_round_card", round: after.plan.round, questions: after.plan.questions });
+  } else {
+    const current = !changed && !before.flow.openCard && before.flow.latestReadback?.content.versionSeq === latest.seq;
+    if (!current) agentMessages.push({ v: 2, kind: "agent_readback", versionSeq, readback: buildReadback(next, after.fill, after.checks, after.plan.missing) });
+    status = after.plan.canConfirm ? "readback" : "collecting";
   }
+  if (!confirm && before.flow.confirmedSeq === latest.seq && !changed) status = "confirmed";
+  if (trigger && agentMessages.length === 0) agentMessages.push(agentText("我没理解要做什么，可以换个说法，或者直接在卡片里补。"));
 
-  if (!agent) agentMessages.push(...followUps(prev, next, diffs, bundle.messages));
-  if (agent && agentMessages.length === 0) agentMessages.push(agentText("我没理解要做什么，可以换个说法，或者直接在卡片、草稿面板里改。"));
-
+  const title = next.facts.offer ? after.fill.info.name.value : bundle.session.title;
   return commitAndLoad(deps, {
     isNew: false,
     now,
-    session: { ...sessionBase, title: next.title, status: deriveStatus(next, issues) },
+    session: { ...bundle.session, title, status, updatedAt: now },
     version: versionId
-      ? {
-          id: versionId,
-          seq: versionSeq,
-          draft: next,
-          orders,
-          createdBy,
-          patch: ops.length && (input.type === "text" || input.type === "answer" || input.type === "clarify_submit")
-            ? { id: newId(), ops, source: input.type === "answer" ? "human" : "ai", reason: patchReason }
-            : null,
-        }
+      ? { id: versionId, seq: versionSeq, draft: next, sheet: renderFillSheet(after.fill, after.checks), createdBy, patch: patch ? { id: newId(), ...patch } : null }
       : null,
     messages: [
       ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: versionId }] : []),
       // 没有用户消息的回合（理解需求），由第一条 Agent 消息标记它产生的版本。
-      ...agentMessages.map((content, index) => ({
-        id: newId(),
-        role: "assistant" as const,
-        content,
-        producedVersionId: !userContent && index === 0 ? versionId : null,
-      })),
+      ...agentMessages.map((content, index) => ({ id: newId(), role: "assistant" as const, content, producedVersionId: !userContent && index === 0 ? versionId : null })),
     ],
   });
 }
