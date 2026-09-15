@@ -11,3 +11,10 @@ export function getDb() {
 
   return drizzle(env.DB, { schema });
 }
+
+export function getDbBinding(): D1Database {
+  if (!env.DB) {
+    throw new Error("活动记录暂时不可用，请稍后重试");
+  }
+  return env.DB;
+}

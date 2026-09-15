@@ -6,6 +6,13 @@ import {
   parseInterpretation,
   parsePatchProposal,
 } from "../app/lib/server/ai-schemas.ts";
+import { interpretationSystemPrompt } from "../app/lib/server/prompts.ts";
+
+test("interpretation prompt constrains enums and demonstrates explicit extraction", () => {
+  assert.match(interpretationSystemPrompt, /customerAction 只允许/);
+  assert.match(interpretationSystemPrompt, /华南区做国庆黄金类线上活动/);
+  assert.match(interpretationSystemPrompt, /amountOff/);
+});
 
 test("interpretation preserves only explicit offer values", () => {
   const result = parseInterpretation(
@@ -70,4 +77,3 @@ test("patch proposal allows copy and explicit operational edits only", () => {
   assert.equal(patches[0].path, "/brief/externalName");
   assert.equal(patches[0].provenance, "ai");
 });
-

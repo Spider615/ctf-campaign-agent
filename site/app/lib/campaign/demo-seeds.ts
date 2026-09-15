@@ -46,8 +46,8 @@ export function createMotherDaySeed(): CampaignDraft {
           thresholdAmount: 3000,
           thresholdCount: null,
           judgingWeight: null,
-          discountRate: 0.8,
-          amountOff: null,
+          discountRate: null,
+          amountOff: 300,
         },
       ],
       responsibility: "公司全担",
@@ -104,4 +104,3 @@ export function createVisibilityOnlySeed(): CampaignDraft {
   draft.unresolved = ["展览报名与到场数据应由 CRM 或活动系统承接"];
   return draft;
 }
-

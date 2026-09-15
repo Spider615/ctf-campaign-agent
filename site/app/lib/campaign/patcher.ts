@@ -39,17 +39,22 @@ export function applyPatch(draft: CampaignDraft, ops: PatchOperation[]): Campaig
     }
 
     const last = segments.at(-1)!;
-    const key = Array.isArray(target) ? Number(last) : last;
-    if (Array.isArray(target) && !Number.isInteger(key)) throw new Error("补丁路径不存在");
-
-    if (operation.op === "remove") {
-      if (Array.isArray(target)) target.splice(key as number, 1);
-      else delete target[key as keyof typeof target];
-    } else {
-      if (operation.op === "replace" && target[key as keyof typeof target] === undefined) {
-        throw new Error("补丁路径不存在");
+    if (Array.isArray(target)) {
+      const index = Number(last);
+      if (!Number.isInteger(index)) throw new Error("补丁路径不存在");
+      if (operation.op === "remove") {
+        target.splice(index, 1);
+        continue;
       }
-      target[key as keyof typeof target] = structuredClone(operation.value);
+      if (operation.op === "replace" && target[index] === undefined) throw new Error("补丁路径不存在");
+      target[index] = structuredClone(operation.value);
+    } else {
+      if (operation.op === "remove") {
+        delete target[last];
+        continue;
+      }
+      if (operation.op === "replace" && target[last] === undefined) throw new Error("补丁路径不存在");
+      target[last] = structuredClone(operation.value);
     }
   }
 
@@ -99,4 +104,3 @@ export function rollbackTo(versions: DraftVersion[], seq: number): DraftVersion 
     diffs: latest ? diffDrafts(latest.draft, target.draft) : [],
   };
 }
-
