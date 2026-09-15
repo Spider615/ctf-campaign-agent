@@ -143,12 +143,12 @@ function deriveInfo(draft: Ics1811Draft, notes: Note[]): ActivityInfo {
       "1)营销活动",
       "default",
       "§9(四) demo 一律选营销活动",
-      pattern === "platinum_tradein" || pattern === "diamond_upgrade" ? "截图示例里这类测试活动选的是 0)一般销售，待确认" : "「一般销售」和「营销活动」怎么区分待确认",
+      pattern === "platinum_tradein" || pattern === "diamond_upgrade" ? "活动级优惠类型：截图示例里这类测试活动选的是 0)一般销售，待确认" : "活动级优惠类型「一般销售」和「营销活动」怎么区分待确认",
     ),
     brand: brandEntry ? field(brandEntry.label, "ai", `原话提到：${f.brands?.quote}`) : brands.length > 1 ? pending(null, "多个品牌待指定") : field("周大福", "default", "需求没写品牌，用页面默认值"),
     commission: f.commission ? field(f.commission.value === "actual_price" ? "不计算折上折" : "计算折上折", "user", f.commission.quote) : pending(null, "还没问，页面默认值不能直接用"),
-    joinDiscount: field("可参加活动货类", "default", "页面默认值", "其他选项和作用待确认（§9(四)）"),
-    presaleDays: field(0, "default", "§9(四) demo 填 0", "字段含义待确认（§9(四)）"),
+    joinDiscount: field("可参加活动货类", "default", "页面默认值", "是否参与打折的其他选项和作用待确认（§9(四)）"),
+    presaleDays: field(0, "default", "§9(四) demo 填 0", "预售时间的字段含义待确认（§9(四)）"),
     cycle: f.weekdays ? field(f.weekdays.value.join(","), "ai", `原话提到每周：${f.weekdays.quote}`) : field("0", "ai", "需求没提每周几生效"),
     approvalFlow: flow ? field(flow.display, "ai", brandEntry ? `按品牌 ${brandEntry.label}` : "按默认品牌周大福") : field(null, "ai", "涉及多个品牌，不选，由系统取最高审批等级"),
     productScope: scope ? field(scope.display, "ai", `原话提到：${f.productScope?.quote}`) : field("0 全部货品", "ai", "需求没提货品池"),
@@ -157,7 +157,7 @@ function deriveInfo(draft: Ics1811Draft, notes: Note[]): ActivityInfo {
         ? field(f.menuConversion.value ? "1 outlet餐牌" : "0 不转餐牌", "user", f.menuConversion.quote)
         : pending(null, "outlet 货品要问是否转餐牌")
       : field("0 不转餐牌", "ai", "货品范围不是 outlet 货品时只能不转餐牌"),
-    couponOnly: field("否", "default", "§9(四) demo 填否", "字段含义待确认（§9(四)）"),
+    couponOnly: field("否", "default", "§9(四) demo 填否", "是否凭券使用的字段含义待确认（§9(四)）"),
     region: region ? field(region.display, "user", "由门店换算") : pending(null, storeCodes.length ? "门店分属不同区域" : "还没问"),
     division: field(null, "default", "§3(一) 截图示例只选了区域和分行"),
     subArea: field(null, "default", "§3(一) 截图示例只选了区域和分行"),
@@ -177,7 +177,10 @@ function deriveDetails(draft: Ics1811Draft, notes: Note[]): Detail[] {
   const offer = f.offer?.value;
   if (!offer || !f.offer) return [];
   if (offer.pattern === "unsupported") {
-    notes.push({ id: "unsupported_offer", kind: "unsupported_offer", blocking: true, sop: "§9(四)、§9(五)", text: `「${offer.unsupportedType}」在指引里没有录入说明，demo 暂不支持，需要人工在 1811 录入` });
+    const text = offer.unsupportedType && OFFER_TYPES[offer.unsupportedType]
+      ? `「${offer.unsupportedType}」在指引里没有录入说明，demo 暂不支持，需要人工在 1811 录入`
+      : `「${offer.unsupportedType}」在 1811 明细优惠类型里没有对应选项，需先确认 ICS 是否支持`;
+    notes.push({ id: "unsupported_offer", kind: "unsupported_offer", blocking: true, sop: "§9(四)、§9(五)", text });
     return [];
   }
   const offerQuote = f.offer.quote;
@@ -313,7 +316,10 @@ export function deriveFill(draft: Ics1811Draft): FillModel {
   const pattern = draft.facts.offer?.value.pattern;
   const group = pattern === "platinum_tradein" || pattern === "diamond_upgrade" ? "17" : pattern === "gold_tradein" ? "19" : "3";
   const groupEntry = byCode(CODEBOOK.activityGroups, group);
-  const outOfScope = !draft.facts.offer && !/折|减|满|换|优惠|让利|促销|特价|返|赠|送/.test(draft.requestText) ? "这不属于 1811 优惠开单活动，demo 暂不处理" : null;
+  // 只有明确不带成交优惠的活动才不在范围；「搞个黄金活动」这种还没说怎么优惠的，按 Q3 追问（设计文档 4.3 节）。
+  const outOfScope = !draft.facts.offer && /抽奖|签到|打卡|集赞|讲座|沙龙|(没有|不做|不给|不搞)(任何)?(优惠|折扣|让利)/.test(draft.requestText)
+    ? "这像是不带成交优惠的活动，不在 1811 优惠开单范围。如果有打折、满减、每克减这类优惠，直接告诉我怎么优惠"
+    : null;
   return {
     info,
     settlement,

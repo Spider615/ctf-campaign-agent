@@ -2,7 +2,6 @@
 // 模型提出的每一项都要附原话片段；片段必须在用户这一轮的话里，数值由代码从片段重新换算。
 // RULES 覆盖全部 FactKey，没有「默认当作用户说过」的分支。
 
-import { normalizeText } from "../evidence.ts";
 import { CODEBOOK } from "./codebook.ts";
 import { detectPattern } from "./offer-spec.ts";
 import * as P from "./phrases.ts";
@@ -32,7 +31,7 @@ type RuleContext = WriteContext & { open: readonly QuestionId[]; via: FactVia };
 type Rule = (draft: Ics1811Draft, quote: string, value: unknown, context: RuleContext) => Outcome;
 
 const PUNCTUATION = /[，,。．.；;：:！!？?、"“”「」『』'‘’\s]/g;
-export const compactQuote = (text: string) => normalizeName(normalizeText(text)).replace(PUNCTUATION, "");
+export const compactQuote = (text: string) => normalizeName(P.normalizeText(text)).replace(PUNCTUATION, "");
 
 export function setFact<K extends FactKey>(draft: Ics1811Draft, key: K, value: NonNullable<Facts[K]>["value"], quote: string, via: FactVia): void {
   (draft.facts as Record<FactKey, unknown>)[key] = { value, quote, via };
@@ -45,6 +44,7 @@ const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filt
 export const emptyItem = (): OfferItem => ({ discount: null, upgradeRatio: null, multiple: null, threshold: null, amount: null, categories: null });
 
 const SINGLE_ITEM_PATTERNS: readonly OfferPattern[] = ["per_gram", "platinum_tradein", "diamond_upgrade", "diamond_gold_gram"];
+const SPECIAL_PATTERNS: readonly OfferPattern[] = ["platinum_tradein", "diamond_upgrade", "gold_tradein", "diamond_gold_gram"];
 
 export function parseOfferItems(pattern: OfferPattern, quote: string): OfferItem[] {
   switch (pattern) {
@@ -120,10 +120,15 @@ const RULES: Record<FactKey, Rule> = {
   },
   offer: (draft, quote, _value, context) => {
     const existing = draft.facts.offer?.value ?? null;
-    const detected = detectPattern(quote);
+    // 片段漏了「铂金以旧换新」这类活动名时（如只取了「2倍，开单9折」），按用户这句话整体判定特殊活动；
+    // 这句话在改口（改成、不做）时不这样判，免得被原来的活动名带偏。
+    const inQuote = detectPattern(quote);
+    const inSentence = detectPattern(context.text);
+    const useSentence = Boolean(inSentence && SPECIAL_PATTERNS.includes(inSentence.pattern) && !(inQuote && SPECIAL_PATTERNS.includes(inQuote.pattern)) && !/改成|换成|不做|不搞|取消/.test(context.text));
+    const detected = useSentence ? inSentence : inQuote;
     const pattern = detected?.pattern ?? existing?.pattern;
     if (!pattern) return fail("原话里看不出优惠方式和力度");
-    const next: OfferFact = { pattern, items: parseOfferItems(pattern, quote), unsupportedType: detected?.unsupportedType ?? existing?.unsupportedType ?? null };
+    const next: OfferFact = { pattern, items: parseOfferItems(pattern, useSentence ? context.text : quote), unsupportedType: detected?.unsupportedType ?? existing?.unsupportedType ?? null };
     if (!detected && !next.items.length) return fail("片段里没有能换算的优惠数值");
     setFact(draft, "offer", mergeOffer(existing, next), quote, context.via);
     // 同一句里顺带说清的追问项（是否累加、克重口径、能否改价）一并记下。
@@ -193,7 +198,7 @@ const RULES: Record<FactKey, Rule> = {
   rates: (draft, quote, _value, context) => {
     const asked = context.open.includes("Q5a");
     if (!/扣点|回款/.test(quote) && !asked) return fail("片段里没有让扣点或回款率");
-    const rates = P.ratesFrom(quote) ?? (asked && P.yesNo(quote) === false ? { concession: 0, collection: 0 } : null);
+    const rates = P.ratesFrom(quote) ?? (asked && (P.noRatesAnswer(quote) || P.yesNo(quote) === false) ? { concession: 0, collection: 0 } : null);
     if (!rates) return fail("让扣点和回款率要同时给出，没有就说没有；百分数写成「2%」");
     setFact(draft, "rates", rates, quote, context.via);
     return ok();

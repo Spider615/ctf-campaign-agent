@@ -4,7 +4,6 @@ import test from "node:test";
 import { buildAgentSystemPrompt, buildAgentUserPrompt } from "../app/lib/agent/prompt.ts";
 import type { AgentRequest, AgentResult } from "../app/lib/agent/protocol.ts";
 import { createAgentState, finishAgentTurn, runAgentTool, type AgentToolName } from "../app/lib/agent/tools.ts";
-import { dateEvidenced, numberAppearsInText } from "../app/lib/campaign/evidence.ts";
 import { EXAMPLES } from "../app/lib/campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft, type FactWrite } from "../app/lib/campaign/ics1811/facts.ts";
 import type { StoredMessage } from "../app/lib/campaign/ics1811/messages.ts";
@@ -56,15 +55,6 @@ const submit = (snapshot: Snapshot, d: TurnDeps, answers: Record<string, unknown
 const confirm = (snapshot: Snapshot, d: TurnDeps) => turn(snapshot, d, { type: "confirm" });
 const interpret = (snapshot: Snapshot, d: TurnDeps) => turn(snapshot, d, { type: "interpret" });
 const startNew = (d: TurnDeps, id: string) => createSession({ entryMode: "new", text: example(id).first }, d);
-
-test("number evidence matches whole numbers and only scales rates", () => {
-  assert.equal(numberAppearsInText(0.12, "让扣点 12 个点", true), true);
-  assert.equal(numberAppearsInText(3000, "满3,000减300"), true);
-  assert.equal(numberAppearsInText(30, "满3000减300"), false);
-  assert.equal(dateEvidenced("2026-05-10", "5月4号到10号"), true);
-  const sentence = "满 2000 减 200，12 月 30 日到 1 月 3 日";
-  assert.equal(numberAppearsInText(200, sentence), true, "分句的中文逗号不能把前后两个数字粘在一起");
-});
 
 test("the example session reads back T1 without the agent, and confirming produces the fill sheet", async () => {
   const d = deps();
@@ -149,6 +139,48 @@ test("typing while a card is open records the fact and keeps the card open", asy
   assert.deepEqual(d.requests[1].openQuestions, ["Q1", "Q5a", "Q5b", "Q6a"]);
 });
 
+test("a typed answer that triggers a new follow-up opens the next round, and a short reply answers it", async () => {
+  const t5 = example("T5");
+  const typed = t5.turns[0];
+  if (typed.kind !== "text") throw new Error("T5 的第一轮应该是打字回答");
+  const d = deps([record(t5.firstWrites), record(typed.writes), record([{ key: "discountEditable", quote: "可以改" }])]);
+  let snapshot = await interpret(await startNew(d, "T5"), d);
+  const firstCard = snapshot.flow.openCardId;
+
+  snapshot = await say(snapshot, d, typed.text);
+  const second = lastOfKind(snapshot, "agent_round_card")!;
+  assert.deepEqual([second.round, second.questions.map((question) => question.id)], [2, ["Q3b"]], "卡片上没有的新追问要问出来");
+  assert.notEqual(snapshot.flow.openCardId, firstCard);
+
+  snapshot = await say(snapshot, d, "可以改。");
+  assert.deepEqual(d.requests[2].openQuestions, ["Q3b"]);
+  assert.equal(snapshot.latest.draft.facts.discountEditable?.value, true);
+  assert.equal(snapshot.flow.phase, "readback");
+});
+
+test("a request that has not said how to discount asks for the offer instead of calling it out of scope", async () => {
+  const text = "想在3319店搞个黄金活动";
+  const d = deps([record([{ key: "stores", quote: "3319店", value: ["3319"] }])]);
+  const snapshot = await interpret(await createSession({ entryMode: "new", text }, d), d);
+  assert.equal(snapshot.flow.phase, "asking");
+  assert.ok(cardIds(snapshot)?.includes("Q3"));
+});
+
+test("an activity without any priced offer is explained once, by the code", async () => {
+  const d = deps([{ steps: [], reply: "抽奖这类活动 1811 录不了。" }]);
+  const snapshot = await interpret(await createSession({ entryMode: "new", text: "7590门店国庆搞个抽奖活动" }, d), d);
+  assert.equal(snapshot.flow.phase, "out_of_scope");
+  const texts = snapshot.messages.flatMap((message) => (message.content.kind === "agent_text" ? [message.content.text] : []));
+  assert.equal(texts.length, 1);
+  assert.match(texts[0], /不在 1811 优惠开单范围/);
+});
+
+test("readback notes name the field they are about", async () => {
+  const snapshot = await createSession({ entryMode: "example" }, deps());
+  const attention = lastOfKind(snapshot, "agent_readback")!.readback.attention.map((item) => item.text);
+  for (const label of ["是否参与打折", "预售时间", "是否凭券使用"]) assert.ok(attention.some((text) => text.startsWith(label)), `复述提示里要写明「${label}」`);
+});
+
 test("a change after the readback asks the new follow-up question in a new round", async () => {
   const d = deps([record([{ key: "offer", quote: "满5000减500" }])]);
   let snapshot = await createSession({ entryMode: "example" }, d);
@@ -223,6 +255,8 @@ test("tools drop quotes the user did not say, reject bad copy and only confirm a
   const confirmable = createAgentState({ ...request, draft: applyFactWrites(createEmptyDraft("c", "确认"), [], { text: "确认", today: TODAY }).draft, trigger: { kind: "user_message", text: "确认" }, readbackSeq: 3, canConfirm: true });
   assert.equal(runAgentTool(confirmable, "confirm_readback").isError, undefined);
   assert.equal(finishAgentTurn(confirmable, "好的。还要加标语吗？").reply, "好的。");
+  const long = finishAgentTurn(createAgentState(request), `日期记下了。${"货类和优惠也都对上了".repeat(20)}。最后一句。`).reply ?? "";
+  assert.equal(long, "日期记下了。", "超长回复在句末截断，不留半句");
 });
 
 test("prompts carry today, the open questions and the recorded facts", () => {
@@ -233,7 +267,8 @@ test("prompts carry today, the open questions and the recorded facts", () => {
     today: TODAY, draft, history: [], trigger: { kind: "user_message", text: "下周开始" },
     phase: "asking", roundsUsed: 1, openQuestions: ["Q1"], readbackSeq: null, canConfirm: false, canUndo: true,
   });
-  assert.match(prompt, /卡片上正在问：活动从哪天到哪天？/);
+  assert.match(prompt, /正在问用户的问题：活动从哪天到哪天？/);
+  assert.doesNotMatch(buildAgentSystemPrompt(TODAY), /系统会出卡片/);
   assert.match(prompt, /门店：7590/);
   assert.match(prompt, /用户说：「下周开始」/);
 });

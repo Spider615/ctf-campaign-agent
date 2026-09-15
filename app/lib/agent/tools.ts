@@ -144,8 +144,20 @@ const UPLIFT_CLAIM = /[^。！？\n]*(提升|增长|增加)[^。，,]{0,6}\d+(?:
 // 要补的信息由系统出卡片，模型回复里的问句一律删掉（§9(二) 以外不单独问）。
 const QUESTION_SENTENCE = /[^。！？!?\n]*[？?]/g;
 
+const MAX_REPLY = 160;
+
+// 回复要像一两句话；超长时在句末截断，不留半句。
+function trimReply(text: string): string {
+  let result = "";
+  for (const sentence of text.match(/[^。！!；;\n]+[。！!；;]?/g) ?? []) {
+    if (result && result.length + sentence.length > MAX_REPLY) break;
+    result += sentence;
+  }
+  return result.length > MAX_REPLY ? `${result.slice(0, MAX_REPLY - 1)}…` : result;
+}
+
 export function finishAgentTurn(state: AgentState, reply: string | null): AgentResult {
-  const cleaned = (reply ?? "").replace(UPLIFT_CLAIM, "").replace(QUESTION_SENTENCE, "").trim().slice(0, 300);
+  const cleaned = trimReply((reply ?? "").replace(UPLIFT_CLAIM, "").replace(QUESTION_SENTENCE, "").trim());
   return {
     draft: state.draft,
     applied: [...new Set(state.applied)],

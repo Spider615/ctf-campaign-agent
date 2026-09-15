@@ -1,6 +1,7 @@
 // 对话消息（v: 2）。旧会话的 v1 消息读到时只保留一句文字。
 // 对话状态（第几轮、卡片是否还开着、最新复述）全部从消息记录推出，不另存，撤销和恢复不会重置轮次。
 
+import { byCode, CODEBOOK } from "./codebook.ts";
 import { fillSheetText, type FillSheet } from "./fill-sheet.ts";
 import type { Readback } from "./readback.ts";
 import type { FactKey, Facts, Gap, Ics1811Draft, OfferFact, QuestionId } from "./types.ts";
@@ -192,6 +193,10 @@ export function factText<K extends FactKey>(key: K, fact: Facts[K]): string {
       return value ? "线上" : "线下";
     case "restrictions":
       return (value as Array<{ text: string }>).map((item) => item.text).join("、");
+    case "productScope":
+      return byCode(CODEBOOK.productScopes, value as string)?.label ?? String(value);
+    case "brands":
+      return (value as string[]).map((code) => byCode(CODEBOOK.brands, code)?.label ?? code).join("、");
     default:
       return Array.isArray(value) ? value.join("、") : String(value);
   }

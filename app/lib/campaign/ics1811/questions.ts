@@ -26,6 +26,25 @@ export const QUESTION_TITLE: Record<QuestionId, string> = {
   Q6b: "这句标语法务确认过没有？（标语会印在保证单上，只能填法务确认过的原文）",
 };
 
+// 对话里提示用户怎么直接打字回答；每句都能被 phrases.ts 换算，照抄也能记下。
+export const QUESTION_EXAMPLE: Record<QuestionId, string> = {
+  Q1: "10月1日到10月7日",
+  Q2: "7590门店",
+  Q3: "打9折",
+  Q3a: "",
+  Q3b: "门店可以改价",
+  Q3c: "每满都减",
+  Q3d: "按实际克重",
+  Q3e: "钻石类9折，一般足金类95折",
+  Q4: "一般足金类",
+  Q4a: "要转outlet餐牌",
+  Q5a: "没有让扣点和回款率",
+  Q5b: "提成按实际售价算",
+  Q5c: "有结算说明函",
+  Q6a: "不要标语",
+  Q6b: "法务确认过了",
+};
+
 export function gapsOf(draft: Ics1811Draft): Gap[] {
   const f = draft.facts;
   const gaps: Gap[] = [];

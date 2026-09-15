@@ -1,5 +1,6 @@
 // 明细优惠类型规格（设计文档第 5 节）。支持级别：A 有截图；B 参数栏是推断的；C 提示人工录入；D SOP 明确不支持。
 
+import { digitize, normalizeText } from "./phrases.ts";
 import type { OfferPattern, ParamKey } from "./types.ts";
 
 export type SupportLevel = "A" | "B" | "C" | "D";
@@ -56,20 +57,29 @@ export type DetectedPattern = { pattern: OfferPattern; unsupportedType: string |
 
 // 由代码按原话关键词判定玩法，模型给的类型只作参考（设计文档第 5 节推导规则 1）。顺序有意义：先特殊活动，再不支持的类型，最后是通用玩法。
 export function detectPattern(text: string): DetectedPattern | null {
-  const t = text.replace(/\s+/g, "");
+  const t = digitize(normalizeText(text).replace(/\s+/g, ""));
   const unsupported = (type: string): DetectedPattern => ({ pattern: "unsupported", unsupportedType: type });
   if (/分克重|前克|余克/.test(t)) return unsupported("分克重段每整克优惠");
   if (/铂金/.test(t) && /以旧换新|换购/.test(t)) return { pattern: "platinum_tradein", unsupportedType: null };
   if (/以小换大/.test(t)) return { pattern: "diamond_upgrade", unsupportedType: null };
   if (/黄金|足金/.test(t) && /以旧换新/.test(t)) return { pattern: "gold_tradein", unsupportedType: null };
-  if (/钻石/.test(t) && /克减|每克/.test(t)) return { pattern: "diamond_gold_gram", unsupportedType: null };
+  // 「换大 N%」只出现在黄金以旧换新里；原话片段漏了「黄金以旧换新」时也不能落到「工费打折」
+  if (/换大\d+(?:\.\d+)?%/.test(t)) return { pattern: "gold_tradein", unsupportedType: null };
+  if (/钻石/.test(t) && /克减|每克|1克/.test(t)) return { pattern: "diamond_gold_gram", unsupportedType: null };
   if (/联单/.test(t)) return unsupported("联单");
   if (/每满[^，。；,;]*返/.test(t)) return unsupported("每满返");
   if (/满\d+件/.test(t)) return unsupported("满件折");
-  if (/满\d+(?:\.\d+)?元?[^，。；,;减]*\d+(?:\.\d+)?折/.test(t)) return unsupported("满折");
+  // 1811 明细优惠类型里没有的玩法（设计文档 4.4 节）
+  if (/第2件/.test(t)) return unsupported("第二件优惠");
+  if (/买\d+送\d+/.test(t)) return unsupported("买一送一");
+  if (/赠品|送礼品/.test(t)) return unsupported("送赠品");
+  if (/积分加倍|双倍积分|加倍积分/.test(t)) return unsupported("积分加倍");
+  if (/满\d+(?:\.\d+)?[元块]?[^，。；,;减折]*送/.test(t)) return unsupported("满送");
+  if (/满\d+(?:\.\d+)?[元块]?[^，。；,;减折]*返/.test(t)) return unsupported("满返");
+  if (/满\d+(?:\.\d+)?[元块]?[^，。；,;减]*\d+(?:\.\d+)?折/.test(t)) return unsupported("满折");
   if (/工费[^，。；,;]*折/.test(t)) return unsupported("黄金工费打折");
-  if (/满\d+(?:\.\d+)?元?[^，。；,;]*减\d+/.test(t)) return { pattern: "threshold", unsupportedType: null };
-  if (/每整?克[^，。；,;]*减|克减/.test(t)) return { pattern: "per_gram", unsupportedType: null };
+  if (/满\d+(?:\.\d+)?[元块]?[^，。；,;]*减\d+/.test(t)) return { pattern: "threshold", unsupportedType: null };
+  if (/(?:每|1)整?克[^，。；,;]*(?:减|便宜|优惠|少|让利)|克减/.test(t)) return { pattern: "per_gram", unsupportedType: null };
   if (/\d+(?:\.\d+)?折/.test(t)) return { pattern: "discount", unsupportedType: null };
   return null;
 }

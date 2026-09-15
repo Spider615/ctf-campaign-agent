@@ -27,10 +27,15 @@ export function UserBubble({ text }: { text: string }) {
   );
 }
 
-export function AgentRow({ children }: { children: React.ReactNode }) {
+// 连着几条 Agent 消息只在第一条显示头像，读起来像一段话。
+export function AgentRow({ children, continued = false }: { children: React.ReactNode; continued?: boolean }) {
   return (
     <div className="flex gap-3">
-      <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full border border-[#d5c3ad] bg-[#f2e6d5] text-sm font-semibold text-[#651427]">周</span>
+      {continued ? (
+        <span className="w-8 shrink-0" />
+      ) : (
+        <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full border border-[#d5c3ad] bg-[#f2e6d5] text-sm font-semibold text-[#651427]">周</span>
+      )}
       <div className="min-w-0 flex-1 space-y-2">{children}</div>
     </div>
   );
@@ -49,7 +54,7 @@ function Card({ children, tone = "plain" }: { children: React.ReactNode; tone?: 
   return <div className={`rounded-2xl border p-4 ${toneClass}`}>{children}</div>;
 }
 
-function MessageItem({ message, snapshot, actions, isLastAgent }: { message: ChatMessage; snapshot: Snapshot; actions: MessageActions; isLastAgent: boolean }) {
+function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { message: ChatMessage; snapshot: Snapshot; actions: MessageActions; isLastAgent: boolean; continued: boolean }) {
   const content = message.content;
   switch (content.kind) {
     case "user_text":
@@ -61,13 +66,13 @@ function MessageItem({ message, snapshot, actions, isLastAgent }: { message: Cha
       return <EventLine>{content.label}</EventLine>;
     case "agent_text":
       return (
-        <AgentRow>
+        <AgentRow continued={continued}>
           <p className="whitespace-pre-wrap pt-1 text-[15px] leading-7 text-[#35262a]">{content.text}</p>
         </AgentRow>
       );
     case "agent_error":
       return (
-        <AgentRow>
+        <AgentRow continued={continued}>
           <Card tone="alert">
             <p className="text-sm text-[#8f2f1d]">{content.text}</p>
             {content.retry && isLastAgent ? (
@@ -82,11 +87,11 @@ function MessageItem({ message, snapshot, actions, isLastAgent }: { message: Cha
     case "agent_round_card": {
       const open = snapshot.flow.openCardId === message.id;
       return (
-        <AgentRow>
+        <AgentRow continued={continued}>
           <ClarifyCard
             key={`${message.id}-${snapshot.latest.seq}`}
             message={content}
-            questions={open ? snapshot.flow.openQuestions : content.questions}
+            pending={open ? snapshot.flow.openQuestions : []}
             draft={snapshot.latest.draft}
             open={open}
             busy={actions.busy}
@@ -98,7 +103,7 @@ function MessageItem({ message, snapshot, actions, isLastAgent }: { message: Cha
     case "agent_change": {
       const canUndo = content.versionSeq === snapshot.latest.seq && snapshot.latest.seq > 1;
       return (
-        <AgentRow>
+        <AgentRow continued={continued}>
           <Card>
             <p className="text-sm font-medium text-[#35262a]">{content.title}</p>
             <ul className="mt-2 space-y-1.5 text-[13px]">
@@ -127,7 +132,7 @@ function MessageItem({ message, snapshot, actions, isLastAgent }: { message: Cha
     }
     case "agent_readback":
       return (
-        <AgentRow>
+        <AgentRow continued={continued}>
           <ReadbackCard
             message={content}
             current={snapshot.flow.readbackId === message.id && snapshot.flow.phase !== "confirmed"}
@@ -140,7 +145,7 @@ function MessageItem({ message, snapshot, actions, isLastAgent }: { message: Cha
     case "agent_fill_sheet": {
       const outdated = content.versionSeq !== snapshot.latest.seq;
       return (
-        <AgentRow>
+        <AgentRow continued={continued}>
           <Card tone="dark">
             <p className="flex items-center gap-2 text-sm text-[#dfbf82]">
               <FileSpreadsheet className="size-4" />
@@ -171,7 +176,13 @@ export function MessageList({ snapshot, actions }: { snapshot: Snapshot; actions
         const isEvent = message.content.kind === "user_event" || message.content.kind === "user_edit";
         return (
           <div key={message.id} className="group/message">
-            <MessageItem message={message} snapshot={snapshot} actions={actions} isLastAgent={index === lastAgentIndex} />
+            <MessageItem
+              message={message}
+              snapshot={snapshot}
+              actions={actions}
+              isLastAgent={index === lastAgentIndex}
+              continued={message.role === "assistant" && messages[index - 1]?.role === "assistant"}
+            />
             {isEvent ? null : (
               <div className={`mt-1 flex opacity-0 transition-opacity focus-within:opacity-100 group-hover/message:opacity-100 max-md:opacity-100 ${message.role === "user" ? "justify-end" : "pl-11"}`}>
                 <CopyButton text={messageToText(message.content)} />

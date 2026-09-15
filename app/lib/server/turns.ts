@@ -8,7 +8,7 @@ import { renderFillSheet, type FillSheet } from "../campaign/ics1811/fill-sheet.
 import { flowOf, messageToText, summarizeFactChanges, type ChatMessage, type StoredMessage } from "../campaign/ics1811/messages.ts";
 import { planNext } from "../campaign/ics1811/questions.ts";
 import { buildReadback } from "../campaign/ics1811/readback.ts";
-import type { Check, FactKey, FillModel, Gap, Ics1811Draft } from "../campaign/ics1811/types.ts";
+import type { Check, FactKey, FillModel, Gap, Ics1811Draft, Plan } from "../campaign/ics1811/types.ts";
 import { ConflictError, type SessionBundle, type SessionStatus, type SessionStore, type TurnWrite } from "./session-store.ts";
 
 // 需要模型的回合（理解首句、用户打字）交给 Agent 服务；出卡、复述、确认、落库都由这里的代码决定（设计文档 4.3 节）。
@@ -120,6 +120,9 @@ function evaluate(draft: Ics1811Draft, messages: readonly ChatMessage[], today: 
   return { fill, checks, flow, plan };
 }
 
+// 正在问用户的问题：每轮出卡问的是当时全部缺项，两轮用完后复述里列的也是全部缺项。「可以」「没有」这类短回答按这些问题记。
+const posedQuestions = (plan: Plan): Gap[] => (plan.action === "ask" ? plan.questions : plan.action === "readback" ? plan.missing : []);
+
 function versionSource(index: number, trigger: StoredMessage | undefined, createdBy: string): string {
   if (index === 0) return "初始";
   if (createdBy === "rollback") return "版本恢复";
@@ -144,7 +147,7 @@ export function buildSnapshot(bundle: SessionBundle, today: string): Snapshot {
   const { fill, checks, flow, plan } = evaluate(latest.draft, bundle.messages, today);
   const pendingInterpretation = isPendingInterpretation(bundle);
   const confirmed = flow.confirmedSeq === latest.seq;
-  const gaps = plan.action === "ask" ? plan.questions : plan.action === "readback" ? plan.missing : [];
+  const gaps = posedQuestions(plan);
   const openIds = flow.openCard?.content.questions.map((question) => question.id) ?? [];
   const phase: FlowPhase = pendingInterpretation
     ? "interpreting"
@@ -362,7 +365,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
         trigger,
         phase,
         roundsUsed: before.flow.roundsUsed,
-        openQuestions: before.flow.openCard?.content.questions.map((question) => question.id) ?? [],
+        openQuestions: posedQuestions(before.plan).map((question) => question.id),
         readbackSeq: before.flow.latestReadback?.content.versionSeq === latest.seq ? latest.seq : null,
         canConfirm: before.plan.action === "readback" && before.plan.canConfirm,
         canUndo: latest.seq > 1,
@@ -399,7 +402,8 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       agentMessages.push({ v: 2, kind: "agent_change", title, items, versionSeq });
     }
   }
-  if (reply) agentMessages.push(agentText(reply));
+  // 不在 1811 范围时只留代码的说明，免得模型再说一遍意思相同的话。
+  if (reply && after.plan.action !== "out_of_scope") agentMessages.push(agentText(reply));
   agentMessages.push(...notes);
 
   let status: SessionStatus = "collecting";
@@ -411,8 +415,10 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   } else if (after.plan.action === "out_of_scope") {
     if (trigger) agentMessages.push(agentText(after.plan.reason));
   } else if (after.plan.action === "ask") {
-    // 卡片还开着时打字或手改，不出新卡片，已答的题在卡片上隐藏。
-    const keepOpen = Boolean(before.flow.openCard) && input.type !== "card";
+    // 卡片还开着时打字或手改：要问的都还在这张卡片上，就不出新卡片（已答的题隐藏）；
+    // 回答引出了卡片上没有的追问，就出下一轮，把新追问和上一轮没答的一起问。
+    const onCard = before.flow.openCard?.content.questions.map((question) => question.id) ?? [];
+    const keepOpen = Boolean(before.flow.openCard) && input.type !== "card" && after.plan.questions.every((question) => onCard.includes(question.id));
     if (!keepOpen) agentMessages.push({ v: 2, kind: "agent_round_card", round: after.plan.round, questions: after.plan.questions });
   } else {
     const current = !changed && !before.flow.openCard && before.flow.latestReadback?.content.versionSeq === latest.seq;
@@ -420,7 +426,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     status = after.plan.canConfirm ? "readback" : "collecting";
   }
   if (!confirm && before.flow.confirmedSeq === latest.seq && !changed) status = "confirmed";
-  if (trigger && agentMessages.length === 0) agentMessages.push(agentText("我没理解要做什么，可以换个说法，或者直接在卡片里补。"));
+  if (trigger && agentMessages.length === 0) agentMessages.push(agentText("我没理解这句要改什么，可以换个说法再说一次。"));
 
   const title = next.facts.offer ? after.fill.info.name.value : bundle.session.title;
   return commitAndLoad(deps, {

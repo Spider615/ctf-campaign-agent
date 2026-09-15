@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { applyCardAnswers } from "../app/lib/campaign/ics1811/card.ts";
+import { deriveFill } from "../app/lib/campaign/ics1811/derive.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
 import * as P from "../app/lib/campaign/ics1811/phrases.ts";
 import { gapsOf } from "../app/lib/campaign/ics1811/questions.ts";
@@ -21,6 +22,47 @@ test("Chinese phrases convert to 1811 values", () => {
   assert.deepEqual([P.thresholdRepeatFrom("每满5000都减500"), P.thresholdRepeatFrom("只减一次"), P.thresholdRepeatFrom("上不封顶")], ["every", "once", "every"]);
   assert.deepEqual(P.dateRangeFrom("5月4号到10号", today), { start: "2027-05-04", end: "2027-05-10" }, "没写年份取今天之后最近的日期");
   assert.deepEqual(P.dateRangeFrom("12月30日到1月3日", today), { start: "2026-12-30", end: "2027-01-03" });
+});
+
+test("colloquial wording converts the same way, and unsure answers never count", () => {
+  assert.equal(P.normalizeText("满3,000减300"), "满3000减300");
+  assert.equal(P.normalizeText("满 2000 减 200，12 月 30 日"), "满 2000 减 200，12 月 30 日", "分句的中文逗号不能把前后两个数字粘在一起");
+  assert.deepEqual(
+    ["九五折", "满五千减五百", "5千减5百", "回款率百分之九十八", "一千零五元", "三百八块", "只减一次", "一般足金类", "双十一钻石类"].map(P.digitize),
+    ["95折", "满5000减500", "5000减500", "回款率98%", "1005元", "380块", "只减一次", "一般足金类", "双十一钻石类"],
+  );
+  assert.deepEqual(P.dateRangeFrom("十月八号到十五号", today), { start: "2026-10-08", end: "2026-10-15" });
+  assert.deepEqual(P.dateRangeFrom("10.8-10.15", today), { start: "2026-10-08", end: "2026-10-15" });
+  assert.deepEqual(P.dateRangeFrom("12月25日到明年1月3日", today), { start: "2026-12-25", end: "2027-01-03" });
+  assert.deepEqual([P.perGramAmountFrom("每克便宜20块"), P.perGramAmountFrom("黄金一克减20"), P.perGramAmountFrom("克减20元")], [20, 20, 20]);
+  assert.deepEqual(P.ratesFrom("没扣点也没回款率"), { concession: 0, collection: 0 });
+  assert.deepEqual([P.commissionFrom("提成就按实际卖的价算"), P.commissionFrom("提成按售价乘折扣")], ["actual_price", "price_times_discount"]);
+  assert.deepEqual([P.discountEditableFrom("门店可以改"), P.discountEditableFrom("固定的"), P.discountEditableFrom("可以改成9折")], [true, false, null]);
+  assert.equal(write("都没有", [{ key: "rates", quote: "都没有" }], ["Q5a"]).draft.facts.rates?.value.collection, 0);
+  assert.equal(write("不知道", [{ key: "rates", quote: "不知道" }], ["Q5a"]).draft.facts.rates, null, "不知道不等于没有");
+  assert.equal(write("还不确定", [{ key: "commission", quote: "还不确定" }], ["Q5b"]).draft.facts.commission, null);
+});
+
+test("a special-campaign quote that leaves out the campaign name is judged by the whole sentence", () => {
+  const gold = "国庆在7590门店做黄金以旧换新，换大50%的工费打8折，换大100%的免工费。";
+  const goldOffer = write(gold, [{ key: "offer", quote: "换大50%的工费打8折，换大100%的免工费" }]).draft.facts.offer?.value;
+  assert.equal(goldOffer?.pattern, "gold_tradein");
+  assert.deepEqual(goldOffer?.items.map((item) => [item.upgradeRatio, item.discount]), [[0.5, 0.8], [1, 0]]);
+
+  const platinum = "7590门店做铂金以旧换新，2倍，开单9折。";
+  const platinumOffer = write(platinum, [{ key: "offer", quote: "2倍，开单9折" }]).draft.facts.offer?.value;
+  assert.deepEqual([platinumOffer?.pattern, platinumOffer?.items[0].multiple, platinumOffer?.items[0].discount], ["platinum_tradein", 2, 0.9]);
+
+  const changed = "铂金不做以旧换新了，改成打9折";
+  assert.equal(write(changed, [{ key: "offer", quote: "打9折" }]).draft.facts.offer?.value.pattern, "discount", "改口时按片段判定");
+});
+
+test("offers 1811 has no detail type for are recorded as unsupported and explained", () => {
+  for (const [text, type] of [["第二件半价", "第二件优惠"], ["满3000送300", "满送"], ["买一送一", "买一送一"]]) {
+    const draft = write(text, [{ key: "offer", quote: text }]).draft;
+    assert.deepEqual([draft.facts.offer?.value.pattern, draft.facts.offer?.value.unsupportedType], ["unsupported", type]);
+    assert.match(deriveFill(draft).notes.find((note) => note.id === "unsupported_offer")?.text ?? "", /没有对应选项/);
+  }
 });
 
 test("a quote that is not in the user's words is dropped", () => {

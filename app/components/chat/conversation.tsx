@@ -31,7 +31,7 @@ const THINKING_LABEL: Partial<Record<TurnKind, string>> = {
 
 const PLACEHOLDER: Record<Snapshot["flow"]["phase"], string> = {
   interpreting: "Agent 正在理解你的需求…",
-  asking: "也可以直接打字补充，例如：5 月 1 日到 5 日，7590 门店，没有让扣点",
+  asking: "直接回复上面的问题，例如：10月1日到7日，没有让扣点和回款率",
   readback: "有不对的地方直接说，例如：改成每克减 20 元",
   blocked: "把仍缺的项直接告诉我，例如：提成按实际售价算",
   confirmed: "还想改哪里直接说，改完会重新复述",
