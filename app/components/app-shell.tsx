@@ -113,7 +113,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const close = () => setMobileNav(false);
   const referenceLinks = [
-    { href: "/codes", label: "码表与证据", icon: BookOpenText },
+    { href: "/codes", label: "代码表", icon: BookOpenText },
     { href: "/open-questions", label: "待确认清单", icon: CircleHelp },
   ];
 

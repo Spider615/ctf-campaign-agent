@@ -15,14 +15,8 @@ export type UsableCodeTable = {
   values: CodeValue[];
 };
 
-export type UnusableCodeTable = {
-  name: string;
-  reason: string;
-  handling: string;
-};
-
-export const SOURCE_NOTE =
-  "资料来自《营销活动优惠开单操作指引》，由资讯及通讯应用中心与营销管理部业务规划科编写，封面更新日期 2024/04/22。指引里的截图拍摄于 2019–2025 年，和 2026 年的生产系统可能不一样。";
+// 早期调研从《营销活动优惠开单操作指引》PPT 截图里抽出的 7 张码表，每个取值带页码和截图年份。
+// 页面不再展示，只用来核对 ics1811/codebook.ts 里的真实取值（tests/ics1811-codebook.test.ts）。
 
 type Evidence = Pick<CodeValue, "slide" | "image" | "year" | "yearBasis">;
 
@@ -152,43 +146,5 @@ export const USABLE_CODE_TABLES: UsableCodeTable[] = [
       value("买钻石享黄金克减", "买钻石享黄金克减", SLIDE16_IMAGE30),
       value("黄金以旧换新", "黃金以舊換新", SLIDE20_IMAGE36),
     ],
-  },
-];
-
-export const UNUSABLE_CODE_TABLES: UnusableCodeTable[] = [
-  {
-    name: "会员级别",
-    reason: "截图里有两套互斥的等级名单，不知道生产环境用哪一套。",
-    handling: "只问限不限会员；要限时记下范围描述（比如“中高等级及以上”），具体等级由运营在 ICS 会员级别面板里勾选。",
-  },
-  {
-    name: "售价类型",
-    reason: "界面上是 7 个中文名，明细里是 26 个单字符代码，全篇没有两者的对照。",
-    handling: "Agent 不写售价类型；需要限定时，由运营在 ICS 明细区勾选。",
-  },
-  {
-    name: "货类",
-    reason: "列表没有见底。",
-    handling: "只收业务大类（镶嵌类、素金类、黄金类、赠品）；具体货类由运营在 ICS 货类面板里勾选。",
-  },
-  {
-    name: "货类明细",
-    reason: "跟着货类联动的二级字典，货类看不全，它也看不全。",
-    handling: "Agent 不写；运营选好货类后在界面上勾明细。",
-  },
-  {
-    name: "品牌",
-    reason: "候选值是从审批流反推出来的，指引里没有一张品牌下拉展开的截图。",
-    handling: "Agent 不给品牌取值，由运营在 ICS 界面上选；审批流也不从品牌自动推，要运营确认。",
-  },
-  {
-    name: "支付方式",
-    reason: "列表没有见底。",
-    handling: "只问支付方式有没有限制；有限制时由运营在 ICS 支付方式面板里勾选。",
-  },
-  {
-    name: "区域 / 分区 / 小区 / 城市 / 分行",
-    reason: "列表没有见底，同一编号在不同截图里名称还不一样。",
-    handling: "只收范围层级，以及运营给的区域、分区文字或门店行号、行名；Agent 不把名称翻成编码，编码在 ICS 界面上选。",
   },
 ];

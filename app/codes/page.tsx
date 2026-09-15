@@ -1,128 +1,130 @@
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { CODEBOOK, type Entry, type Origin } from "../lib/campaign/ics1811/codebook";
+import { OFFER_TYPES } from "../lib/campaign/ics1811/offer-spec";
 
-import {
-  SOURCE_NOTE,
-  UNUSABLE_CODE_TABLES,
-  USABLE_CODE_TABLES,
-  type CodeValue,
-  type UsableCodeTable,
-} from "../lib/reference/code-tables";
+type Row = { key: string; display: string; origin: Origin; note: string };
+type Table = { name: string; rows: Row[] };
 
-const UNKNOWN_YEAR = "年份未知（PPT 更新于 2024/04/22，截图跨 2019–2025）";
+const ORIGIN_STYLE: Record<Origin, string> = {
+  截图: "border-[#d9c7a6] bg-[#f6efe2] text-[#8b6b3b]",
+  指引文字: "border-[#d9c7a6] bg-[#f6efe2] text-[#8b6b3b]",
+  导入模板: "border-[#cfd8c4] bg-[#eff4ea] text-[#4f6b3f]",
+  编造: "border-[#efc8bb] bg-[#fff2ec] text-[#9a3f24]",
+};
 
-function EvidenceYear({ value }: { value: CodeValue }) {
-  if (value.year === null) {
-    return <span className="text-[13px] leading-5 text-[#817578]">{UNKNOWN_YEAR}</span>;
-  }
+const SUPPORT_TEXT = { A: "有录入截图", B: "参数栏是推断的", C: "提示人工录入", D: "SOP 明确不支持" } as const;
+
+const rows = (entries: readonly Entry[], note: (entry: Entry) => string = (entry) => entry.evidence ?? ""): Row[] =>
+  entries.map((entry) => ({ key: entry.code, display: entry.display, origin: entry.origin, note: note(entry) }));
+
+const TABLES: Table[] = [
+  { name: "区域", rows: rows(CODEBOOK.regions) },
+  {
+    name: "门店（分行）",
+    rows: CODEBOOK.stores.map((store) => ({
+      key: store.code,
+      display: store.display,
+      origin: store.origin,
+      note: `区域 ${store.region}${store.division ? ` · ${store.division}` : ""}${store.city ? ` · ${store.city}` : ""} · 简称「${store.shortName}」；${store.evidence ?? ""}`,
+    })),
+  },
+  {
+    name: "货类",
+    rows: CODEBOOK.categories.map((category) => ({
+      key: category.code,
+      display: category.display,
+      origin: category.origin,
+      note: `号头 ${category.headCodes.join("、") || "—"} · 业务大类 ${category.businessCategory || "—"}；${category.evidence ?? ""}`,
+    })),
+  },
+  {
+    name: "明细优惠类型",
+    rows: Object.values(OFFER_TYPES).map((spec) => ({
+      key: spec.name,
+      display: spec.pageLabel,
+      // 类型名称都来自 §9(五) 的下拉截图；参数栏是否有截图依据看支持级别
+      origin: "截图",
+      note: `${SUPPORT_TEXT[spec.support]} · 参数：${spec.params.map((param) => param.label).join("、") || "—"} · 活动分组 ${spec.group}；${spec.sop}`,
+    })),
+  },
+  { name: "品牌", rows: rows(CODEBOOK.brands, (entry) => `审批流 ${(entry as Entry & { approvalFlow?: string }).approvalFlow ?? ""}；${entry.evidence ?? ""}`) },
+  { name: "审批流", rows: rows(CODEBOOK.approvalFlows) },
+  { name: "活动分组", rows: rows(CODEBOOK.activityGroups) },
+  { name: "线上 / 线下", rows: rows(CODEBOOK.channels) },
+  { name: "活动级优惠类型", rows: rows(CODEBOOK.offerNatures) },
+  { name: "货品范围", rows: rows(CODEBOOK.productScopes) },
+  { name: "转换餐牌", rows: rows(CODEBOOK.menuConversions) },
+  { name: "会员级别", rows: rows(CODEBOOK.memberLevels) },
+  { name: "售价类型", rows: rows(CODEBOOK.priceTypes) },
+  { name: "分区", rows: rows(CODEBOOK.divisions) },
+  { name: "小区", rows: rows(CODEBOOK.subAreas) },
+  { name: "城市", rows: rows(CODEBOOK.cities) },
+];
+
+const ORIGINS: Origin[] = ["截图", "指引文字", "导入模板", "编造"];
+
+function OriginBadge({ origin }: { origin: Origin }) {
   return (
-    <div>
-      <span className="font-medium text-[#2c1720]">{value.year}</span>
-      <p className="mt-0.5 text-[12px] leading-5 text-[#817578]">{value.yearBasis}</p>
-    </div>
-  );
-}
-
-function UsableTableCard({ table }: { table: UsableCodeTable }) {
-  const datedCount = table.values.filter((value) => value.year !== null).length;
-  const complete = table.completeness === "complete";
-
-  return (
-    <section className="rounded-2xl border border-[#ded5cb] bg-[#fffdfa] p-4 md:p-5">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h3 className="text-lg font-semibold text-[#2c1720]">{table.name}</h3>
-        <Badge
-          variant="outline"
-          className={complete ? "border-[#d9c7a6] bg-[#f6efe2] text-[#8b6b3b]" : "border-[#ded5cb] bg-[#f4efe9] text-[#817578]"}
-        >
-          {complete ? "列表已见底" : "只见到部分取值"}
-        </Badge>
-        <span className="text-[13px] text-[#817578]">
-          {table.values.length} 个取值 · {datedCount} 个有年份
-        </span>
-      </div>
-      <p className="mt-2 text-sm leading-6 text-[#2f2226]">{table.note}</p>
-
-      <div className="mt-4 overflow-x-auto rounded-xl border border-[#ded5cb] bg-white">
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-[#f6f1ea] hover:bg-[#f6f1ea]">
-              <TableHead className="px-3 text-[#817578]">取值</TableHead>
-              <TableHead className="px-3 text-[#817578]">原文</TableHead>
-              <TableHead className="px-3 text-[#817578]">页码 · 截图</TableHead>
-              <TableHead className="px-3 text-[#817578]">证据年份</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {table.values.map((value) => (
-              <TableRow key={value.raw} className="border-[#ece5dc] hover:bg-[#fbf8f3]">
-                <TableCell className="px-3 py-2.5 align-top font-medium text-[#2c1720]">{value.label}</TableCell>
-                <TableCell className="px-3 py-2.5 align-top text-[#2f2226]">{value.raw}</TableCell>
-                <TableCell className="px-3 py-2.5 align-top text-[#817578]">
-                  第 {value.slide} 页 · {value.image}
-                </TableCell>
-                <TableCell className="min-w-56 px-3 py-2.5 align-top whitespace-normal">
-                  <EvidenceYear value={value} />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </section>
+    <Badge variant="outline" className={ORIGIN_STYLE[origin]}>
+      {origin}
+    </Badge>
   );
 }
 
 export default function CodesPage() {
+  const all = TABLES.flatMap((table) => table.rows);
   return (
     <div className="mx-auto w-full max-w-[1100px] px-4 py-6 md:px-8">
       <header>
         <p className="text-[12px] font-medium tracking-[0.12em] text-[#8b6b3b]">资料</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-[#2c1720] md:text-3xl">码表与证据</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-[#2c1720] md:text-3xl">代码表</h1>
         <p className="mt-3 text-[15px] leading-7 text-[#2f2226]">
-          这些取值来自操作指引里的截图。Agent 只用这里有证据的取值，其余字段由运营在 ICS 界面上选。
+          Agent 生成 1811 填写值时只用这里的取值（{CODEBOOK.version}）。取值优先来自 SOP 第九部分和截图；SOP 没给的对应关系是演示编造的，录入时以 ICS 系统为准。
         </p>
-        <p className="mt-2 text-[13px] leading-6 text-[#817578]">{SOURCE_NOTE}</p>
-      </header>
-
-      <section className="mt-8">
-        <h2 className="text-xl font-semibold text-[#2c1720]">可用码表</h2>
-        <div className="mt-4 space-y-5">
-          {USABLE_CODE_TABLES.map((table) => (
-            <UsableTableCard key={table.key} table={table} />
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px] text-[#817578]">
+          {ORIGINS.map((origin) => (
+            <span key={origin} className="inline-flex items-center gap-1.5">
+              <OriginBadge origin={origin} />
+              {all.filter((row) => row.origin === origin).length} 个
+            </span>
           ))}
         </div>
-      </section>
+      </header>
 
-      <section className="mt-10">
-        <h2 className="text-xl font-semibold text-[#2c1720]">不可用码表</h2>
-        <p className="mt-1 text-sm leading-6 text-[#817578]">这些字段在资料里看不全或对不上，Agent 不给具体值，只写业务意图。</p>
-        <div className="mt-4 overflow-hidden rounded-2xl border border-[#ded5cb] bg-[#fffdfa]">
-          <div className="hidden grid-cols-[190px_minmax(0,1fr)_minmax(0,1fr)] gap-5 border-b border-[#ded5cb] bg-[#f6f1ea] px-5 py-2.5 text-[13px] font-medium text-[#817578] md:grid">
-            <span>名称</span>
-            <span>为什么不可用</span>
-            <span>产品怎么处理</span>
-          </div>
-          <ul>
-            {UNUSABLE_CODE_TABLES.map((table) => (
-              <li
-                key={table.name}
-                className="grid gap-2 border-b border-[#ece5dc] px-4 py-4 last:border-b-0 md:grid-cols-[190px_minmax(0,1fr)_minmax(0,1fr)] md:gap-5 md:px-5"
-              >
-                <p className="font-medium text-[#2c1720]">{table.name}</p>
-                <div>
-                  <p className="text-[12px] text-[#8b6b3b] md:hidden">为什么不可用</p>
-                  <p className="text-sm leading-6 text-[#2f2226]">{table.reason}</p>
-                </div>
-                <div>
-                  <p className="text-[12px] text-[#8b6b3b] md:hidden">产品怎么处理</p>
-                  <p className="text-sm leading-6 text-[#2f2226]">{table.handling}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
+      <div className="mt-8 space-y-5">
+        {TABLES.map((table) => (
+          <section key={table.name} className="rounded-2xl border border-[#ded5cb] bg-[#fffdfa] p-4 md:p-5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <h2 className="text-lg font-semibold text-[#2c1720]">{table.name}</h2>
+              <span className="text-[13px] text-[#817578]">
+                {table.rows.length} 个取值{table.rows.some((row) => row.origin === "编造") ? ` · ${table.rows.filter((row) => row.origin === "编造").length} 个编造` : ""}
+              </span>
+            </div>
+            <div className="mt-3 overflow-x-auto rounded-xl border border-[#ded5cb] bg-white">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-[#ded5cb] bg-[#f6f1ea] text-[13px] text-[#817578]">
+                    <th className="px-3 py-2 font-medium">页面上显示</th>
+                    <th className="px-3 py-2 font-medium">来源</th>
+                    <th className="px-3 py-2 font-medium">说明与出处</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {table.rows.map((row) => (
+                    <tr key={row.key} className="border-b border-[#ece5dc] last:border-b-0">
+                      <td className="px-3 py-2.5 align-top font-medium whitespace-nowrap text-[#2c1720]">{row.display}</td>
+                      <td className="px-3 py-2.5 align-top">
+                        <OriginBadge origin={row.origin} />
+                      </td>
+                      <td className="px-3 py-2.5 align-top text-[13px] leading-6 text-[#5d4a4f]">{row.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }

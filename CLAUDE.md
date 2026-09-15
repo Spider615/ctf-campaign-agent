@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目
 
-周大福营销活动生成 Agent 的产品 demo：运营用一句话描述活动，Agent 通过对话和补充卡片产出营销方案和 N 条 ICS 开单草稿。不连接任何周大福生产系统（1811/1815/1816）。代码注释、界面文案、错误信息都用中文，新增内容保持一致。
+周大福「优惠开单活动」创建助手的产品 demo：运营用对话描述一个优惠活动，Agent 按《优惠开单活动创建 SOP》§9 追问人定字段（最多两轮），白话复述、确认后输出 ICS-1811「优惠开单活动新增」页面的逐项填写值。不连接任何周大福生产系统（1811/1815/1816），代码表是演示编造的。代码注释、界面文案、错误信息都用中文，新增内容保持一致。
+
+实现依据是 `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`（下称设计文档）；文中「§」指 SOP 章节，「第 X 节」指设计文档章节。
 
 ## 命令
 
@@ -20,12 +22,16 @@ npm run dev:agent                # 只起 Agent 服务；AGENT_DEBUG=1 打印每
 
 npm test                                                     # 全部单测（node:test），不装依赖也能跑
 node --test --experimental-strip-types tests/conversation.test.ts                                   # 单个文件
-node --test --experimental-strip-types --test-name-pattern="visibility-only" tests/campaign-domain.test.ts  # 按测试名过滤
+node --test --experimental-strip-types --test-name-pattern="short reply" tests/conversation.test.ts  # 按测试名过滤
 npx tsc --noEmit                 # 页面侧类型检查（tsconfig 排除了 agent/）
 npx tsc -p agent/tsconfig.json   # Agent 服务类型检查
 npm run lint
 npm run build
 ```
+
+- 端口被占：Agent 服务读 `.dev.vars` 里的 `AGENT_PORT`，同时把 `AGENT_SERVICE_URL` 改成对应地址；页面端口被占时 Vite 自动顺延，以终端打印的地址为准。
+- Agent 服务不热更新：改了 `app/lib/agent/` 或 `app/lib/campaign/ics1811/` 要重启 `dev:agent`（页面侧会热更新）。
+- 没有有效 key 时 Agent 不会立刻报认证错误，而是等满单轮超时（120s）才报「Agent 超时了」。
 
 本地 D1 首次使用前，先 `npm run build`，再应用迁移：
 
@@ -33,7 +39,7 @@ npm run build
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_naive_ben_parker.sql
 ```
 
-改表结构：改 `db/schema.ts` → `npm run db:generate` → 用上面的命令应用新 SQL → 同步改 `app/lib/server/session-store.ts`。运行时查询是手写 SQL，drizzle 只用来生成迁移。
+改表结构：改 `db/schema.ts` → `npm run db:generate` → 用上面的命令应用新 SQL → 同步改 `app/lib/server/session-store.ts`。运行时查询是手写 SQL，drizzle 只用来生成迁移。现在 `draft_version.brief_json` 存事实层草稿，`ics_orders_json` 存填写值快照。
 
 部署时 Agent 服务单独跑在有 Node.js 和可写磁盘的环境；Workers 配 `AGENT_SERVICE_URL`，两边配同一个 `AGENT_SERVICE_TOKEN`。
 
@@ -42,54 +48,67 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 两个进程共用一份领域逻辑：
 
 - **页面和数据（Workers）**：`app/api/sessions/**` → `app/lib/server/turns.ts`（`createSession` / `runTurn`）→ `SessionStore`（`session-store.ts`，D1 实现和测试用的内存实现）。版本、消息、落库都在这一侧，一个回合一次 `db.batch`。`app/lib/server/runtime.ts` 是唯一接 `cloudflare:workers` 的地方，负责组装 `TurnDeps`。
-- **Agent 服务（Node）**：`agent/server.ts`，`POST /turn`。用 Claude Agent SDK 跑一轮对话，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。SDK 内置工具全部关闭（`tools: []`、`settingSources: []`，配置目录隔离在 `agent/.claude-runtime/`），只挂 4 个活动工具。服务不存数据：收当前草稿，回改好的草稿。
+- **Agent 服务（Node）**：`agent/server.ts`，`POST /turn`。用 Claude Agent SDK 跑一轮对话，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。SDK 内置工具全部关闭（`tools: []`、`settingSources: []`，配置目录隔离在 `agent/.claude-runtime/`），只挂 4 个工具。服务不存数据：收当前草稿，回改好的草稿。
 - 两边的协议是 `app/lib/agent/protocol.ts`（`AgentRequest` / `AgentResult`）。Workers 侧请求超时 150s，要大于 Agent 侧单轮超时 120s。
 
 `runTurn` 的流程：
 
 1. `expectedSeq` 必须等于最新版本的 seq，否则 409，客户端会重新拉快照。D1 上 `(session_id, seq)` 的唯一索引是第二道防线。
-2. `answer`（卡片选项、草稿面板、WebMCP）、`undo`、`rollback` 由代码直接处理，不调模型。`interpret`（新建会话后由对话页自动发起）、`text`、`clarify_submit`、`generate` 交给 Agent。示例会话（`entryMode: "example"`）用固定的 `EXAMPLE_INTERPRETATION`，也不调模型。
-3. 结果统一经过 `deriveDraft` → `buildIcsDrafts` → `validateDraft`，再和上一版比 diff。有 diff 才写新版本；消息（`agent_change`、`agent_plan`、`agent_clarify` 等）按情况追加。
-4. Agent 失败时写一条带 retry 的 `agent_error`，用户输入不丢。
+2. 只有 `interpret`（新建会话后由对话页自动发起）和 `text` 调模型。`card`（选项提交）、`edit`（面板、WebMCP）、`confirm`、`dismiss`、`undo`、`rollback` 由代码直接处理。示例会话（`entryMode: "example"`）用 T1 夹具，不调模型。
+3. 模型回来后代码重算 `deriveFill` → `checkDraft` → `planNext`，决定出追问、出复述，还是（确认后）出填写值。追问内容、轮次、复述、能不能确认都不由模型决定。追问开着时用户打字：问题都还在这一轮里就不出新追问；回答引出了新追问就出下一轮。
+4. 有 diff 才写新版本，并追加 `agent_change`；Agent 失败时写一条带 retry 的 `agent_error`，用户输入不丢。
 
-消息是带 `kind` 的结构化 JSON（`StoredMessage`，定义在 `app/lib/campaign/messages.ts`），前端 `app/components/chat/message-view.tsx` 按 kind 渲染。
+对话状态（第几轮、追问是否还开着、最新复述、是否已确认）全部由 `ics1811/messages.ts` 的 `flowOf` 从消息记录推出，不另存，撤销和恢复不会重置轮次。
 
-### 领域层 `app/lib/campaign/`（纯函数）
+### 领域层 `app/lib/campaign/ics1811/`（纯函数）
 
-- `types.ts`：`CampaignDraft`。业务字段是 `FieldValue<T>`，带 `provenance`：`user`（用户原话）、`ai`（只用于文案、由头类型、人群）、`default`、`pending`（未填，或推断出来待确认，此时 `suggested: true`）。
-- `workspace-state.ts` 的 `deriveDraft`：每次改动后都要跑，维护档位 label、`activityGroup`、`couponAllowed`、`derivedType`、`unresolved`，以及"只看到"时清空优惠。这些派生字段不要手动写，会被覆盖。
-- `split-orders.ts`：ICS 单数 = 批次 × 市场 × 渠道 × 范围单元 × 优惠档位；顾客动作为"只看到"时是 0。
-- `validator.ts`：R1–R17 开单规则，分 `blocker` / `warning`。
-- `topics.ts`：`missingFields`（开单还缺什么）；`PATH_TABLE` 是模型可写路径的白名单，系统提示词里的路径表也由它生成。
-- `clarify.ts` 管补充卡片的题目和提交解析；`answers.ts` 把选项回答转成 patch ops；`patcher.ts` 负责 patch 应用和 diff；`evidence.ts` 判定原话依据（数字、日期、关键词）。
+- `types.ts`：事实层 `Ics1811Draft`（`facts` 每项带用户原话 `quote`）是唯一存储的业务数据；`FillModel` 每轮从事实层重算，不接受写入。
+- `facts.ts` 的 `applyFactWrites`：模型写入的守卫。quote 必须是用户这一轮原话的子串；数值由 `phrases.ts` 从 quote 重新换算，不用模型给的 value。`RULES` 按 FactKey 穷举。「可以」「没有」这类短回答只在对应问题正在问时（`openQuestions`）才算。
+- `phrases.ts`：中文说法 → 1811 取值（日期、折扣、满减、每克减、让扣点回款率、提成口径等），`digitize` 按上下文把中文数字转成阿拉伯数字；「不知道」「待定」一律不记。
+- `offer-spec.ts`：`detectPattern` 判定玩法（顺序有意义：特殊活动 → 不支持的类型 → 通用玩法），`OFFER_TYPES` 是明细优惠类型规格（支持级别 A/B/C/D）。
+- `codebook.ts`：demo 唯一的代码表，每个取值标来源（截图 / 指引文字 / 导入模板 / 编造）。
+- `derive.ts` 的 `deriveFill`：事实层 → 活动信息、明细、活动分组、建完后待办、提示；`outOfScope` 只给抽奖这类明确不带成交优惠的活动。
+- `questions.ts`：问题目录（§9(二)，`QUESTION_TITLE`、对话里的回答示例 `QUESTION_EXAMPLE`）、`gapsOf`、`planNext`（`MAX_ROUNDS = 2`）。
+- `checks.ts`：V-A / V-D / V-R 校验，分 blocker / warning。
+- `readback.ts`、`fill-sheet.ts`：白话复述；按 1811 页面顺序的填写值和自查清单。
+- `card.ts`：选项和面板提交的解析。`messages.ts`：消息结构 `StoredMessage`（v2）、`flowOf`、改动摘要。
+- `examples.ts`：验收用例 T1–T10 夹具，测试和示例会话共用。
 
 ### Agent 工具 `app/lib/agent/`
 
-`tools.ts` 实现 `update_fields` / `ask_user` / `write_plan` / `undo_last_change`。工具只改这一轮的 `AgentState`，不依赖 SDK。
+`tools.ts` 实现 `update_fields` / `draft_copy` / `confirm_readback` / `undo_last_change`。工具只改这一轮的 `AgentState`，不依赖 SDK。
 
-- `update_fields` 的每条改动都过 `guardOps`（`app/lib/server/ai-schemas.ts`）：路径白名单、取值类型、原话依据。被拒的以 `dropped` 返回给模型。
-- `write_plan` 在草稿有 `intentConflicts`、而本轮不是用户提交卡片或点按钮时拒绝；文案过不了 `/brief` 相关规则也拒绝。
-- `finishAgentTurn` 会删掉回复里"提升 X%"这类预估。
+- `update_fields` 走 `applyFactWrites`，被拒的以 `dropped` 返回给模型。
+- `draft_copy`：名称不超过 13 个字，名称和内容只允许汉字、字母、数字、小数点和百分号，数字必须来自事实层。
+- `confirm_readback`：只有当前复述对应最新版本、可以确认、且用户这句话是在确认时才生效。
+- `finishAgentTurn` 删掉问句和「提升 X%」这类预估，超长回复在句末截断。模型不在回复里提问，要问的由代码接在回复后面展示。
 
 改工具要同时改三处：`tools.ts`（`AGENT_TOOL_NAMES`、`runAgentTool`）、`agent/server.ts`（zod 入参和 `tool(...)` 注册）、`prompt.ts`（系统提示词里的工具说明）。
 
-新增模型可写的字段：`topics.ts` 的 `PATH_TABLE`（需要追问的话还有 `missingFields` 和 `clarify.ts`），以及 `ai-schemas.ts` 的 `PATH_FIELD` 和 `evidenceProvenance`。注意 `evidenceProvenance` 的 default 分支直接判为 `user`，新路径不加规则就等于不核对原话。
+新增事实 key：`types.ts` 的 `Facts`、`facts.ts` 的 `emptyFacts` 和 `RULES`、`messages.ts` 的 `FACT_LABEL`、`prompt.ts` 的 `FACT_GUIDE`（后三个是按 FactKey 穷举的 Record，漏了类型检查不过）；`factText` 有默认分支，需要友好展示时补 case；需要追问的还要改 `questions.ts`。
+
+### 界面 `app/components/`
+
+- 以对话为主：`chat/clarify-card.tsx` 把这一轮的问题写在对话里，附一句能照抄的回答示例；`chat/question-controls.tsx` 的选项默认收起，只是快捷方式。
+- `chat/readback-card.tsx` 是复述和确认按钮；`draft/draft-panel.tsx` 是右侧填写值面板（填写值、修改、待确认、校验、版本）。
+- 页面通过 `app/lib/webmcp.ts` 暴露 WebMCP 工具（在 `app-shell.tsx` 注册），只能改名称、内容和日期，走 `edit` 回合，`origin: "tool"`。
 
 ## 必须守住的约束
 
-- **数字和日期只认用户原话**：优惠数字、让扣点、回款率、日期必须能在用户这一轮的文字里找到（`numberAppearsInText`、`dateEvidenced`），找不到就丢弃并追问。不要为了让模型更顺而放宽守卫。
-- **不编造内部码表**：会员等级、货类、品牌、支付方式、区域编码等不输出具体码。`unresolved`（待界面选择）只由代码按 `CODE_UNRESOLVED` 生成，不接受模型写入。
+- **人定字段不能默认**：日期、门店、优惠、货类、让扣点回款率、提成口径、结算说明函、标语只来自用户回答（打字或选项）。问题只来自 `questions.ts` 的目录，每轮把当时的全部缺项一起问，最多两轮；两轮后仍缺就在复述里列出，不能确认。
+- **数值只认原话**：quote 不在用户这一轮的话里就丢弃。不要为了让模型更顺而放宽 `facts.ts` / `phrases.ts` 的守卫；新说法在 `phrases.ts` 补换算并加用例。「不知道」不等于「没有」，让扣点不能因此填 0。
+- **代码表只在 `codebook.ts` 编造**，并标明来源；标语只能是用户给的、法务确认过的原文，模型不写。
 - **模块边界**：`agent/server.ts` 和 `npm test` 都用 Node strip-types 直接加载 `app/lib/{campaign,agent,server}`，所以这些模块（`runtime.ts` 除外）必须：
   - 不 import `cloudflare:workers`、`db/*` 或任何 npm 包（Agent 服务只装 `agent/` 的依赖，zod 版本也和根目录不同）；
   - 相对 import 写全 `.ts` 扩展名，不用 `@/` 别名；
   - 不用 enum、namespace、构造函数参数属性。
-  - 前端代码（`app/components/**`、`app/lib/client/`）不受限，照常用 `@/` 和无扩展名 import。
-- **测回合流程不需要模型**：`tests/conversation.test.ts` 用内存 store 加一个按脚本调用真实工具的假 `runAgent`，新行为照这个模式补测试。
+  - 前端代码（`app/components/**`、`app/lib/client/`、`app/**/page.tsx`）不受限，照常用 `@/` 和无扩展名 import。
+- **测回合流程不需要模型**：`tests/conversation.test.ts` 用内存 store 加一个按脚本调用真实工具的假 `runAgent`，新行为照这个模式补测试；中文说法的换算在 `tests/ics1811-guard.test.ts` 补用例。
 
 ## 其他
 
 - `components/ui/` 是原样引入的 shadcn 组件（eslint 对它放宽了规则），业务界面在 `app/components/`。
-- `/codes`、`/open-questions` 是资料页，数据在 `app/lib/reference/`，依据是 `references/*.json`（PPT 字段抽取和调研结果），`tests/reference-data.test.ts` 核对两者一致。
-- 页面通过 `app/lib/webmcp.ts` 暴露 WebMCP 工具（在 `app-shell.tsx` 注册），走 `answer` 回合，`origin: "tool"`。
+- `/codes` 展示 `codebook.ts`；`/open-questions` 展示设计文档第 13 节（数据在 `app/lib/reference/open-questions.ts`）。`app/lib/reference/code-tables.ts` 是早期从 PPT 截图抽取的码表，页面不再用，只用于 `tests/ics1811-codebook.test.ts` 核对 codebook 的真实取值，`tests/reference-data.test.ts` 核对它和 `references/*.json` 一致。
+- 读到旧结构（不是 `ics1811/v1`）的会话返回 410，界面提示新建。
 - `.openai/hosting.json`、`build/sites-vite-plugin.ts` 和 `scripts/` 里的 `managed-linux` 分支来自 Sites/vinext 脚手架；本地没有 `.sites-runtime/` 时走 `portable` 分支。
-- 设计文档在 `docs/superpowers/specs/`。接入 Agent SDK 之前的描述（如 `deps.callModel`、JSON 模式的理解和补丁提示词）已经过时，以代码为准。`app/lib/server/deepseek.ts`、`session-codec.ts`、`app/lib/campaign/demo-seeds.ts`、`prompts.ts` 的 `interpretationSystemPrompt`、`ai-schemas.ts` 的 `parseInterpretation` / `parseGeneratedCopy` / `parsePatchProposal` / `guardTextTurn` 都不在当前回合链路上，只有测试在用。
+- `docs/superpowers/specs/` 里 2026-09-15 的两份设计文档描述的是旧的「营销方案 + 拆单」架构，已被设计文档取代，仅供追溯。

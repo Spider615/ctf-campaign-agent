@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { USABLE_CODE_TABLES } from "../app/lib/reference/code-tables.ts";
-import { OPEN_QUESTIONS } from "../app/lib/reference/open-questions.ts";
+import { DESIGN_DEFAULTS, SOP_QUESTIONS } from "../app/lib/reference/open-questions.ts";
 
 type ExtractionField = { label: string; enum_values?: string[] };
 type ExtractionEntry = { slide: number; fields?: ExtractionField[] };
@@ -87,12 +87,12 @@ test("evidence years come from a screenshot generation or a date on the cited sl
   }
 });
 
-test("open questions are ten complete, uniquely numbered items with a known owner", () => {
-  assert.equal(OPEN_QUESTIONS.length, 10);
-  assert.equal(new Set(OPEN_QUESTIONS.map((item) => item.id)).size, 10);
-  for (const item of OPEN_QUESTIONS) {
+test("the open-questions page lists the twelve SOP gaps and P1–P12, each with how the demo handles it", () => {
+  assert.deepEqual(SOP_QUESTIONS.map((item) => item.id), Array.from({ length: 12 }, (_, index) => index + 1));
+  for (const item of SOP_QUESTIONS) {
     assert.ok(item.question.trim(), `第 ${item.id} 项缺少要确认的内容`);
-    assert.ok(item.impact.trim(), `第 ${item.id} 项缺少影响说明`);
-    assert.ok(["资讯及通讯应用中心", "营销管理部业务规划科"].includes(item.owner), `第 ${item.id} 项的确认方不在指引署名里`);
+    assert.ok(item.handling.trim(), `第 ${item.id} 项缺少 demo 的处理方式`);
+    assert.match(item.sop, /§\d/, `第 ${item.id} 项缺少 SOP 出处`);
   }
+  assert.deepEqual(DESIGN_DEFAULTS.map((item) => item.id), Array.from({ length: 12 }, (_, index) => `P${index + 1}`));
 });

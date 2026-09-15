@@ -1,22 +1,25 @@
-# 周大福营销活动生成 Agent Demo
+# 周大福优惠开单活动助手 Demo
 
-这是依据设计文档实现的可交互 Web demo。运营用一句话描述活动，Agent 通过对话和补充卡片把它变成营销方案和 ICS 开单草稿。拆单和 17 条开单规则校验由代码完成；对话由 Claude Agent SDK 驱动，模型使用 DeepSeek。
+运营用对话描述一个优惠活动，Agent 按《优惠开单活动创建 SOP》追问必须由人确定的信息（最多两轮），白话复述、确认后给出 ICS-1811「优惠开单活动新增」页面的逐项填写值。追问、复述、填写值和校验由代码完成；对话由 Claude Agent SDK 驱动，模型使用 DeepSeek。
 
 ## Demo 能力
 
-- 一句话新建活动，或从完整示例开始
-- Agent 判断信息够不够：不够时出一张补充卡片（每项有选项和自定义输入，都可以不填），够了直接生成方案
-- 对话里随时补充、修改、提问、撤销；发现前后矛盾（例如顾客只需互动、优惠却要下单）会先请你确认
-- 区分用户输入、AI 推断、系统默认和待界面选择；优惠数字、日期只认用户原话
-- 实时计算 ICS 草稿数量，并覆盖“只看到、不建 ICS 单”的特殊路径
-- D1 保存活动、消息、版本和补丁，可从最近活动重新打开并回退版本
+- 一句话开始，或打开一个完整示例
+- 以对话为主：缺什么就在对话里直接问，打字回答即可，「十月八号到十五号」「每克便宜20块」「没扣点也没回款率」「按售价算」这类口语都能识别；不想打字可以展开选项快速填
+- 人定字段（日期、门店、优惠、货类、让扣点回款率、提成口径、结算说明函、标语）不用默认值，最多追问两轮；两轮后仍缺就在复述里列出，不能生成
+- 白话复述后打字「确认」或点按钮，生成按 1811 页面顺序排列的填写值、建完后待办（例如去 ICS-1815 改活动分组）和自查清单
+- 数字和日期只认用户原话；每个填写值标明来源（你说的、AI 定、默认·待确认、栏位推断）
+- 1811 没有对应优惠类型的玩法（第二件半价、满送等），以及抽奖这类不带成交优惠的活动，会直接说明
+- 对话里随时修改、提问、撤销；D1 保存活动、消息和版本，可以重新打开、恢复版本
+- 资料页：代码表（标出演示编造的取值）、待确认清单（SOP 没说清的问题和设计默认值）
 - 页面暴露 `start_campaign_draft`、`update_campaign_fields`、`read_campaign_summary` 三个 WebMCP 工具
 
 ## 架构
 
-- **页面与数据**（`npm run dev`，端口 5173）：vinext + Cloudflare Workers + D1，负责会话、草稿版本、拆单与校验。
-- **Agent 服务**（`npm run dev:agent`，端口 8788）：`agent/server.ts` 用 Claude Agent SDK 跑对话循环，模型通过 DeepSeek 的 Anthropic 兼容接口（`deepseek-flash`）驱动。SDK 自带的文件、命令行等工具全部关闭，只挂四个活动工具：写字段（校验原话依据）、出补充卡片、写方案（校验开单规则）、撤销。工具实现在 `app/lib/agent/`，不依赖 SDK，可以直接单测。
-- 需要模型的回合，Workers 把当前草稿和最近对话发给 Agent 服务，拿回改好的草稿和要展示的消息，再一次性落库。Agent 服务不存数据。
+- **页面与数据**（`npm run dev`，默认端口 5173）：vinext + Cloudflare Workers + D1，负责会话、版本、追问轮次、复述、填写值与校验。
+- **Agent 服务**（`npm run dev:agent`，默认端口 8788）：`agent/server.ts` 用 Claude Agent SDK 跑一轮对话，模型通过 DeepSeek 的 Anthropic 兼容接口（`deepseek-flash`）驱动。SDK 自带的文件、命令行等工具全部关闭，只挂四个工具：记下用户说过的信息（核对原话）、起草名称和内容、确认复述、撤销。工具实现在 `app/lib/agent/`，不依赖 SDK，可以直接单测。
+- 需要模型的回合，Workers 把当前草稿和最近对话发给 Agent 服务，拿回改好的草稿和回复，再由代码决定接下来问什么、是否复述，一次性落库。Agent 服务不存数据。
+- 领域逻辑在 `app/lib/campaign/ics1811/`（纯函数），设计依据是 `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`。
 
 ## 本地运行
 
@@ -37,6 +40,8 @@ npm run build
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_naive_ben_parker.sql
 ```
 
+8788 端口被占时，在 `.dev.vars` 里加 `AGENT_PORT=8790` 和 `AGENT_SERVICE_URL=http://127.0.0.1:8790`。页面端口被占时会自动顺延，以终端打印的地址为准。
+
 部署时，Agent 服务要单独跑在有 Node.js 和可写磁盘的环境（容器或服务器）。Workers 的环境变量里配置 `AGENT_SERVICE_URL`；两边配置同一个 `AGENT_SERVICE_TOKEN`。
 
 ## 验证
@@ -45,7 +50,8 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 npm test
 npx tsc --noEmit
 npx tsc -p agent/tsconfig.json
+npm run lint
 npm run build
 ```
 
-这是产品演示，不直接连接 1811/1815/1816 生产系统；区域码、审批流等不完整码表字段会明确保留为待界面选择。
+这是产品演示，不连接 1811/1815/1816 生产系统；代码表是演示编造的，录入时以 ICS 系统为准。
