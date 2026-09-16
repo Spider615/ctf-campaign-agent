@@ -63,3 +63,35 @@ test("malformed stored tool traces fall back to a safe legacy message", () => {
 
   assert.equal(decoded.kind, "agent_text");
 });
+
+test("让扣点回款率写成人说的百分数，换大比例也是；名称改动写实际文字，货类分组分开写", async () => {
+  const { EXAMPLES } = await import("../app/lib/campaign/ics1811/examples.ts");
+  const { factText } = await import("../app/lib/campaign/ics1811/messages.ts");
+  const { deriveFill } = await import("../app/lib/campaign/ics1811/derive.ts");
+  const today = "2026-09-16";
+  const t1 = EXAMPLES[0];
+  const base = applyFactWrites(createEmptyDraft("t1", t1.first), t1.firstWrites, { text: t1.first, today }).draft;
+
+  const text = "让扣点2%，回款率98%";
+  const rated = applyFactWrites(base, [{ key: "rates", quote: text }], { text, today }).draft;
+  assert.equal(factText("rates", rated.facts.rates), "让扣点 2%（填 0.02），回款率 98%（填 0.98）");
+  assert.equal(factText("rates", base.facts.rates), "让扣点 0，回款率 0", "没有就写 0，不写成 0%（填 0）");
+
+  // 起草名称时，改前写模板拼出来的实际名称，不写「按模板生成」。
+  const drafted = { ...base, copy: { name: "足金每克减15元", content: "一般足金类黄金每克减15元", source: "ai" as const } };
+  assert.deepEqual(summarizeFactChanges(base, drafted), [{ label: "活动名称", before: "黄金每克减15", after: "足金每克减15元" }]);
+  // 没起草过时，模板名称跟着优惠变不单独算一处改动。
+  const t1Twenty = "改成每克减20元";
+  const twenty = applyFactWrites(base, [{ key: "offer", quote: "每克减20元" }], { text: t1Twenty, today }).draft;
+  assert.deepEqual(summarizeFactChanges(base, twenty).map((item) => item.label), ["优惠"]);
+
+  // 黄金以旧换新：换大比例存 0.5，给人看写 50%。
+  const t3 = EXAMPLES.find((item) => item.id === "T3")!;
+  const tradein = applyFactWrites(createEmptyDraft("t3", t3.first), t3.firstWrites, { text: t3.first, today }).draft;
+  assert.match(deriveFill(tradein).info.content.value, /换大50%工费8折换大100%免工费/);
+  assert.match(factText("offer", tradein.facts.offer), /换大 50%/);
+
+  // 买钻石享黄金克减的两组货类分开写，提议和改动里才看得出是哪一组。
+  assert.equal(factText("categories", { value: { diamond: ["钻石类"], gold: ["一般足金类"] }, quote: "卡片：Q4", via: "card" }), "钻石：钻石类；黄金：一般足金类");
+  assert.equal(factText("categories", { value: { all: ["一般足金类"] }, quote: "一般足金类", via: "text" }), "一般足金类");
+});

@@ -17,7 +17,10 @@ export function findQuoteSource(messages: readonly ChatMessage[], quote: string)
     const message = messages[index];
     // 只认用户说的话。模型的回复里会复述原话，但「谁说的」只能指向用户。
     if (message.role !== "user" || message.content.kind !== "user_text") continue;
-    if (compactQuote(message.content.text).includes(needle)) return message.id;
+    const said = compactQuote(message.content.text);
+    // 「行」「对」这种一两个字的出处（用户点头同意提议）只认整句就是它的那条，
+    // 否则会跳到后面任何一句碰巧带这个字的话上。
+    if (needle.length <= 2 ? said === needle : said.includes(needle)) return message.id;
   }
   return null;
 }

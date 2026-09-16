@@ -1,14 +1,16 @@
-// 白话复述（设计文档 8.1 节）：代码模板生成，句子顺序照 SOP 第九部分的复述示例。模型不写复述。
+// 白话摘要（设计文档 8.1 节）：代码模板生成，句子顺序照 SOP 第九部分的复述示例。模型不写。
+// 不再有「复述 → 确认」这一步：活动建好时，填写值消息带上 summary 和 essentials，说清这次建了什么。
 
 import { discountText } from "./derive.ts";
+import { rateText, ratioText } from "./messages.ts";
 import { QUESTION_EXAMPLE } from "./questions.ts";
 import type { Check, Detail, FillModel, Gap, Ics1811Draft } from "./types.ts";
 
 export type Readback = {
-  // 一句话结论。卡片默认只显示这句和「仍缺」，完整复述折叠起来（「以对话为主」）。
-  // 注意：复述是存进 D1 的，老会话没有这个字段，界面要容忍它缺失。
+  // 一句话结论：名称、日期、门店。
+  // 注意：旧会话的复述存在 D1 里，没有这个字段，界面要容忍它缺失。
   summary: string;
-  // 决定「要不要确认」的句子；审批卡片可以折叠，但不能把这部分也藏起来。
+  // 这个活动的要点：名称和内容、日期、门店、每条明细、结算、标语。
   essentials: string[];
   // 按页面默认、不影响判断的句子，默认收起。
   defaults: string[];
@@ -49,7 +51,7 @@ function calculation(detail: Detail): string {
     case "钻石以小换大":
       return `开单折扣 ${discount ?? "待补"}，货类选「不适用」、货类明细选 HA`;
     case "黄金以旧换新":
-      return `${cats}换大比例 ${param("upgradeRatio") ?? "待补"}，${discount === 0 ? "免工费（开单折扣填 0）" : discount !== null ? `工费 ${discountText(discount)} 折（开单折扣 ${discount}）` : "工费折扣待补"}`;
+      return `${cats}${param("upgradeRatio") !== null ? `换大 ${ratioText(param("upgradeRatio") as number)}（换大比例填 ${param("upgradeRatio")}）` : "换大比例待补"}，${discount === 0 ? "免工费（开单折扣填 0）" : discount !== null ? `工费 ${discountText(discount)} 折（开单折扣 ${discount}）` : "工费折扣待补"}`;
     case "买钻石享黄金克减":
       return `${cats}${discount === 1 ? "钻石不打折（开单折扣填 1）" : discount !== null ? `钻石开单折扣 ${discount}` : "钻石折扣待补"}`;
     default:
@@ -67,13 +69,12 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
   const { info, details } = fill;
   const f = draft.facts;
   const parts: string[] = [];
-  // 按默认走、不影响「要不要确认」的句子进这里，卡片上默认收起。
+  // 按默认走、不影响判断的句子进这里，界面上默认收起。
   const defaults: string[] = [];
 
-  // 名称和内容是模型唯一的自由发挥区，确认整张填写值时它们是搭便车被一起认掉的。
-  // 在复述里标明是谁写的，确认才是知情的行为。用（）不用「」：界面和测试都按「」切分内容。
-  // 模板态和模型态的 source 都是 ai，只能靠 draft.copy 在不在来区分。
-  const copyBy = !draft.copy ? "（按模板生成，确认即采用）" : draft.copy.source === "ai" ? "（模型起草，确认即采用）" : "";
+  // 名称和内容是模型唯一的自由发挥区，标明是谁写的，用户一眼能看出哪段不是自己说的。
+  // 用（）不用「」：界面和测试都按「」切分内容。模板态和模型态的 source 都是 ai，只能靠 draft.copy 在不在来区分。
+  const copyBy = !draft.copy ? "（按模板生成）" : draft.copy.source === "ai" ? "（模型起草）" : "";
   parts.push(`活动名称「${info.name.value}」，活动内容「${info.content.value}」${copyBy}`);
   defaults.push(`品牌${info.brand.value ?? "待指定"}${info.brand.source === "default" ? "（页面默认）" : ""}，审批流${info.approvalFlow.value ? `选「${info.approvalFlow.value}」` : "不选（涉及多个品牌，由系统取最高审批等级）"}`);
   defaults.push(`${stripCode(info.channel.value)}，活动级优惠类型为${stripCode(info.offerNature.value)}`);
@@ -105,7 +106,7 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
   const payments = info.paymentMethods.basis.startsWith("默认") ? "付款方式按默认（含 GLP 积分抵现）" : `付款方式：${info.paymentMethods.value.join("、")}`;
   defaults.push(payments);
 
-  const rates = f.rates ? (f.rates.value.concession === 0 && f.rates.value.collection === 0 ? "没有让扣点和回款率" : `让扣点 ${f.rates.value.concession}、回款率 ${f.rates.value.collection}`) : "让扣点和回款率待补";
+  const rates = f.rates ? (f.rates.value.concession === 0 && f.rates.value.collection === 0 ? "没有让扣点和回款率" : `让扣点 ${rateText(f.rates.value.concession)}、回款率 ${rateText(f.rates.value.collection)}`) : "让扣点和回款率待补";
   const commission = info.commission.value === "不计算折上折" ? "销售提成按实际售价计算" : info.commission.value === "计算折上折" ? "销售提成按实际售价 × 折扣计算（计算折上折）" : "提成口径待补";
   parts.push(`${rates}，${commission}`);
 
@@ -126,7 +127,7 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
     ...Object.values(info).filter((item) => item.tbc).map((item) => ({ id: `tbc:${item.tbc}`, text: item.tbc as string, dismissible: false })),
   ];
   const canConfirm = missing.length === 0 && blockers.length === 0;
-  // 结论只放最能决定「要不要确认」的三项：名称、日期、门店。优惠和明细在折叠的完整复述里。
+  // 结论只放最能认出是哪个活动的三项：名称、日期、门店。优惠和明细在要点里。
   const shortDate = start && end
     ? `${Number(start.slice(5, 7))}月${Number(start.slice(8, 10))}日–${Number(end.slice(5, 7))}月${Number(end.slice(8, 10))}日`
     : "日期待补";
@@ -140,10 +141,10 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
     essentials: parts,
     defaults,
     // 整段仍然保留：复制用，旧会话也还在读它。
-    paragraph: `${[...parts, ...defaults].join("；")}。确认无误后生成填写内容。`,
+    paragraph: `${[...parts, ...defaults].join("；")}。`,
     attention: attention.filter((item, index) => attention.findIndex((other) => other.id === item.id) === index),
     blockers: blockers.filter((check) => !check.id.startsWith("V-A08")).map((check) => check.message),
-    // 两轮追问结束后，缺项只剩这一处能告诉用户怎么答，所以把追问时那句能照抄的示例一起带上。
+    // 缺项带上能照抄的回答示例。
     missing: missing.map((gap) => (QUESTION_EXAMPLE[gap.id] ? `${gap.title}（直接打字回答，比如「${QUESTION_EXAMPLE[gap.id]}」）` : gap.title)),
     canConfirm,
   };

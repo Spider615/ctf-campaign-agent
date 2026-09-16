@@ -23,6 +23,8 @@ type DraftPanelProps = {
   tab: string;
   onTabChange: (tab: string) => void;
   onEdit: (edit: PanelEdit) => Promise<boolean>;
+  // 换算不出代码的限制条件，用户可以选「不限定」跳过。
+  onDismiss: (noteId: string) => void;
   onRollback: (seq: number) => void;
   // 点填写值里的「出处」跳回对话中说这句话的那条消息。
   onShowSource: (messageId: string) => void;
@@ -30,10 +32,9 @@ type DraftPanelProps = {
 
 export const PHASE_LABEL: Record<Snapshot["flow"]["phase"], string> = {
   interpreting: "理解中",
-  asking: "追问中",
-  readback: "待确认",
-  blocked: "仍缺信息",
-  confirmed: "已生成填写值",
+  collecting: "收集中",
+  blocked: "待处理",
+  ready: "已建好",
   out_of_scope: "不在 1811 范围",
 };
 
@@ -91,7 +92,7 @@ function EditRow({ label, value, editing, onToggle, children }: { label: string;
   );
 }
 
-export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollback, onShowSource }: DraftPanelProps) {
+export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss, onRollback, onShowSource }: DraftPanelProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const { draft, fill, checks, sheet } = snapshot.latest;
   const { flow } = snapshot;
@@ -128,7 +129,7 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollbac
         <div className="mt-3 grid grid-cols-3 gap-2 text-center">
           <div className="rounded-xl bg-[#f2f7ff] px-2 py-2"><strong className="block text-sm text-[#294866]">{fill.details.length}</strong><span className="text-[10px] text-[#8296ad]">优惠明细</span></div>
           <div className="rounded-xl bg-[#f2f7ff] px-2 py-2"><strong className="block text-sm text-[#294866]">{flow.missing.length}</strong><span className="text-[10px] text-[#8296ad]">仍缺项目</span></div>
-          <div className="rounded-xl bg-[#f2f7ff] px-2 py-2"><strong className="block text-sm text-[#294866]">{flow.roundsUsed}/2</strong><span className="text-[10px] text-[#8296ad]">追问轮次</span></div>
+          <div className="rounded-xl bg-[#f2f7ff] px-2 py-2"><strong className="block text-sm text-[#294866]">{filledCount}</strong><span className="text-[10px] text-[#8296ad]">已记下</span></div>
         </div>
       </div>
 
@@ -146,7 +147,7 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollbac
           <TabsContent value="sheet">
             <FillSheetView
               sheet={sheet}
-              confirmed={flow.phase === "confirmed"}
+              ready={flow.phase === "ready"}
               highlighted={highlightedFields(freshKeys)}
               freshFacts={freshFacts}
               jump={{ messages: snapshot.messages, onShowSource }}
@@ -207,7 +208,18 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollbac
             {fill.notes.map((note) => (
               <div key={note.id} className={`flex gap-2 rounded-xl border p-3 ${note.blocking ? "border-[#f1cbc5] bg-[#fff4f2]" : "border-[#f1d6ad] bg-[#fff8eb]"}`}>
                 {note.blocking ? <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[#b2443b]" /> : <Info className="mt-0.5 size-4 shrink-0 text-[#b36b16]" />}
-                <p className="text-[13px] leading-5 text-[#4b5f78]">{note.text}<span className="ml-1 text-[11px] text-[#8ca0b7]">（{note.sop}）</span></p>
+                <p className="min-w-0 flex-1 text-[13px] leading-5 text-[#4b5f78]">{note.text}<span className="ml-1 text-[11px] text-[#8ca0b7]">（{note.sop}）</span></p>
+                {/* 原来这个按钮在复述卡片上；没有复述了，挪到这里。它会挡着生成，所以要让用户能处理。 */}
+                {note.kind === "restriction_unresolved" ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onDismiss(note.id)}
+                    className="min-h-11 shrink-0 self-start rounded-full border border-[#bcd6f3] bg-white px-3 py-1 text-[12px] text-[#3970ad] hover:bg-[#edf5ff] disabled:opacity-60 md:min-h-9"
+                  >
+                    不限定
+                  </button>
+                ) : null}
               </div>
             ))}
             {tbc.map((item) => (

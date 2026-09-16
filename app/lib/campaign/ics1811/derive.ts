@@ -81,7 +81,7 @@ export function templateCopy(draft: Ics1811Draft): { name: string; content: stri
       copy = { name: "钻石以小换大", content: `钻石以小换大开单${rate(first?.discount)}折` };
       break;
     case "gold_tradein": {
-      const tiers = (offer.items ?? []).map((item) => `换大比例${item.upgradeRatio ?? ""}${item.discount === 0 ? "免工费" : `工费${rate(item.discount)}折`}`).join("");
+      const tiers = (offer.items ?? []).map((item) => `换大${item.upgradeRatio !== null ? `${Number((item.upgradeRatio * 100).toFixed(2))}%` : ""}${item.discount === 0 ? "免工费" : `工费${rate(item.discount)}折`}`).join("");
       copy = { name: "黄金以旧换新", content: `${label}以旧换新${tiers}` };
       break;
     }

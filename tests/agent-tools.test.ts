@@ -13,11 +13,9 @@ const requestFor = (text: string): AgentRequest => ({
   draft: createEmptyDraft("tool-test", text),
   history: [],
   trigger: { kind: "user_message", text },
-  phase: "asking",
-  roundsUsed: 0,
+  phase: "collecting",
   openQuestions: [],
-  readbackSeq: null,
-  canConfirm: false,
+  proposals: [],
   canUndo: false,
 });
 
@@ -58,6 +56,10 @@ test("campaign tools expose deterministic analysis without changing the draft", 
   assert.deepEqual(state.draft, before);
   assert.equal(typeof body.detailCount, "number");
   assert.ok(Array.isArray(body.missing));
+  // 缺项带题号：模型登记追问要用。
+  assert.ok(body.missing.every((gap: { id: string; question: string }) => /^Q\d/.test(gap.id) && gap.question), JSON.stringify(body.missing));
+  assert.equal(body.complete, false);
+  assert.match(body.next, /ask_campaign_questions/);
   assert.equal(state.analysisRan, true);
 });
 
@@ -71,26 +73,22 @@ test("reference lookup returns codebook matches and source labels", () => {
   assert.ok(body.matches.every((item: { origin: string }) => item.origin));
 });
 
-test("readback and sheet tools use the same deterministic campaign pipeline", () => {
+test("the sheet tool needs a complete campaign, not a confirmation", () => {
   const example = EXAMPLES.find((item) => item.id === "T1")!;
+  const partial = createAgentState(requestFor("7590门店钻石类打9折"));
+  assert.equal(runAgentTool(partial, "generate_ics1811_sheet").isError, true, "信息不齐不能生成");
+  assert.equal(partial.sheetGenerated, false);
+
   const draft = applyFactWrites(createEmptyDraft("tool-complete", example.first), example.firstWrites, {
     text: example.first,
     today: TODAY,
   }).draft;
-  const state = createAgentState({
-    ...requestFor("确认"),
-    draft,
-    phase: "readback",
-    readbackSeq: 1,
-    canConfirm: true,
-  });
-
-  const readback = JSON.parse(runAgentTool(state, "build_campaign_readback").text);
-  assert.match(readback.summary, /黄金每克减15/);
-  assert.equal(state.readbackBuilt, true);
-
-  assert.equal(runAgentTool(state, "generate_ics1811_sheet").isError, true, "没有明确确认时不能生成");
-  assert.equal(runAgentTool(state, "confirm_campaign_readback").isError, undefined);
+  // 用户这句话和确认毫无关系：齐了就能生成，不再看用户有没有说「确认」。
+  const state = createAgentState({ ...requestFor("名称写得正式一点"), draft, phase: "ready" });
+  const analysis = JSON.parse(runAgentTool(state, "analyze_campaign_state").text);
+  assert.equal(analysis.complete, true);
+  assert.deepEqual(analysis.missing, []);
+  assert.match(analysis.next, /直接生成/);
   const sheet = JSON.parse(runAgentTool(state, "generate_ics1811_sheet").text);
   assert.equal(sheet.detailCount, 1);
   assert.equal(state.sheetGenerated, true);

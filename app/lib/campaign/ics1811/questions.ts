@@ -1,12 +1,10 @@
-// 问题目录与轮次（设计文档第 4 节）。问题只来自 §9(二)，代码写死，模型不能加题。
-// 每张卡片把出卡时的全部缺项一次问完：第 1 轮自然包含首句已触发的追问，第 2 轮自然只剩第 1 轮没答的项和由回答新触发的追问。
+// 缺项目录（设计文档第 4 节）。「还缺什么」只来自 §9(二)，代码写死，模型不能加项、不能把缺项当成已填。
+// 什么时候问、一次问几项、怎么措辞由 Agent 在对话里决定，没有轮次和卡片。
 
 import { categorySlots, slotCategories } from "./derive.ts";
 import { missingOfferParams } from "./offer-spec.ts";
 import { resolveCategory, storeCandidates } from "./resolve.ts";
 import type { Check, FillModel, Gap, Ics1811Draft, Plan, QuestionId } from "./types.ts";
-
-export const MAX_ROUNDS = 2;
 
 export const QUESTION_TITLE: Record<QuestionId, string> = {
   Q1: "活动从哪天到哪天？",
@@ -25,6 +23,15 @@ export const QUESTION_TITLE: Record<QuestionId, string> = {
   Q6a: "要不要活动标语？法务确认过没有？",
   Q6b: "这句标语法务确认过没有？（标语会印在保证单上，只能填法务确认过的原文）",
 };
+
+export const QUESTION_IDS = Object.keys(QUESTION_TITLE) as QuestionId[];
+
+// 对话里先问什么：活动本身（优惠、货类）→ 什么时候、在哪 → 口径 → 结算 → 标语。
+// 提示词里给模型的顺序和编排器兜底补问都按这个来。
+export const QUESTION_PRIORITY: readonly QuestionId[] = ["Q3", "Q3a", "Q4", "Q1", "Q2", "Q3b", "Q3c", "Q3d", "Q3e", "Q4a", "Q5a", "Q5b", "Q5c", "Q6a", "Q6b"];
+
+export const byPriority = <T extends { id: QuestionId }>(gaps: readonly T[]): T[] =>
+  [...gaps].sort((left, right) => QUESTION_PRIORITY.indexOf(left.id) - QUESTION_PRIORITY.indexOf(right.id));
 
 // 对话里提示用户怎么直接打字回答；每句都能被 phrases.ts 换算，照抄也能记下。
 export const QUESTION_EXAMPLE: Record<QuestionId, string> = {
@@ -97,11 +104,10 @@ export function gapsOf(draft: Ics1811Draft): Gap[] {
   return gaps;
 }
 
-// roundsUsed：消息记录里已经出过的追问卡片轮数；askedBefore：上一张卡片问过的题。
-export function planNext(draft: Ics1811Draft, fill: FillModel, checks: readonly Check[], roundsUsed: number, askedBefore: readonly QuestionId[] = []): Plan {
+// 人定项齐了、校验没有阻断就是 ready：不再等用户点确认，这一轮直接出填写值。
+export function planNext(draft: Ics1811Draft, fill: FillModel, checks: readonly Check[]): Plan {
   if (fill.outOfScope) return { action: "out_of_scope", reason: fill.outOfScope };
-  const gaps = gapsOf(draft).map((gap) => (askedBefore.includes(gap.id) ? { ...gap, repeated: true } : gap));
-  if (gaps.length && roundsUsed < MAX_ROUNDS) return { action: "ask", round: roundsUsed === 0 ? 1 : 2, questions: gaps };
+  const missing = gapsOf(draft);
   const blockers = checks.filter((check) => check.severity === "blocker");
-  return { action: "readback", canConfirm: gaps.length === 0 && blockers.length === 0, missing: gaps, blockers };
+  return missing.length || blockers.length ? { action: "collect", missing, blockers } : { action: "ready" };
 }

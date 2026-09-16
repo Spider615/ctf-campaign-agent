@@ -29,10 +29,8 @@ const json = (body: unknown): RequestInit => ({
 
 export type TurnBody =
   | { type: "text"; text: string }
-  | { type: "card"; answers: Record<string, unknown> }
   | { type: "edit"; answers?: Record<string, unknown>; copy?: { name?: string; content?: string }; origin: "panel" | "tool" }
   | { type: "interpret" }
-  | { type: "confirm" }
   | { type: "dismiss"; noteId: string }
   | { type: "undo"; versionSeq: number }
   | { type: "rollback"; seq: number };

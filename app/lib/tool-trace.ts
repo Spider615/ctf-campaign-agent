@@ -1,22 +1,26 @@
 export const CAMPAIGN_TOOL_NAMES = [
   "extract_campaign_facts",
+  "accept_campaign_proposals",
   "lookup_ics_reference",
   "analyze_campaign_state",
+  "ask_campaign_questions",
   "draft_campaign_copy",
   "draft_promo_copy",
-  "build_campaign_readback",
   "generate_ics1811_sheet",
-  "confirm_campaign_readback",
   "undo_campaign_change",
 ] as const;
 
 export type CampaignToolName = (typeof CAMPAIGN_TOOL_NAMES)[number];
+
+// 早先有「复述 → 确认」时的工具，只为读得出旧会话里存下的执行记录。
+const LEGACY_TOOL_NAMES = ["build_campaign_readback", "confirm_campaign_readback"] as const;
+export type TraceToolName = CampaignToolName | (typeof LEGACY_TOOL_NAMES)[number];
 export type ToolTraceStatus = "started" | "completed" | "warning" | "failed";
 export type ToolInitiator = "model" | "orchestrator";
 
 export type AgentTraceEvent = {
   id: string;
-  tool: CampaignToolName;
+  tool: TraceToolName;
   title: string;
   status: ToolTraceStatus;
   initiatedBy: ToolInitiator;
@@ -45,7 +49,7 @@ type FinishTraceInput = {
   at: number;
 };
 
-const TOOL_NAME_SET = new Set<string>(CAMPAIGN_TOOL_NAMES);
+const TOOL_NAME_SET = new Set<string>([...CAMPAIGN_TOOL_NAMES, ...LEGACY_TOOL_NAMES]);
 const FINISHED_STATUS_SET = new Set<string>(["completed", "warning", "failed"]);
 const TRACE_STATUS_SET = new Set<string>(["started", ...FINISHED_STATUS_SET]);
 const INITIATOR_SET = new Set<string>(["model", "orchestrator"]);

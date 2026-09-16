@@ -6,18 +6,13 @@ import { useState } from "react";
 import { messageToText, type ChatMessage, type RetryInput, type StoredMessage } from "../../lib/campaign/ics1811/messages";
 import { plainText } from "../../lib/markdown";
 import type { Snapshot } from "../../lib/server/turns";
-import { ClarifyCard } from "./clarify-card";
 import { CopyButton } from "./copy-button";
 import { MarkdownText } from "./markdown-text";
-import { ReadbackCard } from "./readback-card";
 import { AgentAvatar } from "./agent-avatar";
 import { ToolRunCard } from "./tool-run-card";
 
 export type MessageActions = {
   busy: boolean;
-  onCardSubmit: (answers: Record<string, unknown>) => void;
-  onConfirm: () => void;
-  onDismiss: (noteId: string) => void;
   onUndo: (versionSeq: number) => void;
   onRetry: (retry: RetryInput) => void;
   onOpenPanel: (tab: string) => void;
@@ -54,7 +49,7 @@ function EventLine({ children }: { children: React.ReactNode }) {
 }
 
 // 不需要用户拍板的东西一律降成一行：记下了什么、填写值生成了、出错了。
-// 卡片只留给真正要确认的复述——这是「以对话为主，卡片只在要确认时出现」的落点。
+// 整个流程没有要点的确认按钮，追问和提议都在 Agent 的话里。
 function AgentNote({ tone = "muted", children }: { tone?: "muted" | "alert"; children: React.ReactNode }) {
   return (
     <p className={`flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[13px] leading-6 ${tone === "alert" ? "text-[#b2443b]" : "text-[#6f849d]"}`}>
@@ -123,6 +118,47 @@ function ChangeNote({ content, canUndo, busy, onUndo, onOpenPanel }: {
   );
 }
 
+// 活动建好（或建好后又改了）时的那一条。它不是要用户确认的卡片：活动已经建好了，
+// 这里只说清建了什么、去哪看；要改直接在对话里说。hooks 不能写在 switch 分支里，所以单独成组件。
+function SheetNote({ content, first, latestSeq, onOpenPanel }: {
+  content: Extract<StoredMessage, { kind: "agent_fill_sheet" }>;
+  first: boolean;
+  latestSeq: number;
+  onOpenPanel: (tab: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const lines = content.lines ?? [];
+  const outdated = content.versionSeq !== latestSeq;
+  return (
+    <div className="border-l-2 border-[#bfe7d8] pl-3.5">
+      <AgentNote>
+        <span className="inline-flex items-center gap-1.5 font-medium text-[#26785e]">
+          <FileSpreadsheet className="size-3.5" />
+          {first ? "活动建好了 · 1811 填写值已生成" : "填写值已同步更新"}
+        </span>
+        {/* 旧会话存下的这条没有 summary 和 lines，只报明细条数。 */}
+        {content.summary ? null : <span>{content.sheet.details.length} 条明细 · {content.sheet.postActions.length} 项建完后待办</span>}
+        <InlineAction onClick={() => onOpenPanel("sheet")}>查看填写值</InlineAction>
+      </AgentNote>
+      {content.summary ? <p className="text-[15px] font-medium leading-7 text-[#263950]">{content.summary}</p> : null}
+      {lines.length ? (
+        <>
+          <InlineAction onClick={() => setOpen((value) => !value)}>
+            {open ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+            {open ? "收起" : "这次建了什么"}
+          </InlineAction>
+          {open ? (
+            <ul className="mt-1 space-y-1 text-[14px] leading-7 text-[#425873]">
+              {lines.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          ) : null}
+        </>
+      ) : null}
+      {outdated ? <p className="mt-1 text-[12px] text-[#8ca0b7]">之后又改过，以右边最新的为准</p> : null}
+    </div>
+  );
+}
+
 function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { message: ChatMessage; snapshot: Snapshot; actions: MessageActions; isLastAgent: boolean; continued: boolean }) {
   const content = message.content;
   switch (content.kind) {
@@ -134,7 +170,7 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
       // 伪装成用户消息等于谎报来源，保持事件行。
       return content.origin === "panel" ? <UserBubble text={content.label} /> : <EventLine>工具改了：{content.label}</EventLine>;
     case "user_event":
-      // 确认、撤销、恢复、忽略提示都是用户亲手点的按钮，等同于他打了这句话。
+      // 撤销、恢复、忽略提示（以及旧会话里的确认）都是用户亲手点的按钮，等同于他打了这句话。
       return <UserBubble text={content.label} />;
     case "agent_tool_trace":
       return (
@@ -142,12 +178,25 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
           <ToolRunCard trace={content.trace} live={false} />
         </AgentRow>
       );
-    case "agent_text":
+    case "agent_text": {
+      // 用户回「行」时记下的是代码校验、渲染过的提议值，不是模型嘴上的说法，所以把它摆出来。
+      // 只挂在 Agent 最近一次回复下面，而且只列现在仍适用的提议。
+      const proposals = message.id === snapshot.flow.replyId ? snapshot.flow.proposals : [];
       return (
         <AgentRow continued={continued}>
           <MarkdownText text={content.text} />
+          {/* 这是用户点头时真正会记下的值，不能只是一行灰字：模型嘴上说的和登记的对不上时，用户得看得出来。 */}
+          {proposals.length ? (
+            <div className="rounded-xl bg-[#f1f7ff] px-3 py-2 text-[13px] leading-6 text-[#34506f]">
+              <p className="text-[12px] text-[#6f849d]">回「行」就按这个记：</p>
+              <ul>
+                {proposals.map((item) => <li key={item.id}>{item.text}</li>)}
+              </ul>
+            </div>
+          ) : null}
         </AgentRow>
       );
+    }
     case "agent_error":
       return (
         <AgentRow continued={continued}>
@@ -162,22 +211,13 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
           </AgentNote>
         </AgentRow>
       );
-    case "agent_round_card": {
-      const open = snapshot.flow.openCardId === message.id;
+    case "agent_round_card":
+      // 旧会话：那时追问是一张分轮次的卡片，现在只读展示当时问了什么。
       return (
         <AgentRow continued={continued}>
-          <ClarifyCard
-            key={`${message.id}-${snapshot.latest.seq}`}
-            message={content}
-            pending={open ? snapshot.flow.openQuestions : []}
-            draft={snapshot.latest.draft}
-            open={open}
-            busy={actions.busy}
-            onSubmit={actions.onCardSubmit}
-          />
+          <p className="whitespace-pre-wrap text-[14px] leading-7 text-[#8196ad]">{messageToText(content)}</p>
         </AgentRow>
       );
-    }
     case "agent_change": {
       const canUndo = content.versionSeq === snapshot.latest.seq && snapshot.latest.seq > 1;
       return (
@@ -193,33 +233,20 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
       );
     }
     case "agent_readback":
+      // 旧会话：那时要先复述、点确认才生成填写值，现在只读展示当时的复述。
       return (
         <AgentRow continued={continued}>
-          <ReadbackCard
-            message={content}
-            current={snapshot.flow.readbackId === message.id && snapshot.flow.phase !== "confirmed"}
-            busy={actions.busy}
-            onConfirm={actions.onConfirm}
-            onDismiss={actions.onDismiss}
-            onOpenPanel={actions.onOpenPanel}
-          />
+          <p className="whitespace-pre-wrap text-[14px] leading-7 text-[#8196ad]">
+            {content.readback.summary || content.readback.paragraph}
+            <span className="ml-1 text-[12px]">（旧版复述）</span>
+          </p>
         </AgentRow>
       );
     case "agent_fill_sheet": {
-      const outdated = content.versionSeq !== snapshot.latest.seq;
+      const firstSheet = snapshot.messages.find((item) => item.content.kind === "agent_fill_sheet");
       return (
         <AgentRow continued={continued}>
-          <AgentNote>
-            <span className="inline-flex items-center gap-1.5 font-medium text-[#58718f]">
-              <FileSpreadsheet className="size-3.5 text-[#247cff]" />
-              1811 填写值已生成
-            </span>
-            <span>
-              {content.sheet.details.length} 条明细 · {content.sheet.postActions.length} 项建完后待办
-              {outdated ? " · 之后信息改过，这份已过期" : ""}
-            </span>
-            <InlineAction onClick={() => actions.onOpenPanel("sheet")}>查看填写值</InlineAction>
-          </AgentNote>
+          <SheetNote content={content} first={firstSheet?.id === message.id} latestSeq={snapshot.latest.seq} onOpenPanel={actions.onOpenPanel} />
         </AgentRow>
       );
     }
@@ -236,7 +263,7 @@ export function MessageList({ snapshot, actions }: { snapshot: Snapshot; actions
       {messages.map((message, index) => {
         const isEvent = message.content.kind === "user_event" || message.content.kind === "user_edit";
         return (
-          // scroll-mt 留出步骤条和头部的高度，跳回来时不会被压在上面看不见。
+          // scroll-mt 留出头部的高度，跳回来时不会被压在上面看不见。
           <div key={message.id} id={`msg-${message.id}`} className="group/message scroll-mt-24">
             <MessageItem
               message={message}

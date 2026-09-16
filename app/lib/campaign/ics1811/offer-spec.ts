@@ -81,6 +81,10 @@ export function detectPattern(text: string): DetectedPattern | null {
   if (/满\d+(?:\.\d+)?[元块]?[^，。；,;]*减\d+/.test(t)) return { pattern: "threshold", unsupportedType: null };
   if (/(?:每|1)整?克[^，。；,;]*(?:减|便宜|优惠|少|让利)|克减/.test(t)) return { pattern: "per_gram", unsupportedType: null };
   if (/\d+(?:\.\d+)?折/.test(t)) return { pattern: "discount", unsupportedType: null };
+  // 只说了玩法没说力度（「国庆钻石打折」「帮我弄个满减」）：先认下玩法，力度按 Q3a 接着问，
+  // 不然 Agent 会反过来问「打折还是满减」，用户明明说过了。「不打折」不算打折。
+  if (/满减/.test(t)) return { pattern: "threshold", unsupportedType: null };
+  if (/(?<!不)打(?:个|点)?折|折扣活动|做(?:个)?折扣/.test(t)) return { pattern: "discount", unsupportedType: null };
   return null;
 }
 

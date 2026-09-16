@@ -7,7 +7,7 @@ export default function OpenQuestionsPage() {
         <p className="text-[12px] font-semibold tracking-[0.12em] text-[#2470cc]">规则资料</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-[#20314d] md:text-3xl">待确认清单</h1>
         <p className="mt-3 text-[15px] leading-7 text-[#4f6681]">
-          《优惠开单活动创建 SOP》没说清的地方，demo 先按下面的方式处理，并在复述和填写值里标「待确认」。确认之后改对应的处理即可。
+          《优惠开单活动创建 SOP》没说清的地方，demo 先按下面的方式处理，并在填写值里标「待确认」。确认之后改对应的处理即可。
         </p>
       </header>
 

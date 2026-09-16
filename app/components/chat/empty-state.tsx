@@ -57,7 +57,7 @@ export function EmptyState() {
           一句话，搭好你的
           <span className="block bg-gradient-to-r from-[#247cff] via-[#2d8cff] to-[#5ea8ff] bg-clip-text text-transparent">优惠活动填写方案</span>
         </h1>
-        <p className="mx-auto mt-4 max-w-[680px] text-[15px] leading-7 text-[#657a95] md:text-base">想好了就直接说日期、门店和优惠，AI 会查表、校验、复述，确认后生成 ICS-1811 逐项填写值；还没想好也可以先聊——活动怎么设计、力度定多少合适、某个字段什么意思，都能问。</p>
+        <p className="mx-auto mt-4 max-w-[680px] text-[15px] leading-7 text-[#657a95] md:text-base">想好了就直接说日期、门店和优惠，AI 边聊边把活动搭起来：记下你说的、查表校验，缺什么接着问，齐了直接生成 ICS-1811 逐项填写值；还没想好也可以先聊——活动怎么设计、力度定多少合适、某个字段什么意思，都能问。</p>
 
         <div className="mx-auto mt-8 max-w-[760px] text-left">
           <Composer

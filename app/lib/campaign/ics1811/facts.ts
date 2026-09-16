@@ -22,7 +22,9 @@ export function createEmptyDraft(id: string, requestText: string): Ics1811Draft 
 }
 
 export type FactWrite = { key: FactKey; value?: unknown; quote: string };
-export type WriteContext = { text: string; today: string; openQuestions?: readonly QuestionId[] };
+// proposed：Agent 上一句给了提议的题号。提议问法是「一般没有，这次也这样吗？」，回「不对」「不是」的极性和直接问时相反，
+// 所以这些题不按 yesNo 换算短回答；「没有」「有说明函」这类说清了值的照常记。
+export type WriteContext = { text: string; today: string; openQuestions?: readonly QuestionId[]; proposed?: readonly QuestionId[] };
 export type Dropped = { key: FactKey; quote: string; reason: string };
 export type WriteResult = { draft: Ics1811Draft; applied: FactKey[]; dropped: Dropped[] };
 
@@ -38,6 +40,8 @@ export function setFact<K extends FactKey>(draft: Ics1811Draft, key: K, value: N
 }
 
 const fail = (reason: string): Outcome => ({ ok: false, reason });
+// 这道题正在问、而且不是提议问法，短的「是 / 否」才能按 yesNo 换算。
+const yesNoOpen = (context: RuleContext, id: QuestionId) => context.open.includes(id) && !(context.proposed ?? []).includes(id);
 const ok = (...keys: FactKey[]): Outcome => ({ ok: true, keys });
 const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : typeof value === "string" && value.trim() ? [value] : []);
 
@@ -120,7 +124,23 @@ const RULES: Record<FactKey, Rule> = {
     }
     draft.unresolvedStores = [...new Set([...draft.unresolvedStores, ...unresolved])];
     if (!found.size) return fail(unresolved.length ? `门店对不上代码表：${unresolved.join("、")}` : "片段里没有门店");
-    setFact(draft, "stores", [...found], quote, context.via);
+    // 已有门店时，「再加一个」「不做了」是在原来的基础上增减，不是整体替换（验证工作流实测两种都曾被记反）。
+    // 增减词按用户原话里包含这个片段的那一小句看：模型可能只把「3810」取成片段。
+    // 减门店又说「加」或「改成」，分不清哪家是加哪家是减，要用户说出改完后参加的全部门店；「改成…再加…」提到的都算，按替换处理。
+    const existing = draft.facts.stores?.value ?? [];
+    const clause = context.text.split(/[，,；;。！!？?\n]/).find((part) => compactQuote(part).includes(compactQuote(quote))) ?? quote;
+    const scope = `${clause}${quote}`;
+    const adding = /再加|加上|增加|添加|也要|还有|多加/.test(scope);
+    const removing = /不做了|不参加|去掉|删掉|拿掉|取消|除了|除外|不要了|撤掉/.test(scope);
+    const replacing = /只做|只留|只保留|换成|改成/.test(scope);
+    if (removing && (adding || replacing)) return fail("这句在同时增减门店，请说出改完后参加的全部门店");
+    let stores = [...found];
+    if (existing.length && adding && !replacing) stores = [...new Set([...existing, ...found])];
+    if (existing.length && removing) {
+      stores = existing.filter((code) => !found.has(code));
+      if (!stores.length) return fail("门店不能全去掉，至少要留 1 家");
+    }
+    setFact(draft, "stores", stores, quote, context.via);
     draft.unresolvedStores = draft.unresolvedStores.filter((mention) => resolveStore(mention).status !== "ok");
     return ok();
   },
@@ -157,7 +177,7 @@ const RULES: Record<FactKey, Rule> = {
     return ok(...side);
   },
   discountEditable: (draft, quote, _value, context) => {
-    const editable = P.discountEditableFrom(quote) ?? (context.open.includes("Q3b") ? P.yesNo(quote) : null);
+    const editable = P.discountEditableFrom(quote) ?? (yesNoOpen(context, "Q3b") ? P.yesNo(quote) : null);
     if (editable === null) return fail("没说门店能不能在折扣基础上改价");
     setFact(draft, "discountEditable", editable, quote, context.via);
     return ok();
@@ -196,7 +216,7 @@ const RULES: Record<FactKey, Rule> = {
     return ok();
   },
   menuConversion: (draft, quote, _value, context) => {
-    const convert = P.menuConversionFrom(quote) ?? (context.open.includes("Q4a") ? P.yesNo(quote) : null);
+    const convert = P.menuConversionFrom(quote) ?? (yesNoOpen(context, "Q4a") ? P.yesNo(quote) : null);
     if (convert === null) return fail("没说要不要转 outlet 餐牌");
     setFact(draft, "menuConversion", convert, quote, context.via);
     return ok();
@@ -204,7 +224,13 @@ const RULES: Record<FactKey, Rule> = {
   rates: (draft, quote, _value, context) => {
     const asked = context.open.includes("Q5a");
     if (!/扣点|回款/.test(quote) && !asked) return fail("片段里没有让扣点或回款率");
-    const rates = P.ratesFrom(quote) ?? (asked && (P.noRatesAnswer(quote) || P.yesNo(quote) === false) ? { concession: 0, collection: 0 } : null);
+    const said = P.ratesFrom(quote) ?? (asked && (P.noRatesAnswer(quote) || (yesNoOpen(context, "Q5a") && P.yesNo(quote) === false)) ? { concession: 0, collection: 0 } : null);
+    // 已经记过让扣点回款率时，只改其中一项（「让扣点改成3个点」）沿用另一项的现值；两项都没记过时仍要一起给出。
+    const current = draft.facts.rates?.value;
+    const parts = P.ratePartsFrom(quote);
+    const rates = said ?? (current && (parts.concession !== null || parts.collection !== null)
+      ? { concession: parts.concession ?? current.concession, collection: parts.collection ?? current.collection }
+      : null);
     if (!rates) return fail("让扣点和回款率要同时给出，没有就说没有；百分数写成「2%」");
     setFact(draft, "rates", rates, quote, context.via);
     return ok();
@@ -216,7 +242,7 @@ const RULES: Record<FactKey, Rule> = {
     return ok();
   },
   settlementLetter: (draft, quote, _value, context) => {
-    const has = P.settlementLetterFrom(quote) ?? (context.open.includes("Q5c") ? P.yesNo(quote) : null);
+    const has = P.settlementLetterFrom(quote) ?? (yesNoOpen(context, "Q5c") ? P.yesNo(quote) : null);
     if (has === null) return fail("没说有没有结算说明函");
     setFact(draft, "settlementLetter", has, quote, context.via);
     return ok();
@@ -229,16 +255,18 @@ const RULES: Record<FactKey, Rule> = {
       return ok();
     }
     if (parsed?.wanted && parsed.text) {
+      // 引号没配对、带着「原文：」这类前缀时解析不干净，宁可不记，也不把引号冒号写进标语。
+      if (/["“”「」『』:：]/.test(parsed.text)) return fail("标语原文没解析干净，请把原文放在一对引号里再说一次");
       if (!compactQuote(context.text).includes(compactQuote(parsed.text))) return fail("标语必须是用户给出的原文");
       setFact(draft, "slogan", { wanted: true, text: parsed.text, legalConfirmed: parsed.legalConfirmed }, quote, context.via);
       return ok();
     }
-    const legal = P.legalConfirmedFrom(quote) ?? (context.open.includes("Q6b") || context.open.includes("Q6a") ? P.yesNo(quote) : null);
+    const legal = P.legalConfirmedFrom(quote) ?? (yesNoOpen(context, "Q6b") || yesNoOpen(context, "Q6a") ? P.yesNo(quote) : null);
     if (existing?.wanted && legal !== null) {
       setFact(draft, "slogan", { ...existing, legalConfirmed: legal }, quote, context.via);
       return ok();
     }
-    if (context.open.includes("Q6a") && P.yesNo(quote) === false) {
+    if (yesNoOpen(context, "Q6a") && P.yesNo(quote) === false) {
       setFact(draft, "slogan", { wanted: false }, quote, context.via);
       return ok();
     }

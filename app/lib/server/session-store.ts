@@ -3,7 +3,7 @@ import { decodeMessage, encodeMessage, type ChatMessage, type StoredMessage } fr
 import type { Ics1811Draft } from "../campaign/ics1811/types.ts";
 import { isIcs1811Draft } from "./request-validation.ts";
 
-// 会话状态：collecting 还在追问；readback 已复述待确认；confirmed 已生成填写值。
+// 会话状态：collecting 还在补信息；confirmed 已建好（生成了填写值）；readback 只在旧会话里有（那时要先复述再确认）。
 export type SessionStatus = "collecting" | "readback" | "confirmed";
 
 export type SessionRecord = {

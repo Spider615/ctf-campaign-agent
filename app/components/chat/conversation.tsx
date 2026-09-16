@@ -10,7 +10,6 @@ import type { PanelImperativeHandle } from "react-resizable-panels";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { RetryInput } from "../../lib/campaign/ics1811/messages";
 import { QUESTION_EXAMPLE } from "../../lib/campaign/ics1811/questions";
-import { campaignSteps } from "../../lib/campaign/ics1811/steps";
 import { thinkingLabel } from "../../lib/campaign/ics1811/thinking";
 import {
   ApiError,
@@ -26,7 +25,6 @@ import { mergeTraceEvent, type AgentTraceEvent } from "../../lib/tool-trace";
 import { DraftPanel, PHASE_LABEL, type PanelEdit } from "../draft/draft-panel";
 import { Composer } from "./composer";
 import { AgentRow, MessageList, UserBubble } from "./message-view";
-import { StepRail } from "./step-rail";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolRunCard } from "./tool-run-card";
 
@@ -34,22 +32,22 @@ type TurnKind = TurnBody["type"];
 
 const PLACEHOLDER: Record<Snapshot["flow"]["phase"], string> = {
   interpreting: "Agent 正在理解你的需求…",
-  asking: "直接回复上面的问题，例如：10月1日到7日，没有让扣点和回款率",
-  readback: "有不对的地方直接说，例如：改成每克减 20 元",
-  blocked: "把仍缺的项直接告诉我，例如：提成按实际售价算",
-  confirmed: "还想改哪里直接说，改完会重新复述",
+  collecting: "接着说说这个活动",
+  blocked: "说说上面的问题怎么处理",
+  ready: "哪里要改直接说，例如：改成每克减 20 元",
   out_of_scope: "说说这次活动的优惠方式，例如：黄金每克减 15 元",
 };
 
-// 两轮追问结束后就没有追问卡了，这句提示是用户最后一处能看到「该怎么答」的地方：
-// 点名真正缺的项，例子也用这些项的，不要再给一个不相干的固定例子。
-function blockedPlaceholder(missingIds: Snapshot["flow"]["missingIds"]): string {
-  const examples = missingIds.map((id) => QUESTION_EXAMPLE[id]).filter(Boolean).slice(0, 2);
-  return examples.length ? `把仍缺的项直接告诉我，例如：${examples.join("，")}` : PLACEHOLDER.blocked;
+// 收集中时输入框提示跟着 Agent 上一句走：有提议就提示点头即可，问了什么就给那个问题的回答示例，
+// 不要给一个和眼前问题不相干的固定例子。
+function collectingPlaceholder(flow: Snapshot["flow"]): string {
+  if (flow.proposals.length) return "同意就回「行」，要改直接说";
+  const example = flow.asking.map((gap) => QUESTION_EXAMPLE[gap.id]).find(Boolean);
+  return example ? `直接回答就行，例如：${example}` : PLACEHOLDER.collecting;
 }
 
-// 只有这三种回合会调模型、需要等待；其余由代码直接处理，不显示等待文案。
-const WAITING_KINDS: readonly TurnKind[] = ["interpret", "text", "confirm"];
+// 只有这两种回合会调模型、需要等待；其余由代码直接处理，不显示等待文案。
+const WAITING_KINDS: readonly TurnKind[] = ["interpret", "text"];
 
 const XL = "(min-width: 1280px)";
 const SHEET_PANEL_ID = "sheet";
@@ -261,27 +259,21 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const pendingInterpretation = flow.pendingInterpretation;
   const placeholder = pendingInterpretation && !needsInterpretation && busy !== "interpret"
     ? "没理解成功，点上面的「重试」"
-    : flow.phase === "blocked" ? blockedPlaceholder(flow.missingIds) : PLACEHOLDER[flow.phase];
-
-  // 活动是一步步搭起来的，把「走到哪一步」一直摆在对话上方。
-  const steps = campaignSteps({ phase: flow.phase, roundsUsed: flow.roundsUsed, missingCount: flow.missing.length });
+    : flow.phase === "collecting" ? collectingPlaceholder(flow) : PLACEHOLDER[flow.phase];
 
   // 等待时说清系统拿这句话要做什么，别只说「正在思考」。
   const waitingKind = busy && WAITING_KINDS.includes(busy) ? busy : needsInterpretation ? "interpret" : null;
   const waiting = waitingKind
     ? thinkingLabel({
-        turnKind: waitingKind as "interpret" | "text" | "confirm",
+        turnKind: waitingKind as "interpret" | "text",
         phase: flow.phase,
-        openQuestions: flow.openQuestions.map((gap) => gap.id),
-        missingIds: flow.missingIds,
+        asking: flow.asking.map((gap) => gap.id),
+        hasProposals: flow.proposals.length > 0,
       })
     : undefined;
 
   const actions = {
     busy: busy !== null,
-    onCardSubmit: (answers: Record<string, unknown>) => void send({ type: "card", answers }),
-    onConfirm: () => void send({ type: "confirm" }),
-    onDismiss: (noteId: string) => void send({ type: "dismiss", noteId }),
     onUndo: (versionSeq: number) => void send({ type: "undo", versionSeq }),
     onRetry: (retry: RetryInput) => void send(retry.type === "text" ? { type: "text", text: retry.text } : { type: "interpret" }),
     onOpenPanel: openPanel,
@@ -294,6 +286,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       tab={panelTab}
       onTabChange={setPanelTab}
       onEdit={(edit: PanelEdit) => send({ type: "edit", origin: "panel", ...edit })}
+      onDismiss={(noteId) => void send({ type: "dismiss", noteId })}
       onRollback={(seq) => void send({ type: "rollback", seq })}
       onShowSource={showSource}
     />
@@ -307,7 +300,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
           <p className="mt-0.5 text-[12px] text-[#7187a1]">
             {PHASE_LABEL[flow.phase]}
             {pendingInterpretation ? "" : ` · ${snapshot.latest.fill.details.length} 条明细`}
-            {!pendingInterpretation && flow.missing.length ? ` · 还差 ${flow.missing.length} 项` : ""}
+            {flow.phase === "collecting" && flow.missing.length ? ` · 还差 ${flow.missing.length} 项` : ""}
           </p>
         </div>
         <Button variant="outline" size="sm" className="h-11 border-[#cfe0f2] bg-white/80 text-[#49647f] shadow-[0_4px_14px_rgba(44,94,148,0.05)] hover:border-[#94bfff] hover:bg-[#f4f9ff] hover:text-[#247cff]" onClick={togglePanel}>
@@ -315,8 +308,6 @@ export function Conversation({ sessionId }: { sessionId: string }) {
           填写值
         </Button>
       </header>
-
-      <StepRail steps={steps} />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-7 md:px-8">
         <div className="mx-auto flex max-w-[780px] flex-col gap-5">

@@ -14,12 +14,14 @@ import {
   SESSIONS_CHANGED,
 } from "../lib/client/api";
 import type { SessionListItem } from "../lib/server/session-store";
+import { CAMPAIGN_TOOL_NAMES } from "../lib/tool-trace";
 import { registerCampaignTools } from "../lib/webmcp";
 
+// readback 只在旧会话里有：那时复述完等用户点确认，现在齐了直接建好，旧数据按收集中显示。
 const STATUS_LABEL: Record<string, string> = {
   collecting: "收集中",
-  readback: "待确认",
-  confirmed: "已生成填写值",
+  readback: "收集中",
+  confirmed: "已建好",
 };
 
 function Brand() {
@@ -74,7 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const snapshot = await createSessionRequest(mode === "example" ? { entryMode: "example" } : { entryMode: "new", text: prompt ?? "" });
       notifySessionsChanged();
       navigate.push(`/c/${snapshot.session.id}`);
-      return mode === "example" ? "已打开完整示例对话。" : "已按这句话新建活动，Agent 正在追问缺的信息。";
+      return mode === "example" ? "已打开完整示例对话。" : "已按这句话新建活动，Agent 正在理解，缺什么会在对话里接着问。";
     },
     // 只改名称、内容和起止日期；标语只能由用户照抄法务确认过的原文，优惠和门店在对话里改。
     updateFields: async ({ name, content, startDate, endDate }) => {
@@ -92,7 +94,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       });
       notifySessionUpdated(id);
       notifySessionsChanged();
-      return "已更新当前活动，并重新复述。";
+      return "已更新当前活动，填写值会同步更新。";
     },
     readSummary: async () => {
       const id = locationRef.current.activeId;
@@ -103,9 +105,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         phase: snapshot.flow.phase,
         name: snapshot.latest.fill.info.name.value,
         detailCount: snapshot.latest.fill.details.length,
-        roundsUsed: snapshot.flow.roundsUsed,
+        ready: snapshot.flow.phase === "ready",
+        asking: snapshot.flow.asking.map((gap) => gap.title),
         missing: snapshot.flow.missing,
-        canConfirm: snapshot.flow.canConfirm,
         blockers: snapshot.latest.checks.filter((check) => check.severity === "blocker").map((check) => check.message),
       };
     },
@@ -217,7 +219,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-[#247cff]">
               <Sparkles className="size-3.5" />
-              8 个业务工具 · 实时规则复核
+              {CAMPAIGN_TOOL_NAMES.length} 个业务工具 · 实时规则复核
             </div>
             <p className="mt-2 text-[11px] leading-5 text-[#6f85a0]">理解、查表、规则分析和填写值生成都会留下可展开的执行记录。</p>
           </div>

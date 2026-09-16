@@ -94,6 +94,8 @@
 
 ### 4.2 工具目录
 
+> 工具表已过时：`build_campaign_readback`、`confirm_campaign_readback` 已删除，新增 `ask_campaign_questions`、`accept_campaign_proposals`，现行工具以 `app/lib/tool-trace.ts` 和 `2026-09-16-conversational-build-design.md` 为准。
+
 | 工具 | 调度方式 | 内部能力 | UI 描述 |
 |---|---|---|---|
 | `extract_campaign_facts` | 模型调用 | 现有 `update_fields` + `applyFactWrites` | 提取活动信息并核验用户原话 |

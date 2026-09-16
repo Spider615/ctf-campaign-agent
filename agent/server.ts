@@ -9,7 +9,8 @@ import { buildAgentSystemPrompt, buildAgentUserPrompt } from "../app/lib/agent/p
 import { isAgentRequest, type AgentRequest, type AgentResult } from "../app/lib/agent/protocol.ts";
 import { encodeAgentStreamEvent } from "../app/lib/agent/stream.ts";
 import { AGENT_TOOL_META, AGENT_TOOL_NAMES, createAgentState, FACT_KEYS, finishAgentTurn, runAgentTool, safeToolSummary, type AgentToolName } from "../app/lib/agent/tools.ts";
-import type { FactKey } from "../app/lib/campaign/ics1811/types.ts";
+import { QUESTION_IDS } from "../app/lib/campaign/ics1811/questions.ts";
+import type { FactKey, QuestionId } from "../app/lib/campaign/ics1811/types.ts";
 import { finishTraceEvent, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
 
 const envFile = fileURLToPath(new URL("../.dev.vars", import.meta.url));
@@ -28,6 +29,7 @@ const DEBUG = process.env.AGENT_DEBUG === "1";
 const RUNTIME_DIR = fileURLToPath(new URL("./.claude-runtime/", import.meta.url));
 
 const factKey = z.enum(FACT_KEYS as [FactKey, ...FactKey[]]);
+const questionId = z.enum(QUESTION_IDS as [QuestionId, ...QuestionId[]]);
 
 export async function runAgentTurn(request: AgentRequest, onTrace?: (event: AgentTraceEvent) => void): Promise<AgentResult> {
   const state = createAgentState(request);
@@ -65,10 +67,23 @@ export async function runAgentTurn(request: AgentRequest, onTrace?: (event: Agen
           quote: z.string(),
         })),
       }, handle("extract_campaign_facts")),
+      tool("accept_campaign_proposals", "用户同意你上一句的提议时，按提议记下；quote 取用户表示同意的原话，只同意其中几项时列出题号", {
+        quote: z.string(),
+        questions: z.array(questionId).optional(),
+      }, handle("accept_campaign_proposals")),
       tool("lookup_ics_reference", "查询 ICS 演示代码表，不修改草稿", {
         query: z.string().min(1).max(120),
       }, handle("lookup_ics_reference")),
-      tool("analyze_campaign_state", "运行确定性的 1811 字段推导、缺项和校验", {}, handle("analyze_campaign_state")),
+      tool("analyze_campaign_state", "运行确定性的 1811 字段推导、缺项和校验，返回还缺的题号和是否已经齐了", {}, handle("analyze_campaign_state")),
+      tool("ask_campaign_questions", "登记这句回复要问用户的问题（题号），可附带提议的具体值；登记后在回复里用自己的话问", {
+        questions: z.array(questionId),
+        proposals: z.array(z.object({
+          question: questionId,
+          // 不能写 z.record：它生成的 JSON Schema 带 propertyNames，DeepSeek 的 Anthropic 兼容接口
+          // 遇到后工具调用整个失效，模型把调用当成 <｜DSML｜> 文本吐出来（A/B 实测 2/2 复现）。格式由 checkProposal 校验。
+          answer: z.unknown(),
+        })).optional(),
+      }, handle("ask_campaign_questions")),
       tool("draft_campaign_copy", "起草活动名称（不超过 13 个字）和活动内容，只写用户说过的数字，不写标语", {
         name: z.string(),
         content: z.string(),
@@ -77,9 +92,7 @@ export async function runAgentTurn(request: AgentRequest, onTrace?: (event: Agen
         headline: z.string(),
         highlights: z.array(z.string()),
       }, handle("draft_promo_copy")),
-      tool("build_campaign_readback", "用确定性规则生成当前活动的复述摘要", {}, handle("build_campaign_readback")),
-      tool("generate_ics1811_sheet", "确认最新复述后生成 ICS-1811 填写值摘要", {}, handle("generate_ics1811_sheet")),
-      tool("confirm_campaign_readback", "用户在对话里明确确认了上面的复述时调用", {}, handle("confirm_campaign_readback")),
+      tool("generate_ics1811_sheet", "活动信息齐了时查看 ICS-1811 填写值摘要；齐了系统也会自动生成", {}, handle("generate_ics1811_sheet")),
       tool("undo_campaign_change", "撤销上一次修改", {}, handle("undo_campaign_change")),
     ],
   });

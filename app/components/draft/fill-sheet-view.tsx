@@ -70,11 +70,12 @@ const STATUS_CLASS: Record<SelfCheckItem["status"], string> = {
   不适用: "text-[#91a4ba]",
 };
 
-export function FillSheetView({ sheet, confirmed, highlighted, freshFacts, jump }: { sheet: FillSheet; confirmed: boolean; highlighted?: ReadonlySet<string>; freshFacts?: ReadonlySet<string>; jump?: SourceJump }) {
+// ready：人定项齐了、校验没有阻断，活动已建好；没齐时面板照样实时显示，只是标成草稿。
+export function FillSheetView({ sheet, ready, highlighted, freshFacts, jump }: { sheet: FillSheet; ready: boolean; highlighted?: ReadonlySet<string>; freshFacts?: ReadonlySet<string>; jump?: SourceJump }) {
   return (
     <div className="space-y-5">
-      <div className={`flex items-start justify-between gap-2 rounded-xl border p-3 text-[13px] leading-5 ${confirmed ? "border-[#bfe7d8] bg-[#e8f7f1] text-[#26785e]" : "border-[#f0d7b1] bg-[#fff8eb] text-[#9a5d16]"}`}>
-        <span>{confirmed ? "已确认，照此在 ICS-1811 录入。" : "草稿，确认复述后才是最终填写值。"}{sheet.banner}。</span>
+      <div className={`flex items-start justify-between gap-2 rounded-xl border p-3 text-[13px] leading-5 ${ready ? "border-[#bfe7d8] bg-[#e8f7f1] text-[#26785e]" : "border-[#f0d7b1] bg-[#fff8eb] text-[#9a5d16]"}`}>
+        <span>{ready ? "已建好，照此在 ICS-1811 录入。" : "草稿：信息补齐后自动生成最终填写值。"}{sheet.banner}。</span>
         <CopyButton text={fillSheetText(sheet)} />
       </div>
 

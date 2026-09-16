@@ -82,7 +82,7 @@ export function registerCampaignTools(actions: CampaignWebMcpActions): () => voi
     },
     {
       name: "read_campaign_summary",
-      description: "读取当前活动的状态、明细条数、已追问轮数、仍缺的项和阻断原因。",
+      description: "读取当前活动的状态、明细条数、是否已建好、Agent 正在问的问题、仍缺的项和阻断原因。",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true },
       execute: async () => textResult(await actions.readSummary()),

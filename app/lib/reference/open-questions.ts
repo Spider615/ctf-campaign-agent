@@ -31,7 +31,7 @@ export const SOP_QUESTIONS: SopQuestion[] = [
     id: 3,
     question: "是否参与打折、预售时间、是否凭券使用分别是什么意思，还有哪些选项？",
     sop: "§8(3)、§9(四)",
-    handling: "按页面默认填「可参加活动货类」「0」「否」，复述和填写值里标待确认。",
+    handling: "按页面默认填「可参加活动货类」「0」「否」，填写值里标待确认。",
   },
   {
     id: 4,
@@ -90,8 +90,8 @@ export const SOP_QUESTIONS: SopQuestion[] = [
 ];
 
 export const DESIGN_DEFAULTS: DesignDefault[] = [
-  { id: "P1", value: "首句已经触发的追问放在第 1 轮一起问", modules: "questions.ts" },
-  { id: "P2", value: "复述之后的修改引出的新缺项，计入两轮上限", modules: "questions.ts、turns.ts" },
+  { id: "P1", value: "Agent 一次问 1–3 项：先问优惠和货类，再问日期、门店和口径，最后问结算和标语；不设轮次上限", modules: "prompt.ts" },
+  { id: "P2", value: "人定项齐了、校验没有阻断就直接生成填写值，不再单独确认；之后的修改同步更新填写值", modules: "questions.ts、turns.ts" },
   { id: "P3", value: "活动名称按字符数计 13 个；只允许汉字、字母、数字、小数点和百分号；超限阻断", modules: "checks.ts、draft_campaign_copy" },
   { id: "P4", value: "让扣点、回款率大于 1 阻断", modules: "checks.ts" },
   { id: "P5", value: "周期里的 0 不和 1–7 混填", modules: "checks.ts" },
@@ -99,7 +99,7 @@ export const DESIGN_DEFAULTS: DesignDefault[] = [
   { id: "P7", value: "用户对标语回答「不知道要不要」仍算缺项", modules: "questions.ts" },
   { id: "P8", value: "业务大类对照表取代码表里的默认值", modules: "codebook.ts" },
   { id: "P9", value: "结算说明函按示例顺序命名，月份取开始月份", modules: "fill-sheet.ts" },
-  { id: "P10", value: "用选项提交这一轮、也不需要起草名称时，不调模型", modules: "turns.ts" },
+  { id: "P10", value: "人定项可以由 Agent 提议具体值，用户点头才记下；整句只是「行」「对」时由代码直接按提议记，不靠模型理解", modules: "proposals.ts、turns.ts" },
   { id: "P11", value: "面板只能改人定字段和名称、内容；AI 定字段引导到对话里改", modules: "draft-panel.tsx" },
   { id: "P12", value: "本地 D1 的旧会话清库，读到旧结构时提示新建", modules: "session-store.ts" },
 ];

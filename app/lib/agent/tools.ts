@@ -1,12 +1,13 @@
 import { checkDraft } from "../campaign/ics1811/checks.ts";
 import { CODEBOOK, type Entry } from "../campaign/ics1811/codebook.ts";
 import { deriveFill, discountText } from "../campaign/ics1811/derive.ts";
-import { applyFactWrites, emptyFacts, type Dropped, type FactWrite } from "../campaign/ics1811/facts.ts";
+import { applyFactWrites, compactQuote, emptyFacts, type Dropped, type FactWrite } from "../campaign/ics1811/facts.ts";
 import { renderFillSheet } from "../campaign/ics1811/fill-sheet.ts";
-import { FACT_LABEL } from "../campaign/ics1811/messages.ts";
-import { gapsOf, planNext } from "../campaign/ics1811/questions.ts";
-import { buildReadback } from "../campaign/ics1811/readback.ts";
-import type { FactKey, Ics1811Draft } from "../campaign/ics1811/types.ts";
+import { FACT_LABEL, factText } from "../campaign/ics1811/messages.ts";
+import { agreesToProposal, isPureAgreement } from "../campaign/ics1811/phrases.ts";
+import { acceptProposals, checkProposal } from "../campaign/ics1811/proposals.ts";
+import { gapsOf, planNext, QUESTION_IDS, QUESTION_TITLE } from "../campaign/ics1811/questions.ts";
+import type { FactKey, Ics1811Draft, Proposal, QuestionId } from "../campaign/ics1811/types.ts";
 import { plainText } from "../markdown.ts";
 import { CAMPAIGN_TOOL_NAMES, type AgentTraceEvent, type CampaignToolName, type ToolTrace } from "../tool-trace.ts";
 import type { AgentRequest, AgentResult } from "./protocol.ts";
@@ -16,30 +17,31 @@ export type AgentToolName = CampaignToolName;
 
 export const AGENT_TOOL_META: Record<CampaignToolName, { title: string }> = {
   extract_campaign_facts: { title: "提取活动信息" },
+  accept_campaign_proposals: { title: "按用户同意的提议记下" },
   lookup_ics_reference: { title: "查询 ICS 代码表" },
   analyze_campaign_state: { title: "运行 1811 规则分析" },
+  ask_campaign_questions: { title: "登记要问的问题" },
   draft_campaign_copy: { title: "起草活动名称与内容" },
   draft_promo_copy: { title: "起草对外宣传文案" },
-  build_campaign_readback: { title: "生成活动复述" },
   generate_ics1811_sheet: { title: "生成 1811 填写值" },
-  confirm_campaign_readback: { title: "确认活动复述" },
   undo_campaign_change: { title: "撤销上次修改" },
 };
 
 export const FACT_KEYS = Object.keys(emptyFacts()) as FactKey[];
 
-// 一轮对话里 Agent 的工作区：工具只改这里，整轮结束后由 Workers 决定出卡、复述还是输出，并一次性落库。
+// 一轮对话里 Agent 的工作区：工具只改这里，整轮结束后由 Workers 重算齐没齐、要不要生成填写值，并一次性落库。
 export type AgentState = {
   request: AgentRequest;
   draft: Ics1811Draft;
   applied: string[];
   dropped: Dropped[];
   copyDrafted: boolean;
-  confirmRequested: boolean;
   undo: boolean;
   analysisRan: boolean;
-  readbackBuilt: boolean;
   sheetGenerated: boolean;
+  // 模型登记的「这句回复在问什么」；没调 ask_campaign_questions 时为 null。
+  asking: QuestionId[] | null;
+  proposals: Proposal[];
   trace: AgentTraceEvent[];
   tools: CampaignToolName[];
 };
@@ -57,24 +59,26 @@ export function createAgentState(request: AgentRequest): AgentState {
     applied: [],
     dropped: [],
     copyDrafted: false,
-    confirmRequested: false,
     undo: false,
     analysisRan: false,
-    readbackBuilt: false,
     sheetGenerated: false,
+    asking: null,
+    proposals: [],
     trace: [],
     tools: [],
   };
 }
 
-// 告诉模型接下来系统会怎么做：还缺什么、有什么挡着确认、当前名称内容。
+// 告诉模型现在的样子：还缺什么（带题号，登记追问要用）、有什么挡着生成、齐没齐、当前名称内容。
 export function draftStatus(draft: Ics1811Draft, today: string) {
   const fill = deriveFill(draft);
   const checks = checkDraft(draft, fill, today);
+  const plan = planNext(draft, fill, checks);
   return {
     outOfScope: fill.outOfScope,
-    missing: gapsOf(draft).map((gap) => gap.title),
+    missing: gapsOf(draft).map((gap) => ({ id: gap.id, question: gap.title, ...(gap.candidates?.length ? { candidates: gap.candidates } : {}), ...(gap.hint ? { hint: gap.hint } : {}) })),
     blockers: checks.filter((check) => check.severity === "blocker" && check.id !== "V-A08").map((check) => check.message),
+    complete: plan.action === "ready",
     name: fill.info.name.value,
     content: fill.info.content.value,
   };
@@ -90,13 +94,19 @@ export function extractCampaignFacts(state: AgentState, input: Record<string, un
   );
   if (!writes.length) return refuse("facts 为空，或者 key、quote 不对。");
   const { request } = state;
-  const result = applyFactWrites(state.draft, writes, { text: request.trigger.text, today: request.today, openQuestions: request.openQuestions });
+  const result = applyFactWrites(state.draft, writes, {
+    text: request.trigger.text,
+    today: request.today,
+    openQuestions: request.openQuestions,
+    proposed: request.proposals.map((item) => item.id),
+  });
   state.draft = result.draft;
   state.applied.push(...result.applied);
   state.dropped.push(...result.dropped);
   return done({
-    applied: result.applied.map((key) => FACT_LABEL[key]),
-    dropped: result.dropped.map((item) => `${FACT_LABEL[item.key] ?? item.key}：${item.reason}。不要换个说法硬写，系统会追问。`),
+    // 带上记下后的值：模型照这个说「记下了什么」，不凭自己的理解复述（实测会说成反的）。
+    applied: result.applied.map((key) => `${FACT_LABEL[key]}：${factText(key, state.draft.facts[key])}`),
+    dropped: result.dropped.map((item) => `${FACT_LABEL[item.key] ?? item.key}：${item.reason}。不要换个说法硬写，在回复里跟用户问清楚。`),
     status: draftStatus(state.draft, request.today),
   });
 }
@@ -162,6 +172,8 @@ function draftPromoCopy(state: AgentState, input: Record<string, unknown>): Tool
   if (!headline || [...headline].length > 20) problems.push(`主标题要有，且不超过 20 个字（现在 ${[...headline].length} 个字）`);
   if (!highlights.length || highlights.length > 4) problems.push("卖点要有 1 到 4 条");
   if (highlights.some((item) => [...item].length > 30)) problems.push("每条卖点不超过 30 个字");
+  // 事实层里没有赠品、抽奖这类权益，对外文案写了就是替活动多承诺（实测模型写过「到店即享好礼」）。
+  if (/赠|送礼品|好礼|礼品|抽奖|免费|加赠|豪礼|礼包/.test(`${headline}${highlights.join("")}`)) problems.push("不能写赠品、好礼、抽奖、免费这类活动里没有的权益");
   // 对外发布的东西编错数字最贵，守卫和活动名称共用一套。
   const allowed = allowedNumbers(state.draft);
   const stray = [...new Set([...`${headline} ${highlights.join(" ")}`.matchAll(/\d+(?:\.\d+)?/g)].map((match) => match[0]).filter((number) => !allowed.has(number)))];
@@ -171,21 +183,81 @@ function draftPromoCopy(state: AgentState, input: Record<string, unknown>): Tool
   return done("对外宣传文案已保存。日期、门店和优惠力度由系统按事实填充，你不用写，也不要写活动标语。");
 }
 
-export function confirmCampaignReadback(state: AgentState): ToolOutcome {
-  state.tools.push("confirm_campaign_readback");
-  const { trigger, readbackSeq, canConfirm } = state.request;
-  if (trigger.kind !== "user_message" || readbackSeq === null) return refuse("现在还没有复述，不能确认。");
-  if (state.applied.length || state.copyDrafted || state.undo) return refuse("这一轮改了信息，系统会重新复述，这次不能直接确认。");
-  if (!canConfirm) return refuse("复述里还有没补齐或没通过的项，不能确认。");
-  if (!/确认|没问题|可以|对的|没错|生成|好的|行|ok/i.test(trigger.text)) return refuse("用户这句话不是在确认。");
-  state.confirmRequested = true;
-  return done("已记下确认，系统会生成 1811 填写值。不要再调用工具，用一句话告诉用户。");
+const isQuestionId = (value: unknown): value is QuestionId => typeof value === "string" && (QUESTION_IDS as string[]).includes(value);
+
+// 模型登记这句回复要问的问题和提议。问什么、怎么措辞归模型；问的必须是当前真的缺的项，
+// 提议可以是缺项怎么填，也可以是已填项改成什么（建好后替用户换算的改动）。
+// 提议的值由代码校验并渲染成文字，用户点头时按渲染出来的值记。
+export function askCampaignQuestions(state: AgentState, input: Record<string, unknown>): ToolOutcome {
+  state.tools.push("ask_campaign_questions");
+  if (state.undo) return refuse("这一轮已经撤销了，不用再问。");
+  const { request } = state;
+  const gaps = gapsOf(state.draft).map((gap) => gap.id);
+  const questions = [...new Set(Array.isArray(input.questions) ? input.questions.filter(isQuestionId) : [])];
+  const rawProposals = Array.isArray(input.proposals) ? input.proposals.filter(isRecord) : [];
+  const proposals: Proposal[] = [];
+  const problems: string[] = [];
+  for (const item of rawProposals) {
+    if (!isQuestionId(item.question)) {
+      problems.push("proposals 里的 question 不是有效题号");
+      continue;
+    }
+    // 用户刚说了还不知道的，不能拿「没有」「0」替他占位（「不知道」不等于「没有」）。
+    if (item.question === "Q5a" && /扣点|回款/.test(request.trigger.text) && /不知道|不清楚|不确定|待定|没定|要问|问一下|问问|再说/.test(request.trigger.text)) {
+      problems.push("用户说了让扣点或回款率还不知道，不能提议没有或 0 占位，如实说还缺");
+      continue;
+    }
+    const checked = checkProposal(state.draft, item.question, item.answer, request.today);
+    if (checked.ok) proposals.push(checked.proposal);
+    else problems.push(checked.reason);
+  }
+  if (problems.length) return refuse(`提议没登记：${problems.join("；")}。改好后重新调用 ask_campaign_questions。`);
+  // 问了已经不缺、也没有改值提议的项（比如同一轮先记下了）就略过，不为这个让模型重来一遍。
+  const asking = [...new Set([...questions, ...proposals.map((item) => item.id)])].filter((id) => gaps.includes(id));
+  const stale = questions.filter((id) => !gaps.includes(id) && !proposals.some((item) => item.id === id));
+  const topics = new Set([...asking, ...proposals.map((item) => item.id)]);
+  if (!topics.size) return refuse(`没有要登记的问题${stale.length ? `（${stale.join("、")} 现在不缺）` : ""}。现在缺的题号：${gaps.join("、") || "无"}`);
+  // 一次问太多就又成了填表（实测模型会一口气问 4 件）。挑最要紧的，其余下一句再问。
+  if (topics.size > 3) return refuse(`一次最多问 3 件，现在是 ${topics.size} 件。挑最要紧的 3 件以内重新登记，其余等用户答完再问。`);
+  state.asking = asking;
+  state.proposals = proposals;
+  return done({
+    asking: asking.map((id) => QUESTION_TITLE[id]),
+    ...(stale.length ? { skipped: `${stale.join("、")} 现在不缺，没登记` } : {}),
+    proposals: proposals.map((item) => item.text),
+    note: proposals.length
+      ? "用自己的话把这些问出来。提议要用肯定问法把上面的具体值说出来（「这次也按 X 吧？」），用户回「行」「对」就照这个记下；不要用「有没有」「是A还是B」这种问法配提议，也不要说成已经定了。"
+      : "用自己的话把这些问出来，揉进一两句话里，别列成表单。",
+  });
+}
+
+// 用户同意上一句的提议。只认用户这一轮原话里明确的点头；改了其中一项的，那一项用 extract_campaign_facts 记。
+export function acceptCampaignProposals(state: AgentState, input: Record<string, unknown>): ToolOutcome {
+  state.tools.push("accept_campaign_proposals");
+  if (state.undo) return refuse("这一轮已经撤销了，不能再修改。");
+  const { request } = state;
+  if (!request.proposals.length) return refuse("上一句没有提议可以采纳。用户说的具体内容用 extract_campaign_facts 记。");
+  const quote = typeof input.quote === "string" ? input.quote.trim() : "";
+  const said = compactQuote(request.trigger.text);
+  const at = quote ? said.indexOf(compactQuote(quote)) : -1;
+  if (at < 0) return refuse("quote 必须逐字取自用户这一轮的原话。");
+  // 「不行」里的「行」、「不对」里的「对」不是点头。
+  if (!agreesToProposal(quote) || /[不没别未]$/.test(said.slice(0, at))) return refuse("这句话不是明确的同意。用户改了或说了具体值，用 extract_campaign_facts 按原话记。");
+  const only = Array.isArray(input.questions) && input.questions.length ? input.questions.filter(isQuestionId) : undefined;
+  // 整句只是点头的，编排器已经替你记下了；走到这里的都夹带了别的话，必须说清同意的是哪几项。
+  if (!only?.length && !isPureAgreement(request.trigger.text)) return refuse("用户这句话除了点头还说了别的，questions 只列他明确同意的题号。");
+  const result = acceptProposals(state.draft, request.proposals, quote, only);
+  if (!result.accepted.length) return refuse("没有能采纳的提议：可能已经填过了，或者题号不在上一句的提议里。");
+  state.draft = result.draft;
+  state.applied.push(...result.keys);
+  return done({ accepted: result.accepted.map((item) => item.text), status: draftStatus(state.draft, request.today) });
 }
 
 export function undoCampaignChange(state: AgentState): ToolOutcome {
   state.tools.push("undo_campaign_change");
   if (state.request.trigger.kind !== "user_message" || !state.request.canUndo) return refuse("现在没有可以撤销的修改。");
-  if (state.applied.length || state.copyDrafted || state.confirmRequested) return refuse("这一轮已经做了别的修改，不能再撤销。");
+  if (state.request.accepted?.length) return refuse("用户这句是在同意提议，已经记下了，不是要撤销。");
+  if (state.applied.length || state.copyDrafted) return refuse("这一轮已经做了别的修改，不能再撤销。");
   state.undo = true;
   return done("已撤销上一次修改。不要再调用工具，用一句话告诉用户。");
 }
@@ -242,42 +314,30 @@ export function analyzeCampaignState(state: AgentState): ToolOutcome {
   state.tools.push("analyze_campaign_state");
   const fill = deriveFill(state.draft);
   const checks = checkDraft(state.draft, fill, state.request.today);
-  const missing = gapsOf(state.draft);
-  const plan = planNext(state.draft, fill, checks, state.request.roundsUsed, state.request.openQuestions);
+  const status = draftStatus(state.draft, state.request.today);
   state.analysisRan = true;
   return done({
     detailCount: fill.details.length,
-    missing: missing.map((gap) => gap.title),
-    blockers: checks.filter((check) => check.severity === "blocker" && check.id !== "V-A08").map((check) => check.message),
+    missing: status.missing,
+    blockers: status.blockers,
     warnings: checks.filter((check) => check.severity === "warning").map((check) => check.message),
-    action: plan.action,
-    canConfirm: plan.action === "readback" && plan.canConfirm,
+    complete: status.complete,
+    next: status.outOfScope
+      ? "不在 1811 范围，说明原因即可"
+      : status.complete
+        ? "齐了：系统这一轮会直接生成 1811 填写值。用两三句话告诉用户活动建好了，不要再问确认。"
+        : status.missing.length
+          ? "还缺：挑最要紧的 1–3 项，先调用 ask_campaign_questions 登记，再在回复里问。"
+          : "不缺信息，但有挡着生成的问题：如实说明，告诉用户怎么处理。",
   });
 }
 
-export function buildCampaignReadback(state: AgentState): ToolOutcome {
-  state.tools.push("build_campaign_readback");
-  const fill = deriveFill(state.draft);
-  const checks = checkDraft(state.draft, fill, state.request.today);
-  const missing = gapsOf(state.draft);
-  const readback = buildReadback(state.draft, fill, checks, missing);
-  state.readbackBuilt = true;
-  return done({
-    summary: readback.summary,
-    missingCount: readback.missing.length,
-    blockerCount: readback.blockers.length,
-    warningCount: readback.attention.length,
-    canConfirm: readback.canConfirm,
-  });
-}
-
+// 齐了才能生成；不需要用户再确认。最终填写值仍由 Workers 按最新草稿重新生成。
 export function generateIcs1811Sheet(state: AgentState): ToolOutcome {
   state.tools.push("generate_ics1811_sheet");
-  if (!state.confirmRequested) return refuse("用户还没有确认最新复述，不能生成填写值。");
   const fill = deriveFill(state.draft);
   const checks = checkDraft(state.draft, fill, state.request.today);
-  const blockers = checks.filter((check) => check.severity === "blocker");
-  if (gapsOf(state.draft).length || blockers.length) return refuse("活动信息还没补齐或校验未通过，不能生成填写值。");
+  if (planNext(state.draft, fill, checks).action !== "ready") return refuse("活动信息还没补齐或校验未通过，不能生成填写值。");
   const sheet = renderFillSheet(fill, checks);
   state.sheetGenerated = true;
   return done({
@@ -289,13 +349,13 @@ export function generateIcs1811Sheet(state: AgentState): ToolOutcome {
 
 const TOOL_HANDLERS: Record<CampaignToolName, (state: AgentState, input: Record<string, unknown>) => ToolOutcome> = {
   extract_campaign_facts: extractCampaignFacts,
+  accept_campaign_proposals: acceptCampaignProposals,
   lookup_ics_reference: lookupIcsReference,
   analyze_campaign_state: analyzeCampaignState,
+  ask_campaign_questions: askCampaignQuestions,
   draft_campaign_copy: draftCampaignCopy,
   draft_promo_copy: draftPromoCopy,
-  build_campaign_readback: buildCampaignReadback,
   generate_ics1811_sheet: generateIcs1811Sheet,
-  confirm_campaign_readback: (state) => confirmCampaignReadback(state),
   undo_campaign_change: (state) => undoCampaignChange(state),
 };
 
@@ -303,40 +363,51 @@ export function runAgentTool(state: AgentState, name: CampaignToolName, input: R
   return TOOL_HANDLERS[name](state, input);
 }
 
+// 工具被拒时给界面看的话：说清是哪类没通过，不带入参原文和内部理由。
+const REFUSED_SUMMARY: Record<CampaignToolName, string> = {
+  extract_campaign_facts: "没有能按原话记下的内容，Agent 会跟你确认",
+  accept_campaign_proposals: "这句不算同意提议，改按原话处理",
+  lookup_ics_reference: "查询词为空，未查询",
+  analyze_campaign_state: "规则分析未执行",
+  ask_campaign_questions: "问题或提议没通过校验，Agent 已调整",
+  draft_campaign_copy: "名称或内容不合规（长度、字符或数字），Agent 重拟",
+  draft_promo_copy: "文案不合规（长度或数字），Agent 重拟",
+  generate_ics1811_sheet: "信息还没齐，暂不生成",
+  undo_campaign_change: "现在没有可撤销的修改",
+};
+
 export function safeToolSummary(name: CampaignToolName, outcome: ToolOutcome, state: AgentState): string {
-  if (outcome.isError) return "未执行，当前活动条件尚未满足";
+  if (outcome.isError) return REFUSED_SUMMARY[name];
   let body: Record<string, unknown> | null = null;
   try {
     const parsed = JSON.parse(outcome.text) as unknown;
     if (isRecord(parsed)) body = parsed;
   } catch {
-    // 文案、确认和撤销工具返回短文本，不需要解析。
+    // 文案和撤销工具返回短文本，不需要解析。
   }
   switch (name) {
     case "extract_campaign_facts":
       return `识别并核验 ${state.applied.length} 项信息${state.dropped.length ? `，${state.dropped.length} 项需确认` : ""}`;
     case "lookup_ics_reference":
       return `匹配 ${Array.isArray(body?.matches) ? body.matches.length : 0} 条代码表记录`;
+    case "accept_campaign_proposals":
+      return `按提议记下 ${Array.isArray(body?.accepted) ? body.accepted.length : 0} 项`;
     case "analyze_campaign_state":
-      return `完成规则分析 · ${Array.isArray(body?.missing) ? body.missing.length : 0} 项待补`;
+      return body?.complete ? "完成规则分析 · 信息已齐" : `完成规则分析 · ${Array.isArray(body?.missing) ? body.missing.length : 0} 项待补`;
+    case "ask_campaign_questions":
+      return `登记 ${Array.isArray(body?.asking) ? body.asking.length : 0} 个问题${Array.isArray(body?.proposals) && body.proposals.length ? `，${body.proposals.length} 项提议` : ""}`;
     case "draft_campaign_copy":
       return "活动名称与内容已起草";
     case "draft_promo_copy":
       return `对外宣传文案已起草 · ${state.draft.promo?.highlights.length ?? 0} 条卖点`;
-    case "build_campaign_readback":
-      return `生成复述 · ${Number(body?.missingCount ?? 0)} 项待补`;
     case "generate_ics1811_sheet":
       return `生成 ${Number(body?.detailCount ?? 0)} 条优惠明细`;
-    case "confirm_campaign_readback":
-      return "最新活动复述已确认";
     case "undo_campaign_change":
       return "已恢复到上一个活动版本";
   }
 }
 
 const UPLIFT_CLAIM = /[^。！？\n]*(提升|增长|增加)[^。，,]{0,6}\d+(?:\.\d+)?\s*%[^。！？\n]*[。！？]?/g;
-// 要补的信息由系统出卡片，模型回复里的问句一律删掉（§9(二) 以外不单独问）。
-const QUESTION_SENTENCE = /[^。！？!?\n]*[？?]/g;
 
 // 这个上限是防失控（模型抽风输出几千字），不是限制表达。
 // 160 是旧工具集时代（只管提取事实，实测回复 12-100 字）定的；放开后实测它回答
@@ -372,12 +443,8 @@ function trimReply(text: string): string {
 }
 
 export function finishAgentTurn(state: AgentState, reply: string | null): AgentResult {
-  // 问句只在卡片开着时删：那会儿系统正在问用户，模型再问会和卡片重复、打乱两轮限制。
-  // 没卡片时放它正常说话——「这样理解对吗」这类澄清是对话该有的样子，一刀切删问句
-  // 正是它显得死板的来源。编造的效果预估（提升 X%）任何时候都删，那是事实问题。
-  const asking = state.request.openQuestions.length > 0;
-  const withoutClaims = (reply ?? "").replace(UPLIFT_CLAIM, "");
-  const cleaned = trimReply((asking ? withoutClaims.replace(QUESTION_SENTENCE, "") : withoutClaims).trim());
+  // 问什么由模型决定，问句不再删。编造的效果预估（提升 X%）任何时候都删，那是事实问题。
+  const cleaned = trimReply((reply ?? "").replace(UPLIFT_CLAIM, "").trim());
   const steps = state.trace.filter((event) => event.status !== "started");
   const trace: ToolTrace | null = steps.length
     ? {
@@ -392,8 +459,9 @@ export function finishAgentTurn(state: AgentState, reply: string | null): AgentR
     dropped: state.dropped,
     reply: cleaned || null,
     copyDrafted: state.copyDrafted,
-    confirmRequested: state.confirmRequested,
     undo: state.undo,
+    asking: state.asking,
+    proposals: state.proposals,
     tools: state.tools,
     trace,
   };

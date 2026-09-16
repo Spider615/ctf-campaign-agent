@@ -7,43 +7,43 @@ import { deriveFill } from "../app/lib/campaign/ics1811/derive.ts";
 import { EXAMPLE_TODAY, EXAMPLES, type Example } from "../app/lib/campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
 import { ACTIVITY_FIELDS, DETAIL_READBACK_PROBES, renderFillSheet } from "../app/lib/campaign/ics1811/fill-sheet.ts";
-import { planNext } from "../app/lib/campaign/ics1811/questions.ts";
+import { gapsOf, planNext } from "../app/lib/campaign/ics1811/questions.ts";
 import { buildReadback } from "../app/lib/campaign/ics1811/readback.ts";
 import type { Ics1811Draft, QuestionId } from "../app/lib/campaign/ics1811/types.ts";
 
 const today = EXAMPLE_TODAY;
 
-function evaluate(draft: Ics1811Draft, roundsUsed: number, asked: QuestionId[]) {
+function evaluate(draft: Ics1811Draft) {
   const fill = deriveFill(draft);
   const checks = checkDraft(draft, fill, today);
-  return { fill, checks, plan: planNext(draft, fill, checks, roundsUsed, asked) };
+  return { fill, checks, plan: planNext(draft, fill, checks) };
 }
 
-// 不接模型：夹具里的 writes 代替模型抽取，按轮次把回答交给守卫或卡片。
+const gapIds = (draft: Ics1811Draft): QuestionId[] => gapsOf(draft).map((gap) => gap.id);
+
+// 不接模型：夹具里的 writes 代替模型抽取。每个回答之前记下当时的缺项（Agent 按这些问），
+// 回答按「正在问的问题」交给守卫或结构化回答。没有轮次上限，缺项答完就 ready。
 function simulate(example: Example) {
   let draft = applyFactWrites(createEmptyDraft(example.id, example.first), example.firstWrites, { text: example.first, today }).draft;
-  const rounds: QuestionId[][] = [];
-  let roundsUsed = 0;
-  let asked: QuestionId[] = [];
-  let state = evaluate(draft, roundsUsed, asked);
+  const asked: QuestionId[][] = [];
+  let state = evaluate(draft);
   for (const turn of example.turns) {
-    assert.equal(state.plan.action, "ask", `${example.id}：还有回答没用上就进入了复述`);
-    if (state.plan.action !== "ask") break;
-    asked = state.plan.questions.map((question) => question.id);
-    rounds.push(asked);
-    roundsUsed = state.plan.round;
+    assert.equal(state.plan.action, "collect", `${example.id}：还有回答没用上就已经齐了`);
+    const open = gapIds(draft);
+    asked.push(open);
     draft = turn.kind === "text"
-      ? applyFactWrites(draft, turn.writes, { text: turn.text, today, openQuestions: asked }).draft
+      ? applyFactWrites(draft, turn.writes, { text: turn.text, today, openQuestions: open }).draft
       : applyCardAnswers(draft, turn.answers).draft;
-    state = evaluate(draft, roundsUsed, asked);
+    state = evaluate(draft);
   }
-  const missing = state.plan.action === "readback" ? state.plan.missing : [];
-  return { draft, rounds, ...state, readback: buildReadback(draft, state.fill, state.checks, missing) };
+  const missing = state.plan.action === "collect" ? state.plan.missing : [];
+  return { draft, asked, ...state, readback: buildReadback(draft, state.fill, state.checks, missing) };
 }
 
 const run = (id: string) => simulate(EXAMPLES.find((example) => example.id === id)!);
 
-const EXPECTED_ROUNDS: Record<string, QuestionId[][]> = {
+// 每次回答之前的缺项：第一组是首句之后缺的，T5、T7 的第二组是回答后新引出的。
+const EXPECTED_GAPS: Record<string, QuestionId[][]> = {
   T1: [],
   T2: [["Q1", "Q5a", "Q5b", "Q6a"]],
   T3: [["Q1", "Q4", "Q5a", "Q5b", "Q6a"]],
@@ -56,13 +56,12 @@ const EXPECTED_ROUNDS: Record<string, QuestionId[][]> = {
   T10: [["Q3b"]],
 };
 
-test("every acceptance case asks the SOP questions in at most two rounds and ends in a confirmable readback", () => {
+test("every acceptance case gaps follow the SOP catalog and end ready once answered, with no round limit", () => {
   for (const example of EXAMPLES) {
     const result = simulate(example);
-    assert.deepEqual(result.rounds, EXPECTED_ROUNDS[example.id], example.id);
-    assert.ok(result.rounds.length <= 2, example.id);
-    assert.equal(result.plan.action, "readback", example.id);
-    assert.equal(result.plan.action === "readback" && result.plan.canConfirm, true, `${example.id}：${JSON.stringify(result.checks)}`);
+    assert.deepEqual(result.asked, EXPECTED_GAPS[example.id], example.id);
+    assert.equal(result.plan.action, "ready", `${example.id}：${JSON.stringify(result.checks)}`);
+    assert.equal(result.readback.canConfirm, true, example.id);
   }
 });
 
@@ -123,27 +122,37 @@ test("multi-store settlement letters, verbatim slogans and float-mode price type
   const t10 = EXAMPLES.find((example) => example.id === "T10")!;
   const priceTypes = simulate(t10);
   const first = applyFactWrites(createEmptyDraft("T10", t10.first), t10.firstWrites, { text: t10.first, today }).draft;
-  const firstPlan = evaluate(first, 0, []).plan;
-  assert.ok(firstPlan.action === "ask" && firstPlan.questions[0].hint?.includes("限定不了售价类型"));
+  const firstPlan = evaluate(first).plan;
+  assert.ok(firstPlan.action === "collect" && firstPlan.missing[0].hint?.includes("限定不了售价类型"));
   assert.ok(priceTypes.readback.paragraph.includes("「一口价」这条限定录不进去"));
   assert.equal(priceTypes.readback.paragraph.includes("不限号头、会员级别、售价类型"), false);
 });
 
-test("a third card is never issued; missing human answers block the readback", () => {
+test("missing human answers keep the campaign collecting no matter how often it is asked", () => {
   const text = "7590门店钻石类打9折";
   const draft = applyFactWrites(createEmptyDraft("x", text), [
     { key: "stores", quote: "7590门店", value: ["7590门店"] },
     { key: "categories", quote: "钻石类", value: ["钻石类"] },
     { key: "offer", quote: "打9折" },
   ], { text, today }).draft;
-  const first = evaluate(draft, 0, []).plan;
-  assert.ok(first.action === "ask" && first.round === 1);
-  const second = evaluate(draft, 1, first.action === "ask" ? first.questions.map((question) => question.id) : []).plan;
-  assert.ok(second.action === "ask" && second.round === 2 && second.questions.every((question) => question.repeated));
-  const third = evaluate(draft, 2, []).plan;
-  assert.equal(third.action, "readback");
-  assert.ok(third.action === "readback" && !third.canConfirm && third.missing.length > 0);
-  assert.ok(third.action === "readback" && third.blockers.some((check) => check.id === "V-A08"));
+  const plan = evaluate(draft).plan;
+  // 没有轮次：问多少遍都一样，缺项没人答就一直是 collect，不会因为问过了就放行。
+  assert.ok(plan.action === "collect" && plan.missing.length > 0);
+  assert.deepEqual(plan.action === "collect" && plan.missing.map((gap) => gap.id), ["Q1", "Q3b", "Q5a", "Q5b", "Q6a"]);
+  assert.ok(plan.action === "collect" && plan.blockers.some((check) => check.id === "V-A08"));
+  // 「不知道」不是回答，照样缺。
+  const unsure = "让扣点不知道";
+  const after = applyFactWrites(draft, [{ key: "rates", quote: unsure }], { text: unsure, today, openQuestions: ["Q5a"] }).draft;
+  assert.equal(after.facts.rates, null);
+  assert.equal(evaluate(after).plan.action, "collect");
+});
+
+test("blockers without missing answers keep the plan collecting instead of ready", () => {
+  const t1 = EXAMPLES[0];
+  const text = `${t1.first}品牌周大福和SOINLOVE。`;
+  const draft = applyFactWrites(createEmptyDraft("b", text), [...t1.firstWrites, { key: "brands", quote: "周大福和SOINLOVE" }], { text, today }).draft;
+  const plan = evaluate(draft).plan;
+  assert.ok(plan.action === "collect" && plan.missing.length === 0 && plan.blockers.length > 0, JSON.stringify(plan));
 });
 
 test("human-decided fields never come from defaults or rules", () => {
@@ -179,5 +188,5 @@ test("the fill sheet follows the 1811 page order and carries the self-check list
 test("a request without any priced rule is out of scope", () => {
   const text = "国庆节做个抽奖活动";
   const draft = createEmptyDraft("y", text);
-  assert.equal(evaluate(draft, 0, []).plan.action, "out_of_scope");
+  assert.equal(evaluate(draft).plan.action, "out_of_scope");
 });

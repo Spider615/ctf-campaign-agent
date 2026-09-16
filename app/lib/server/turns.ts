@@ -7,14 +7,17 @@ import { EXAMPLES } from "../campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../campaign/ics1811/facts.ts";
 import { renderFillSheet, type FillSheet } from "../campaign/ics1811/fill-sheet.ts";
 import { flowOf, messageToText, summarizeFactChanges, type ChatMessage, type StoredMessage } from "../campaign/ics1811/messages.ts";
+import { isPureAgreement } from "../campaign/ics1811/phrases.ts";
 import { renderPromo, type PromoDoc } from "../campaign/ics1811/promo.ts";
-import { planNext } from "../campaign/ics1811/questions.ts";
+import { acceptProposals, liveProposals, withoutEitherOr } from "../campaign/ics1811/proposals.ts";
+import { byPriority, planNext } from "../campaign/ics1811/questions.ts";
 import { buildReadback } from "../campaign/ics1811/readback.ts";
-import type { Check, FactKey, FillModel, FlowPhase, Gap, Ics1811Draft, Plan, QuestionId } from "../campaign/ics1811/types.ts";
+import type { Check, FactKey, FillModel, FlowPhase, Gap, Ics1811Draft, Plan, Proposal, QuestionId } from "../campaign/ics1811/types.ts";
 import { finishTraceEvent, mergeTraceEvent, startTraceEvent, type AgentTraceEvent, type CampaignToolName, type ToolTrace } from "../tool-trace.ts";
 import { ConflictError, type SessionBundle, type SessionStatus, type SessionStore, type TurnWrite } from "./session-store.ts";
 
-// 需要模型的回合（理解首句、用户打字）交给 Agent 服务；出卡、复述、确认、落库都由这里的代码决定（设计文档 4.3 节）。
+// 需要模型的回合（理解首句、用户打字）交给 Agent 服务：问什么、怎么说归模型。
+// 缺什么、齐没齐、生不生成填写值、落库都由这里的代码按事实层重算决定（设计文档 4.3 节）。
 export type AgentRunner = (request: AgentRequest, onTrace?: (event: AgentTraceEvent) => void) => Promise<AgentResult>;
 
 export type TurnDeps = {
@@ -35,12 +38,11 @@ export class TurnError extends Error {
   }
 }
 
+// 没有「确认」和「提交卡片」：信息齐了就生成填写值，追问在对话里答。
 export type TurnInput =
   | { type: "text"; text: string; expectedSeq: number }
-  | { type: "card"; answers: Record<string, unknown>; expectedSeq: number }
   | { type: "edit"; answers: Record<string, unknown>; copy: { name?: string; content?: string } | null; origin: "panel" | "tool"; expectedSeq: number }
   | { type: "interpret"; expectedSeq: number }
-  | { type: "confirm"; expectedSeq: number }
   | { type: "dismiss"; noteId: string; expectedSeq: number }
   | { type: "undo"; versionSeq: number; expectedSeq: number }
   | { type: "rollback"; seq: number; expectedSeq: number };
@@ -58,14 +60,12 @@ export type Snapshot = {
   latest: { seq: number; draft: Ics1811Draft; fill: FillModel; checks: Check[]; sheet: FillSheet; promo: PromoDoc | null };
   flow: {
     phase: FlowPhase;
-    roundsUsed: number;
-    openCardId: string | null;
-    openQuestions: Gap[]; // 开着的卡片上还没答的题
-    readbackId: string | null; // 对应最新版本的复述
-    canConfirm: boolean;
+    replyId: string | null; // Agent 最近一次回复；asking 和 proposals 出自这条
+    asking: Gap[]; // 那条回复问过、现在仍缺的
+    proposals: Proposal[]; // 那条回复的提议、现在仍适用的；用户回「行」就按这个记
     missing: string[];
     missingIds: QuestionId[]; // 和 missing 一一对应；界面按题号取那句能照抄的回答示例
-    confirmedSeq: number | null;
+    sheetSeq: number | null; // 最近一次生成填写值对应的版本
     pendingInterpretation: boolean;
   };
 };
@@ -94,8 +94,6 @@ export function parseTurnInput(body: unknown): TurnInput {
     case "text":
       if (typeof body.text !== "string" || !body.text.trim()) throw new TurnError(400, "请输入内容");
       return { type: "text", text: body.text.trim().slice(0, 1000), expectedSeq };
-    case "card":
-      return { type: "card", answers: isRecord(body.answers) ? body.answers : {}, expectedSeq };
     case "edit": {
       const copy = isRecord(body.copy) ? body.copy : null;
       return {
@@ -108,8 +106,6 @@ export function parseTurnInput(body: unknown): TurnInput {
     }
     case "interpret":
       return { type: "interpret", expectedSeq };
-    case "confirm":
-      return { type: "confirm", expectedSeq };
     case "dismiss":
       if (typeof body.noteId !== "string" || !body.noteId) throw new TurnError(400, "请求内容不完整");
       return { type: "dismiss", noteId: body.noteId, expectedSeq };
@@ -134,13 +130,28 @@ export function isPendingInterpretation(bundle: SessionBundle): boolean {
 function evaluate(draft: Ics1811Draft, messages: readonly ChatMessage[], today: string) {
   const fill = deriveFill(draft);
   const checks = checkDraft(draft, fill, today);
+  const plan = planNext(draft, fill, checks);
   const flow = flowOf(messages);
-  const plan = planNext(draft, fill, checks, flow.roundsUsed, flow.askedBefore);
-  return { fill, checks, flow, plan };
+  const missing: Gap[] = plan.action === "collect" ? plan.missing : [];
+  const missingIds = missing.map((gap) => gap.id);
+  // Agent 上一句问的只留现在仍缺的；提议只留仍然成立的（用户之后自己改过的作废）。建好后的改值提议也算。
+  const asking = flow.asking.filter((id) => missingIds.includes(id));
+  const proposals = plan.action === "out_of_scope" ? [] : liveProposals(draft, flow.proposals, today);
+  return { fill, checks, plan, flow, missing, asking, proposals };
 }
 
-// 正在问用户的问题：每轮出卡问的是当时全部缺项，两轮用完后复述里列的也是全部缺项。「可以」「没有」这类短回答按这些问题记。
-const posedQuestions = (plan: Plan): Gap[] => (plan.action === "ask" ? plan.questions : plan.action === "readback" ? plan.missing : []);
+function phaseOf(plan: Plan, pendingInterpretation: boolean): FlowPhase {
+  if (pendingInterpretation) return "interpreting";
+  if (plan.action === "out_of_scope") return "out_of_scope";
+  if (plan.action === "ready") return "ready";
+  return plan.missing.length ? "collecting" : "blocked";
+}
+
+// 活动建好（或建好后又改了）时放进对话的那条：填写值，外加代码写的「这次建了什么」。
+function sheetMessage(draft: Ics1811Draft, fill: FillModel, checks: readonly Check[], versionSeq: number, sheet: FillSheet): StoredMessage {
+  const summary = buildReadback(draft, fill, checks, []);
+  return { v: 2, kind: "agent_fill_sheet", versionSeq, sheet, summary: summary.summary, lines: summary.essentials };
+}
 
 function versionSource(index: number, trigger: StoredMessage | undefined, createdBy: string): string {
   if (index === 0) return "初始";
@@ -149,7 +160,7 @@ function versionSource(index: number, trigger: StoredMessage | undefined, create
     case "user_text":
       return "对话修改";
     case "user_card_submit":
-      return "补充卡片";
+      return "补充卡片"; // 旧会话
     case "user_edit":
       return trigger.origin === "panel" ? "草稿手改" : "工具修改";
     case "user_event":
@@ -163,20 +174,8 @@ export function buildSnapshot(bundle: SessionBundle, today: string): Snapshot {
   if (bundle.legacy) throw new TurnError(410, "这个活动是旧版本创建的，请新建活动");
   const latest = bundle.versions.at(-1);
   if (!latest) throw new TurnError(404, "活动还没有可打开的版本");
-  const { fill, checks, flow, plan } = evaluate(latest.draft, bundle.messages, today);
+  const state = evaluate(latest.draft, bundle.messages, today);
   const pendingInterpretation = isPendingInterpretation(bundle);
-  const confirmed = flow.confirmedSeq === latest.seq;
-  const gaps = posedQuestions(plan);
-  const openIds = flow.openCard?.content.questions.map((question) => question.id) ?? [];
-  const phase: FlowPhase = pendingInterpretation
-    ? "interpreting"
-    : confirmed
-      ? "confirmed"
-      : plan.action === "out_of_scope"
-        ? "out_of_scope"
-        : flow.openCard || plan.action === "ask"
-          ? "asking"
-          : plan.canConfirm ? "readback" : "blocked";
   const triggers = new Map(bundle.messages.filter((message) => message.producedVersionId).map((message) => [message.producedVersionId as string, message.content]));
   return {
     session: { ...bundle.session },
@@ -187,17 +186,15 @@ export function buildSnapshot(bundle: SessionBundle, today: string): Snapshot {
       createdAt: version.createdAt,
       diffCount: index === 0 ? 0 : summarizeFactChanges(bundle.versions[index - 1].draft, version.draft).length,
     })),
-    latest: { seq: latest.seq, draft: latest.draft, fill, checks, sheet: renderFillSheet(fill, checks), promo: renderPromo(latest.draft, fill) },
+    latest: { seq: latest.seq, draft: latest.draft, fill: state.fill, checks: state.checks, sheet: renderFillSheet(state.fill, state.checks), promo: renderPromo(latest.draft, state.fill) },
     flow: {
-      phase,
-      roundsUsed: flow.roundsUsed,
-      openCardId: flow.openCard?.id ?? null,
-      openQuestions: gaps.filter((gap) => openIds.includes(gap.id)),
-      readbackId: flow.latestReadback?.content.versionSeq === latest.seq ? flow.latestReadback.id : null,
-      canConfirm: plan.action === "readback" && plan.canConfirm,
-      missing: gaps.map((gap) => gap.title),
-      missingIds: gaps.map((gap) => gap.id),
-      confirmedSeq: flow.confirmedSeq,
+      phase: phaseOf(state.plan, pendingInterpretation),
+      replyId: state.flow.replyId,
+      asking: state.missing.filter((gap) => state.asking.includes(gap.id)),
+      proposals: state.proposals,
+      missing: state.missing.map((gap) => gap.title),
+      missingIds: state.missing.map((gap) => gap.id),
+      sheetSeq: state.flow.sheetSeq,
       pendingInterpretation,
     },
   };
@@ -243,26 +240,6 @@ const editSaidLabel = (before: Ics1811Draft, after: Ics1811Draft) => {
   return items.map((item) => `把${item.label}改成${item.after}`).join("，") || "没有改动";
 };
 
-// 选项提交只是替用户省了打字，在对话里就该长得跟用户自己打的一样：按卡片上的顺序
-// 把「问题？答案」拼成一句。答案文本由「单独应用这一个问题」算出的 diff 得到——
-// 问题和事实项是多对多的（Q3 一个问题同时改优惠和货类），另建一张问题→事实项的
-// 映射表迟早会和 questions.ts 里的条件逻辑不同步，错位了还不容易发现。
-const cardSubmitLabel = (before: Ics1811Draft, questions: readonly Gap[], answers: Record<string, unknown>, applied: readonly QuestionId[]) => {
-  const parts = questions
-    .filter((question) => applied.includes(question.id))
-    .map((question) => {
-      const said = summarizeFactChanges(before, applyCardAnswers(before, { [question.id]: answers[question.id] }).draft)
-        .map((item) => item.after)
-        .join("、");
-      // 问题标题后面常跟着给用户看的填写提示（「没有就都填 0。」）或追加问句
-      // （「法务确认过没有？」），拼进句子会夹在问和答中间把话截断，只取第一问。
-      const asked = question.title.includes("？") ? `${question.title.split("？")[0]}？` : question.title;
-      return said ? `${asked}${said}` : null;
-    })
-    .filter((part): part is string => part !== null);
-  return parts.join("；") || "先不补充";
-};
-
 export async function createSession(body: unknown, deps: TurnDeps): Promise<Snapshot> {
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const now = (deps.now ?? (() => new Date().toISOString()))();
@@ -286,20 +263,21 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
     });
   }
 
-  // 示例：SOP 第九部分的复述示例（T1），信息齐全，不调 Agent，直接复述。
+  // 示例：SOP 第九部分的复述示例（T1），一句话说全了，不调 Agent，直接建好。
   const example = EXAMPLES[0];
   const draft = applyFactWrites(createEmptyDraft(newId(), example.first), example.firstWrites, { text: example.first, today: deps.today }).draft;
   const { fill, checks, plan } = evaluate(draft, [], deps.today);
-  const readback = buildReadback(draft, fill, checks, plan.action === "readback" ? plan.missing : []);
+  const sheet = renderFillSheet(fill, checks);
+  const ready = plan.action === "ready";
   return commitAndLoad(deps, {
     isNew: true,
     now,
-    session: { id: sessionId, title: fill.info.name.value, entryMode, status: readback.canConfirm ? "readback" : "collecting", createdAt: now, updatedAt: now },
-    version: { id: versionId, seq: 1, draft, sheet: renderFillSheet(fill, checks), createdBy: "human", patch: null },
+    session: { id: sessionId, title: fill.info.name.value, entryMode, status: ready ? "confirmed" : "collecting", createdAt: now, updatedAt: now },
+    version: { id: versionId, seq: 1, draft, sheet, createdBy: "human", patch: null },
     messages: [
       { id: newId(), role: "user", content: { v: 2, kind: "user_text", text: example.first }, producedVersionId: versionId },
-      { id: newId(), role: "assistant", content: agentText("信息都齐了，不用追问。下面是我的理解，确认无误就生成 1811 填写值。"), producedVersionId: null },
-      { id: newId(), role: "assistant", content: { v: 2, kind: "agent_readback", versionSeq: 1, readback }, producedVersionId: null },
+      { id: newId(), role: "assistant", content: { v: 2, kind: "agent_text", text: "一句话都说全了，不用再问，活动直接建好了。1811 填写值在右边，哪里不对直接跟我说，改完会同步更新。", asking: [], proposals: [] }, producedVersionId: null },
+      ...(ready ? [{ id: newId(), role: "assistant" as const, content: sheetMessage(draft, fill, checks, 1, sheet), producedVersionId: null }] : []),
     ],
   });
 }
@@ -368,9 +346,10 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   let createdBy: "ai" | "human" | "rollback" = "human";
   let patch: { ops: unknown; source: "ai" | "human"; reason: string } | null = null;
   let trigger: AgentTrigger | null = null;
-  let confirm = false;
   const agentTools = new Set<CampaignToolName>();
-  const notes: StoredMessage[] = [];
+  // 编排器在调模型之前就按提议记下了事实（用户整句只是点头）。
+  let acceptedByOrchestrator = false;
+  let acceptedTexts: string[] = [];
 
   switch (input.type) {
     case "interpret":
@@ -382,19 +361,21 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       userContent = { v: 2, kind: "user_text", text: input.text };
       trigger = { kind: "user_message", text: input.text };
       createdBy = "ai";
+      // 整句只是「行」「对」：不靠模型理解，按上一句的提议直接记下，模型拿到的是记好之后的草稿。
+      if (before.proposals.length && isPureAgreement(input.text)) {
+        const accepted = runOrchestratorTool(
+          "accept_campaign_proposals",
+          () => acceptProposals(prev, before.proposals, input.text),
+          (value) => `按提议记下 ${value.accepted.length} 项`,
+        );
+        if (accepted.accepted.length) {
+          next = accepted.draft;
+          acceptedByOrchestrator = true;
+          acceptedTexts = accepted.accepted.map((item) => item.text);
+          patch = { ops: { accepted: accepted.accepted.map((item) => item.id) }, source: "human", reason: `同意提议：${input.text.slice(0, 50)}` };
+        }
+      }
       break;
-    case "card": {
-      const card = before.flow.openCard;
-      if (!card) throw new TurnError(409, "这张卡片已经提交过了");
-      const asked = card.content.questions.map((question) => question.id as string);
-      const picked = Object.fromEntries(Object.entries(input.answers).filter(([id]) => asked.includes(id)));
-      const result = applyCardAnswers(prev, picked);
-      next = result.draft;
-      if (result.ignored.length) notes.push(agentText(`有 ${result.ignored.length} 项没记下：${result.ignored.map((item) => item.reason).join("；")}`));
-      userContent = { v: 2, kind: "user_card_submit", round: card.content.round, label: cardSubmitLabel(prev, card.content.questions, picked, result.applied) };
-      patch = { ops: { answers: input.answers, applied: result.applied }, source: "human", reason: `第 ${card.content.round} 轮卡片` };
-      break;
-    }
     case "edit": {
       const result = applyCardAnswers(prev, input.answers);
       next = result.draft;
@@ -406,10 +387,6 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       patch = { ops: { answers: input.answers, copy: input.copy }, source: "human", reason: input.origin === "panel" ? "草稿手改" : "工具修改" };
       break;
     }
-    case "confirm":
-      confirm = true;
-      userContent = { v: 2, kind: "user_event", event: "confirm", label: "确认无误，生成填写值" };
-      break;
     case "dismiss":
       if (!before.fill.notes.some((note) => note.id === input.noteId && note.kind === "restriction_unresolved")) throw new TurnError(400, "这条提示不能直接跳过");
       next = { ...prev, dismissedNotes: [...prev.dismissedNotes, input.noteId] };
@@ -431,13 +408,11 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     }
   }
 
-  let reply: string | null = null;
-  let copyDrafted = false;
+  let result: AgentResult | null = null;
   if (trigger) {
-    const phase: AgentPhase = input.type === "interpret"
-      ? "interpreting"
-      : before.flow.confirmedSeq === latest.seq ? "output" : before.flow.openCard ? "asking" : before.flow.latestReadback ? "readback" : "asking";
-    let result: AgentResult;
+    const current = acceptedByOrchestrator ? evaluate(next, bundle.messages, deps.today) : before;
+    // 阶段按这一轮开始前算：点头刚好补齐时仍是 collecting，模型才会宣布「建好了」，而不是说「已同步」。
+    const phase: AgentPhase = input.type === "interpret" ? "interpreting" : before.plan.action === "ready" ? "ready" : "collecting";
     try {
       result = await deps.runAgent({
         today: deps.today,
@@ -445,15 +420,19 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
         history: historyForAgent(bundle.messages),
         trigger,
         phase,
-        roundsUsed: before.flow.roundsUsed,
-        openQuestions: posedQuestions(before.plan).map((question) => question.id),
-        readbackSeq: before.flow.latestReadback?.content.versionSeq === latest.seq ? latest.seq : null,
-        canConfirm: before.plan.action === "readback" && before.plan.canConfirm,
+        openQuestions: current.asking,
+        // 已经按提议记下的不再交给模型，免得它再采纳一遍；只告诉它记下了什么。
+        proposals: acceptedByOrchestrator ? [] : before.proposals,
+        ...(acceptedTexts.length ? { accepted: acceptedTexts } : {}),
         canUndo: latest.seq > 1,
       }, recordTrace);
     } catch (error) {
       for (const event of traceEvents.filter((item) => item.status === "started")) {
         recordTrace(finishTraceEvent(event, { status: "failed", summary: "执行中断，可以重试", at: Date.now() }));
+      }
+      // 预采纳的事实跟着这一轮一起作废（版本不落库），轨迹不能还写着「已记下」。
+      for (const event of traceEvents.filter((item) => item.initiatedBy === "orchestrator" && item.tool === "accept_campaign_proposals" && item.status === "completed")) {
+        recordTrace({ ...event, status: "failed", summary: "没保存，重试时会重新记下" });
       }
       const reason = errorText(error, "Agent 服务暂时不可用");
       const trace = traceContent();
@@ -467,84 +446,66 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       createdBy = "rollback";
     } else {
       next = result.draft;
-      copyDrafted = result.copyDrafted;
-      if (result.applied.length || result.dropped.length) patch = { ops: { applied: result.applied, dropped: result.dropped }, source: "ai", reason: trigger.text.slice(0, 200) };
+      if (result.applied.length || result.dropped.length) {
+        patch = { ops: { applied: result.applied, dropped: result.dropped, ...(patch ? { proposals: patch.ops } : {}) }, source: "ai", reason: trigger.text.slice(0, 200) };
+      }
     }
-    reply = result.reply;
-    confirm = result.confirmRequested && !result.undo;
   }
 
-  if (next.copy?.source === "ai" && !copyDrafted && copyOutdated(prev, next)) next = { ...next, copy: null };
+  // 撤销、恢复是回到那个版本本来的样子，不按「事实变了」清掉当时起草的名称。
+  if (createdBy !== "rollback" && next.copy?.source === "ai" && !(result?.copyDrafted && !result.undo) && copyOutdated(prev, next)) next = { ...next, copy: null };
 
   const changed = JSON.stringify(prev) !== JSON.stringify(next);
   const versionSeq = changed ? latest.seq + 1 : latest.seq;
   const versionId = changed ? newId() : null;
-  const deterministicEdit = input.type === "card" || input.type === "edit" || input.type === "dismiss" || input.type === "undo" || input.type === "rollback";
-  const shouldSupplementAnalysis = !agentTools.has("analyze_campaign_state") && (agentTools.has("extract_campaign_facts") || deterministicEdit);
+  const deterministicEdit = input.type === "edit" || input.type === "dismiss" || input.type === "undo" || input.type === "rollback";
+  const factsTouched = acceptedByOrchestrator || agentTools.has("extract_campaign_facts") || agentTools.has("accept_campaign_proposals");
+  const shouldSupplementAnalysis = !agentTools.has("analyze_campaign_state") && (factsTouched || deterministicEdit);
   const after = shouldSupplementAnalysis
     ? runOrchestratorTool(
         "analyze_campaign_state",
         () => evaluate(next, bundle.messages, deps.today),
-        (value) => `完成规则分析 · ${posedQuestions(value.plan).length} 项待补`,
+        (value) => (value.plan.action === "ready" ? "完成规则分析 · 信息已齐" : `完成规则分析 · ${value.missing.length} 项待补`),
       )
     : evaluate(next, bundle.messages, deps.today);
   const agentMessages: StoredMessage[] = [];
 
-  if (changed && input.type !== "interpret" && input.type !== "card") {
+  if (changed && input.type !== "interpret") {
     const items = summarizeFactChanges(prev, next);
     if (items.length) {
       const title = input.type === "rollback" ? `已恢复到版本 ${input.seq}` : createdBy === "rollback" ? "已撤销" : items.length === 1 ? "记下了" : `改了 ${items.length} 处`;
       agentMessages.push({ v: 2, kind: "agent_change", title, items, versionSeq });
     }
   }
-  // 不在 1811 范围时只留代码的说明，免得模型再说一遍意思相同的话。
-  if (reply && after.plan.action !== "out_of_scope") agentMessages.push(agentText(reply));
-  agentMessages.push(...notes);
+
+  if (result && trigger) {
+    const reply = replyWithQuestions(result, after, input.type === "interpret" || (factsTouched && changed), next, deps.today);
+    if (reply) agentMessages.push(reply);
+  }
 
   let status: SessionStatus = "collecting";
-  if (confirm) {
-    if (input.type === "confirm") {
-      runOrchestratorTool("confirm_campaign_readback", () => {
-        if (changed || before.flow.latestReadback?.content.versionSeq !== latest.seq) throw new TurnError(409, "复述已经更新，请看最新的复述再确认");
-        if (!(after.plan.action === "readback" && after.plan.canConfirm)) throw new TurnError(409, "还有没补齐或没通过的项，不能确认");
-        return true;
-      }, () => "最新活动复述已确认");
-    } else {
-      if (changed || before.flow.latestReadback?.content.versionSeq !== latest.seq) throw new TurnError(409, "复述已经更新，请看最新的复述再确认");
-      if (!(after.plan.action === "readback" && after.plan.canConfirm)) throw new TurnError(409, "还有没补齐或没通过的项，不能确认");
-    }
-    const sheet = runOrchestratorTool(
-      "generate_ics1811_sheet",
-      () => renderFillSheet(after.fill, after.checks),
-      (value) => `生成 ${value.details.length} 条优惠明细`,
-    );
-    agentMessages.push({ v: 2, kind: "agent_fill_sheet", versionSeq: latest.seq, sheet });
+  if (after.plan.action === "ready") {
     status = "confirmed";
-  } else if (after.plan.action === "out_of_scope") {
-    if (trigger) agentMessages.push(agentText(after.plan.reason));
-  } else if (after.plan.action === "ask") {
-    // 卡片还开着时打字或手改：要问的都还在这张卡片上，就不出新卡片（已答的题隐藏）；
-    // 回答引出了卡片上没有的追问，就出下一轮，把新追问和上一轮没答的一起问。
-    const onCard = before.flow.openCard?.content.questions.map((question) => question.id) ?? [];
-    const keepOpen = Boolean(before.flow.openCard) && input.type !== "card" && after.plan.questions.every((question) => onCard.includes(question.id));
-    if (!keepOpen) agentMessages.push({ v: 2, kind: "agent_round_card", round: after.plan.round, questions: after.plan.questions });
-  } else {
-    const current = !changed && !before.flow.openCard && before.flow.latestReadback?.content.versionSeq === latest.seq;
-    if (!current) {
-      const readbackPlan = after.plan;
-      const createReadback = () => buildReadback(next, after.fill, after.checks, readbackPlan.missing);
-      const readback = agentTools.has("build_campaign_readback")
-        ? createReadback()
-        : runOrchestratorTool(
-            "build_campaign_readback",
-            createReadback,
-            (value) => `生成复述 · ${value.missing.length} 项待补`,
-          );
-      agentMessages.push({ v: 2, kind: "agent_readback", versionSeq, readback });
+    // 齐了就建好：刚补齐的这一轮、或者建好以后又改了，都出一份最新的填写值；什么都没变就不重复出。
+    const lastSheet = [...bundle.messages].reverse().find((message) => message.content.kind === "agent_fill_sheet")?.content;
+    const rendered = renderFillSheet(after.fill, after.checks);
+    // 只改了对外文案这类不进填写值的东西时，填写值和上一份一模一样，不再发一条「已同步更新」。
+    // 但中间掉回过「还缺」（比如改出新缺项又撤销），回到建好要再出一份，对话里才看得到。
+    const sameAsLast = lastSheet?.kind === "agent_fill_sheet" &&
+      JSON.stringify(lastSheet.sheet) === JSON.stringify(rendered) &&
+      bundle.versions.filter((version) => version.seq > lastSheet.versionSeq).every((version) => evaluate(version.draft, [], deps.today).plan.action === "ready");
+    if ((changed || before.flow.sheetSeq !== latest.seq) && !sameAsLast) {
+      // 模型自己已经成功生成过就不再补跑一步，免得轨迹里同一件事出现两次；内容照样按最终草稿重算。
+      const modelGenerated = traceEvents.some((event) => event.tool === "generate_ics1811_sheet" && event.initiatedBy === "model" && event.status === "completed");
+      const sheet = modelGenerated
+        ? rendered
+        : runOrchestratorTool("generate_ics1811_sheet", () => rendered, (value) => `生成 ${value.details.length} 条优惠明细`);
+      agentMessages.push(sheetMessage(next, after.fill, after.checks, versionSeq, sheet));
     }
-    status = after.plan.canConfirm ? "readback" : "collecting";
+  } else if (after.plan.action === "out_of_scope" && trigger && !agentMessages.some((message) => message.kind === "agent_text")) {
+    // 不在 1811 范围：模型会先接住想法再说明录不进去（提示词里要求的），它什么都没说时才由代码说明。
+    agentMessages.push(agentText(after.plan.reason));
   }
-  if (!confirm && before.flow.confirmedSeq === latest.seq && !changed) status = "confirmed";
   if (trigger && agentMessages.length === 0) agentMessages.push(agentText("我没理解这句要改什么，可以换个说法再说一次。"));
 
   const trace = traceContent();
@@ -564,4 +525,30 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       ...agentMessages.map((content, index) => ({ id: newId(), role: "assistant" as const, content, producedVersionId: !userContent && index === 0 ? versionId : null })),
     ],
   });
+}
+
+type Evaluation = ReturnType<typeof evaluate>;
+
+// 模型的回复，连同它在问什么、提议了什么一起存下，下一轮的短回答和点头按这个对。
+// 模型没登记要问什么时兜底：这一轮记下了东西却没接着问，就按缺项目录补一句，免得对话停在「记下了」。
+function replyWithQuestions(result: AgentResult, after: Evaluation, recordedSomething: boolean, draft: Ics1811Draft, today: string): StoredMessage | null {
+  const missingIds = after.missing.map((gap) => gap.id);
+  let text = result.reply ?? "";
+  let asking: QuestionId[] = [];
+  let proposals: Proposal[] = [];
+  if (result.asking !== null) {
+    asking = result.asking.filter((id) => missingIds.includes(id));
+    // 提议按最终回复再过一遍：二选一的问法配提议，用户一句「对」会记成其中一边。
+    proposals = after.plan.action === "out_of_scope" ? [] : withoutEitherOr(text, liveProposals(draft, result.proposals, today));
+  } else if (missingIds.length && recordedSomething && !/[？?]/.test(text)) {
+    const fallback = byPriority(after.missing).slice(0, 2);
+    text = [text, `还想跟你确认一下：${fallback.map((gap) => gap.title).join("")}`].filter(Boolean).join("\n\n");
+    asking = fallback.map((gap) => gap.id);
+  } else if (!/[？?]/.test(text)) {
+    // 这句没在问（比如在回答用户的疑问）：上一句还没答的问题继续有效。提议不续：
+    // 用户对这句解释回一句「好的」是「知道了」，不能被当成同意之前的提议。
+    asking = after.asking;
+  }
+  // 问了但没登记题号：不知道在问哪一项，就不把任何一项当成在问，短回答记不下时模型会再问清楚。
+  return text ? { v: 2, kind: "agent_text", text, asking, proposals } : null;
 }

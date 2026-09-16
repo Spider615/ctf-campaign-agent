@@ -1,34 +1,36 @@
 // 对话消息（v: 2）。旧会话的 v1 消息读到时只保留一句文字。
-// 对话状态（第几轮、卡片是否还开着、最新复述）全部从消息记录推出，不另存，撤销和恢复不会重置轮次。
+// 对话状态（Agent 上一句在问什么、提议了什么、填写值生成到哪个版本）全部从消息记录推出，不另存。
 
 import { byCode, CODEBOOK } from "./codebook.ts";
+import { templateCopy } from "./derive.ts";
 import { fillSheetText, type FillSheet } from "./fill-sheet.ts";
 import type { Readback } from "./readback.ts";
-import type { FactKey, Facts, Gap, Ics1811Draft, OfferFact, QuestionId } from "./types.ts";
+import type { FactKey, Facts, Gap, Ics1811Draft, OfferFact, Proposal, QuestionId } from "./types.ts";
 import { isToolTrace, traceSummary, type ToolTrace } from "../../tool-trace.ts";
 
 export type ChangeItem = { label: string; before: string; after: string };
 export type RetryInput = { type: "text"; text: string } | { type: "interpret" };
 
+// 标「旧会话」的几种不再产生，只为读得出早先存下的消息：那时有追问卡片、复述卡片和「确认」按钮。
 export type StoredMessage =
   | { v: 2; kind: "user_text"; text: string }
-  | { v: 2; kind: "user_card_submit"; round: number; label: string }
+  | { v: 2; kind: "user_card_submit"; round: number; label: string } // 旧会话
   | { v: 2; kind: "user_edit"; label: string; origin: "panel" | "tool" }
-  | { v: 2; kind: "user_event"; event: "confirm" | "undo" | "rollback" | "dismiss"; label: string }
-  | { v: 2; kind: "agent_text"; text: string }
+  | { v: 2; kind: "user_event"; event: "confirm" | "undo" | "rollback" | "dismiss"; label: string } // confirm 只在旧会话里有
+  // Agent 的回复。asking / proposals 只有模型回复才带（可以是空数组），代码补的说明不带：
+  // flowOf 靠「带没带」分辨哪一句是 Agent 最近一次在问用户。
+  | { v: 2; kind: "agent_text"; text: string; asking?: QuestionId[]; proposals?: Proposal[] }
   | { v: 2; kind: "agent_error"; text: string; retry?: RetryInput }
   | { v: 2; kind: "agent_tool_trace"; trace: ToolTrace }
-  | { v: 2; kind: "agent_round_card"; round: 1 | 2; questions: Gap[] }
+  | { v: 2; kind: "agent_round_card"; round: 1 | 2; questions: Gap[] } // 旧会话
   | { v: 2; kind: "agent_change"; title: string; items: ChangeItem[]; versionSeq: number }
-  | { v: 2; kind: "agent_readback"; versionSeq: number; readback: Readback }
-  | { v: 2; kind: "agent_fill_sheet"; versionSeq: number; sheet: FillSheet };
+  | { v: 2; kind: "agent_readback"; versionSeq: number; readback: Readback } // 旧会话
+  // 活动建好（或建好后又改了）时生成。summary、lines 是代码写的「建了什么」，旧会话没有。
+  | { v: 2; kind: "agent_fill_sheet"; versionSeq: number; sheet: FillSheet; summary?: string; lines?: string[] };
 
 export type MessageKind = StoredMessage["kind"];
 
 export type ChatMessage = { id: string; role: "user" | "assistant"; createdAt: string; content: StoredMessage };
-
-export type RoundCardMessage = ChatMessage & { content: Extract<StoredMessage, { kind: "agent_round_card" }> };
-export type ReadbackMessage = ChatMessage & { content: Extract<StoredMessage, { kind: "agent_readback" }> };
 
 export function encodeMessage(message: StoredMessage): string {
   return JSON.stringify(message);
@@ -77,40 +79,30 @@ export function messageToText(message: StoredMessage): string {
     case "agent_readback":
       return message.readback.paragraph;
     case "agent_fill_sheet":
-      return fillSheetText(message.sheet);
+      return [message.summary, ...(message.lines ?? []), fillSheetText(message.sheet)].filter(Boolean).join("\n");
     default:
       return "";
   }
 }
 
 export type FlowState = {
-  roundsUsed: number;
-  askedBefore: QuestionId[];
-  openCard: RoundCardMessage | null;
-  latestReadback: ReadbackMessage | null;
-  confirmedSeq: number | null;
+  // Agent 最近一次回复（replyId）在问的问题和给的提议；之后草稿变了，由调用方再和当前缺项取交集。
+  replyId: string | null;
+  asking: QuestionId[];
+  proposals: Proposal[];
+  // 最近一次生成填写值对应的版本号。
+  sheetSeq: number | null;
 };
 
-const CLOSES_CARD: readonly MessageKind[] = ["user_card_submit", "agent_readback", "agent_fill_sheet"];
-
 export function flowOf(messages: readonly ChatMessage[]): FlowState {
-  let roundsUsed = 0;
-  let lastCardIndex = -1;
-  messages.forEach((message, index) => {
-    if (message.content.kind !== "agent_round_card") return;
-    roundsUsed = Math.max(roundsUsed, message.content.round);
-    lastCardIndex = index;
-  });
-  const lastCard = lastCardIndex >= 0 ? (messages[lastCardIndex] as RoundCardMessage) : null;
-  const closed = !lastCard || messages.slice(lastCardIndex + 1).some((message) => CLOSES_CARD.includes(message.content.kind));
-  const latestReadback = [...messages].reverse().find((message) => message.content.kind === "agent_readback") as ReadbackMessage | undefined;
+  const lastReply = [...messages].reverse().find((message) => message.content.kind === "agent_text" && message.content.asking !== undefined);
+  const reply = lastReply?.content.kind === "agent_text" ? lastReply.content : null;
   const latestSheet = [...messages].reverse().find((message) => message.content.kind === "agent_fill_sheet");
   return {
-    roundsUsed,
-    askedBefore: lastCard ? lastCard.content.questions.map((question) => question.id) : [],
-    openCard: closed ? null : lastCard,
-    latestReadback: latestReadback ?? null,
-    confirmedSeq: latestSheet?.content.kind === "agent_fill_sheet" ? latestSheet.content.versionSeq : null,
+    replyId: lastReply?.id ?? null,
+    asking: reply?.asking ?? [],
+    proposals: reply?.proposals ?? [],
+    sheetSeq: latestSheet?.content.kind === "agent_fill_sheet" ? latestSheet.content.versionSeq : null,
   };
 }
 
@@ -156,12 +148,17 @@ function offerText(offer: OfferFact): string {
       item.threshold !== null ? `满 ${item.threshold}` : "",
       item.amount !== null ? (offer.pattern === "per_gram" || offer.pattern === "diamond_gold_gram" ? `每克减 ${item.amount}` : `减 ${item.amount}`) : "",
       item.multiple !== null ? `${item.multiple} 倍` : "",
-      item.upgradeRatio !== null ? `换大比例 ${item.upgradeRatio}` : "",
+      item.upgradeRatio !== null ? `换大 ${ratioText(item.upgradeRatio)}` : "",
       item.discount !== null ? `${offer.pattern === "gold_tradein" ? "工费折扣" : "折扣"} ${item.discount}` : "",
     ].filter(Boolean).join(" "),
   );
   return [offer.unsupportedType ?? OFFER_NAME[offer.pattern], ...items.filter(Boolean)].join("：");
 }
+
+// 让扣点、回款率页面上填小数，但人说的是百分数：两样都写出来，对话里说的「2%」和这里对得上。
+export const rateText = (value: number) => (value === 0 ? "0" : `${Number((value * 100).toFixed(2))}%（填 ${value}）`);
+export const ratioText = (value: number) => `${Number((value * 100).toFixed(2))}%`;
+const SLOT_LABEL: Record<string, string> = { diamond: "钻石", gold: "黄金" };
 
 export function factText<K extends FactKey>(key: K, fact: Facts[K]): string {
   if (!fact) return "未填";
@@ -179,13 +176,18 @@ export function factText<K extends FactKey>(key: K, fact: Facts[K]): string {
       return value === "every" ? "每满都减" : "只减一次";
     case "gramBasis":
       return value === "actual" ? "按实际克重" : "按整克";
-    case "categories":
-      return [...new Set(Object.values(value as Record<string, string[]>).flat())].join("、");
+    case "categories": {
+      // 买钻石享黄金克减分钻石、黄金两组：分开写，提议和改动里才看得出是哪一组。
+      const map = value as Record<string, string[]>;
+      const slots = Object.keys(map).filter((slot) => slot !== "all" && map[slot]?.length);
+      if (!slots.length) return [...new Set(Object.values(map).flat())].join("、");
+      return [...(map.all?.length ? [map.all.join("、")] : []), ...slots.map((slot) => `${SLOT_LABEL[slot] ?? slot}：${map[slot].join("、")}`)].join("；");
+    }
     case "menuConversion":
       return value ? "转为 outlet 餐牌" : "不转餐牌";
     case "rates": {
       const rates = value as { concession: number; collection: number };
-      return `让扣点 ${rates.concession}，回款率 ${rates.collection}`;
+      return `让扣点 ${rateText(rates.concession)}，回款率 ${rateText(rates.collection)}`;
     }
     case "commission":
       return value === "actual_price" ? "按实际售价算提成" : "按实际售价 × 折扣算提成";
@@ -216,10 +218,13 @@ export function summarizeFactChanges(before: Ics1811Draft, after: Ics1811Draft):
     const next = factText(key, after.facts[key]);
     return previous === next ? [] : [{ label: FACT_LABEL[key], before: previous, after: next }];
   });
+  // 名称和内容：只在起草、手改或退回模板时算一处改动（模板跟着事实变不单独算）；
+  // 没起草过的一边写模板拼出来的实际文字，不写「按模板生成」，用户才看得出从什么改成了什么。
   for (const [label, pick] of [["活动名称", "name"], ["活动内容", "content"]] as const) {
-    const previous = before.copy?.[pick] ?? "按模板生成";
-    const next = after.copy?.[pick] ?? "按模板生成";
-    if (previous !== next) items.push({ label, before: previous, after: next });
+    if (before.copy?.[pick] === after.copy?.[pick]) continue;
+    const previous = before.copy?.[pick] ?? templateCopy(before)[pick];
+    const next = after.copy?.[pick] ?? templateCopy(after)[pick];
+    if (previous !== next) items.push({ label, before: previous || "未填", after: next || "未填" });
   }
   return items;
 }

@@ -1,12 +1,13 @@
 // ICS-1811 单条新增：事实层（用户说过的话）与每轮由代码推导的填写模型。
 // 设计见 docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md。
 
-// 填写模型字段的来源：user 用户原话或卡片；ai 由规则、代码表推出；default 页面默认或 §9(四) 的 demo 处理；pending 还没有值。
+// 填写模型字段的来源：user 用户原话、面板或用户同意的提议；ai 由规则、代码表推出；default 页面默认或 §9(四) 的 demo 处理；pending 还没有值。
 export type Source = "user" | "ai" | "default" | "pending";
 
-export type FactVia = "text" | "card" | "panel";
+// proposal：Agent 提议了具体值，用户在对话里点头同意（quote 是用户那句话）。
+export type FactVia = "text" | "card" | "panel" | "proposal";
 
-// 事实层的一项：用户说过的值，附原话片段（卡片回答记作「卡片：Q1」）。
+// 事实层的一项：用户说过的值，附原话片段（结构化回答记作「卡片：Q1」）。
 export type Fact<T> = { value: T; quote: string; via: FactVia };
 
 export type OfferPattern =
@@ -179,14 +180,21 @@ export type Gap = {
   candidates?: string[];
   slots?: string[];
   params?: ParamKey[];
-  repeated?: boolean; // 上一轮问过但没回答
 };
 
+// Agent 在对话里提议的具体值：answer 是结构化回答（格式同 card.ts），text 由代码按事实层渲染，
+// 用户回「行」「对」时按 answer 记下，不按模型嘴上说的记。
+// before 是提议时这几项的原值（渲染文字）：之后用户自己改过这几项，提议就作废，免得一句「行」把用户刚说的覆盖回去。
+// 旧消息里的提议没有 before，只在这一项仍缺时有效。
+export type Proposal = { id: QuestionId; answer: Record<string, unknown>; text: string; before?: string };
+
+// 没有「确认」这一步：人定项齐了、校验没有阻断，就是 ready，这一轮直接生成填写值。
 export type Plan =
-  | { action: "ask"; round: 1 | 2; questions: Gap[] }
-  | { action: "readback"; canConfirm: boolean; missing: Gap[]; blockers: Check[] }
+  | { action: "collect"; missing: Gap[]; blockers: Check[] }
+  | { action: "ready" }
   | { action: "out_of_scope"; reason: string };
 
 // 对话所处的阶段。放在这里而不是 turns.ts：等待时那句说明文案（thinking.ts）要用它，
 // 领域层不能反过来依赖 server 层。turns.ts 的快照直接引这个类型。
-export type FlowPhase = "interpreting" | "asking" | "readback" | "blocked" | "confirmed" | "out_of_scope";
+// collecting 还缺人定项；blocked 不缺了但有校验阻断；ready 已经建好。
+export type FlowPhase = "interpreting" | "collecting" | "blocked" | "ready" | "out_of_scope";

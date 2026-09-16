@@ -8,7 +8,7 @@ import { discountValue } from "../../lib/campaign/ics1811/phrases";
 import type { Gap, Ics1811Draft, OfferPattern, QuestionId } from "../../lib/campaign/ics1811/types";
 import { Chip } from "./chip";
 
-// 每道追问题的原始输入。卡片和草稿面板共用：界面只存原始输入，提交时由 toAnswer 换算成卡片回答（结构见 ics1811/card.ts）。
+// 每个人定项的原始输入，草稿面板的「修改」页签在用：界面只存原始输入，提交时由 toAnswer 换算成结构化回答（结构见 ics1811/card.ts）。
 type Tier = { ratio: string; labor: string; free: boolean };
 export type RawAnswer = {
   start: string;

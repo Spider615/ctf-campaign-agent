@@ -95,15 +95,23 @@ function rateValue(token: string, unit: string | undefined): number | null {
   return value <= 1 ? value : null;
 }
 
-export function ratesFrom(text: string): { concession: number; collection: number } | null {
+// 让扣点、回款率各自说了什么；没说或说不清的那一项为 null。「扣点」「回款率」和数字之间允许「改成」「有的」这类短词。
+export function ratePartsFrom(text: string): { concession: number | null; collection: number | null } {
   const t = compact(text);
-  if (UNSURE.test(t) || /还没|没给|没出/.test(t)) return null;
-  const concessionMatch = /扣点(?:是|为|填)?(\d+(?:\.\d+)?)(%|个点)?/.exec(t);
-  const collectionMatch = /回款率?(?:是|为|填)?(\d+(?:\.\d+)?)(%)?/.exec(t);
+  if (UNSURE.test(t) || /还没|没给|没出/.test(t)) return { concession: null, collection: null };
+  const linking = "(?:改成|改为|调成|调到|有的?|是|为|填)?";
+  const concessionMatch = new RegExp(`扣点${linking}(\\d+(?:\\.\\d+)?)(%|个点)?`).exec(t);
+  const collectionMatch = new RegExp(`回款率?${linking}(\\d+(?:\\.\\d+)?)(%)?`).exec(t);
   const noConcession = /(没有|没|无|不需要|不涉及|不用|免)[^，,；;。]*扣点|扣点[^，,；;。]*(没有|没|无|为0|是0|填0|不需要|不用)/.test(t);
   const noCollection = /(没有|没|无|不需要|不涉及|不用|免)[^，,；;。]*回款|回款率?[^，,；;。]*(没有|没|无|为0|是0|填0|不需要|不用)/.test(t);
-  const concession = concessionMatch ? rateValue(concessionMatch[1], concessionMatch[2]) : noConcession ? 0 : null;
-  const collection = collectionMatch ? rateValue(collectionMatch[1], collectionMatch[2]) : noCollection ? 0 : null;
+  return {
+    concession: concessionMatch ? rateValue(concessionMatch[1], concessionMatch[2]) : noConcession ? 0 : null,
+    collection: collectionMatch ? rateValue(collectionMatch[1], collectionMatch[2]) : noCollection ? 0 : null,
+  };
+}
+
+export function ratesFrom(text: string): { concession: number; collection: number } | null {
+  const { concession, collection } = ratePartsFrom(text);
   return concession !== null && collection !== null ? { concession, collection } : null;
 }
 
@@ -182,9 +190,19 @@ export function weekdaysFrom(text: string): number[] | null {
 }
 
 // 提成口径：只出现「折上折」「可叠加」不算回答（§9(二)5）。「售价」「卖的价」都指实际售价。
+// 1811 这一栏就叫「计折上折」，选项是「计算 / 不计算折上折」，所以「不计算折上折」本身就是回答；
+// 正在问提成口径时，「那就不计算」「要计算」这种只说选项的短回答也算。问句（「计折上折是什么意思」）不算。
 export function commissionFrom(text: string, questionOpen = false): "actual_price" | "price_times_discount" | null {
   const t = compact(text);
   if (UNSURE.test(t)) return null;
+  if (!/什么|怎么|吗|要不要|是否|[？?]/.test(t)) {
+    // 否定词要直接修饰「计算」：「不需要计算折上折」是不计算；「不过要计算折上折」里的「不」和计算无关。
+    if (/(?:不(?:需要|用|要|必)?|无需|别|没有?)(?:再)?(?:计算?|算)折上折/.test(t)) return "actual_price";
+    if (/(?:计算?|算)折上折/.test(t)) return "price_times_discount";
+    const bare = t.replace(/[，,。！!]+$/, "");
+    if (questionOpen && /^(?:那|那就|就)?(?:不计算?|不算)(?:了|吧)?$/.test(bare)) return "actual_price";
+    if (questionOpen && /^(?:那|那就|就)?(?:要)?计算(?:吧)?$/.test(bare)) return "price_times_discount";
+  }
   if (!/提成|实际售价/.test(t) && !questionOpen) return null;
   if (/[×xX*]折扣|乘(?:以)?折扣|折后价|打折后|折扣后/.test(t)) return "price_times_discount";
   return /实际售价|售价(?!类型|固定)|卖价|卖的价|实际价格/.test(t) ? "actual_price" : null;
@@ -209,6 +227,28 @@ export function yesNo(text: string): boolean | null {
   return null;
 }
 
+// 同意 Agent 上一条回复里的提议（「行」「对，就这样」「都按你说的」）。
+// 只看第一小句是不是纯粹的点头：「是按实际克重」「可以改价」是在说具体内容，「对了，……」是换话题，都不算。
+const AGREE_WORDS = "行|好|好的|可以|对|对的|是|是的|没问题|没错|同意|ok|嗯|嗯嗯|就这样|就这么定|就这么办|都对|都行|都可以|按你说的|照你说的|都按你说的|按这个|就按这个|照这个|就按你说的";
+// 「嗯？」「对？」是没听懂在反问，「对吧」「是嘛」是在求证，都不是点头（验证工作流实测会被当成同意记下）。
+// 「好吧」「行吧」仍是点头。
+const PURE_AGREE = new RegExp(`^(?:嗯|呃|额|哦|噢|啊|那)*(?:${AGREE_WORDS})+(?:吧|啊|呀|哈|的|了)*$`, "i");
+const SEEKING = /^(?:嗯|呃|额|哦|噢|啊|那)*(?:对|是)的?吧$/;
+const isNod = (part: string) => PURE_AGREE.test(part) && !SEEKING.test(part);
+const clausesOf = (text: string) => compact(text).split(/[，,；;。！!？?、~～.\n]+/).filter(Boolean);
+
+export function agreesToProposal(quote: string): boolean {
+  const parts = clausesOf(quote);
+  if (!parts.length || /[？?]/.test(quote) || UNSURE.test(compact(quote))) return false;
+  return isNod(parts[0]) && !/^对了/.test(parts[0]);
+}
+
+// 整句只是在点头、没有夹带别的信息：编排器不用等模型理解，直接按提议记下。
+export function isPureAgreement(text: string): boolean {
+  const parts = clausesOf(text);
+  return parts.length > 0 && !/[？?]/.test(text) && !UNSURE.test(compact(text)) && !/^对了/.test(parts[0]) && parts.every(isNod);
+}
+
 export function legalConfirmedFrom(text: string): boolean | null {
   const t = compact(text);
   if (/法务[^，,；;。]*(没|未|还没|尚未|不)|(没|未|还没|尚未)[^，,；;。]*法务/.test(t)) return false;
@@ -218,12 +258,22 @@ export function legalConfirmedFrom(text: string): boolean | null {
 
 export type SloganParse = { wanted: false } | { wanted: true; text: string | null; legalConfirmed: boolean | null };
 
+// 标语原文：有成对引号就只取第一对引号里的；没有引号时从「标语用：」「原文是」这类引导词后面取到标点为止。
+// 验证工作流实测：「标语原文就是「以旧焕新 金选五一」」曾被记成「原文就是「以旧焕新 金选五一」。
+const QUOTED = /「([^」\n]+)」|“([^”\n]+)”|"([^"\n]+)"|『([^』\n]+)』/;
+const SLOGAN_LEAD = /标语(?:原文)?(?:就是|定为|叫做|是|为|用|写|叫)?\s*[:：]?|原文(?:就是|是|为)?\s*[:：]?/g;
+
 export function sloganFrom(text: string): SloganParse | null {
   const raw = text.trim();
   if (/(不加|不要|不用|没有|无需|不需要|不设)[^，,；;。]*标语|标语[^，,；;。]*(不加|不要|不用|没有|不需要)/.test(raw)) return { wanted: false };
-  const match = /标语(?:用|是|为|写|定为)?\s*[:：]?\s*["“「『]?([^"”」』。\n，,；;]+)/.exec(raw);
-  if (!match) return null;
-  return { wanted: true, text: match[1].trim() || null, legalConfirmed: legalConfirmedFrom(raw) };
+  if (!/标语/.test(raw)) return null;
+  const quoted = QUOTED.exec(raw);
+  const leads = [...raw.matchAll(SLOGAN_LEAD)];
+  const last = leads.at(-1);
+  const rest = quoted ? null : last ? raw.slice((last.index ?? 0) + last[0].length) : null;
+  const slogan = (quoted ? quoted.slice(1).find(Boolean) : rest?.split(/[。\n，,；;]/)[0])?.trim();
+  if (!slogan) return null;
+  return { wanted: true, text: slogan, legalConfirmed: legalConfirmedFrom(raw) };
 }
 
 export function settlementLetterFrom(text: string): boolean | null {
@@ -244,6 +294,12 @@ export function onlineFrom(text: string): boolean | null {
   if (/线上|电商|天猫|京东|小程序|直播间/.test(t)) return true;
   if (/线下/.test(t)) return false;
   return null;
+}
+
+// 「2026-09-31」这类格式对、日子不存在的日期。
+export function isRealDate(iso: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return match !== null && isoDate(+match[1], +match[2], +match[3]) === iso;
 }
 
 function isoDate(year: number, month: number, day: number): string | null {
