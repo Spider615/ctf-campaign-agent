@@ -92,7 +92,7 @@ export const SOP_QUESTIONS: SopQuestion[] = [
 export const DESIGN_DEFAULTS: DesignDefault[] = [
   { id: "P1", value: "首句已经触发的追问放在第 1 轮一起问", modules: "questions.ts" },
   { id: "P2", value: "复述之后的修改引出的新缺项，计入两轮上限", modules: "questions.ts、turns.ts" },
-  { id: "P3", value: "活动名称按字符数计 13 个；只允许汉字、字母、数字、小数点和百分号；超限阻断", modules: "checks.ts、draft_copy" },
+  { id: "P3", value: "活动名称按字符数计 13 个；只允许汉字、字母、数字、小数点和百分号；超限阻断", modules: "checks.ts、draft_campaign_copy" },
   { id: "P4", value: "让扣点、回款率大于 1 阻断", modules: "checks.ts" },
   { id: "P5", value: "周期里的 0 不和 1–7 混填", modules: "checks.ts" },
   { id: "P6", value: "日期输出 YYYY-MM-DD；只写月日时取今天之后最近的日期", modules: "phrases.ts、fill-sheet.ts" },

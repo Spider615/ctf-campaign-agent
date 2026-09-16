@@ -85,6 +85,10 @@ export type Ics1811Draft = {
   unresolvedStores: string[]; // 对不上代码表的门店说法，追问时给候选
   unresolvedCategories: string[]; // 有歧义或对不上的货类说法
   copy: { name: string; content: string; source: "ai" | "user" } | null;
+  // 对外宣传文案里模型能写的只有创意部分：主标题和卖点。日期、门店、优惠力度
+  // 由代码从 fill 渲染，不让模型重写一遍（数字有守卫，但「闽深区」写成「华南区」拦不住）。
+  // 旧会话读出来没有这个字段，取值处一律按 ?? null 容错。
+  promo: { headline: string; highlights: string[]; source: "ai" | "user" } | null;
   dismissedNotes: string[]; // 用户在复述里选了「不限定」的提示
 };
 
@@ -182,3 +186,7 @@ export type Plan =
   | { action: "ask"; round: 1 | 2; questions: Gap[] }
   | { action: "readback"; canConfirm: boolean; missing: Gap[]; blockers: Check[] }
   | { action: "out_of_scope"; reason: string };
+
+// 对话所处的阶段。放在这里而不是 turns.ts：等待时那句说明文案（thinking.ts）要用它，
+// 领域层不能反过来依赖 server 层。turns.ts 的快照直接引这个类型。
+export type FlowPhase = "interpreting" | "asking" | "readback" | "blocked" | "confirmed" | "out_of_scope";

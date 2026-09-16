@@ -1,9 +1,17 @@
 // 白话复述（设计文档 8.1 节）：代码模板生成，句子顺序照 SOP 第九部分的复述示例。模型不写复述。
 
 import { discountText } from "./derive.ts";
+import { QUESTION_EXAMPLE } from "./questions.ts";
 import type { Check, Detail, FillModel, Gap, Ics1811Draft } from "./types.ts";
 
 export type Readback = {
+  // 一句话结论。卡片默认只显示这句和「仍缺」，完整复述折叠起来（「以对话为主」）。
+  // 注意：复述是存进 D1 的，老会话没有这个字段，界面要容忍它缺失。
+  summary: string;
+  // 决定「要不要确认」的句子；审批卡片可以折叠，但不能把这部分也藏起来。
+  essentials: string[];
+  // 按页面默认、不影响判断的句子，默认收起。
+  defaults: string[];
   paragraph: string;
   attention: Array<{ id: string; text: string; dismissible: boolean }>;
   blockers: string[];
@@ -59,10 +67,16 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
   const { info, details } = fill;
   const f = draft.facts;
   const parts: string[] = [];
+  // 按默认走、不影响「要不要确认」的句子进这里，卡片上默认收起。
+  const defaults: string[] = [];
 
-  parts.push(`活动名称「${info.name.value}」，活动内容「${info.content.value}」`);
-  parts.push(`品牌${info.brand.value ?? "待指定"}${info.brand.source === "default" ? "（页面默认）" : ""}，审批流${info.approvalFlow.value ? `选「${info.approvalFlow.value}」` : "不选（涉及多个品牌，由系统取最高审批等级）"}`);
-  parts.push(`${stripCode(info.channel.value)}，活动级优惠类型为${stripCode(info.offerNature.value)}`);
+  // 名称和内容是模型唯一的自由发挥区，确认整张填写值时它们是搭便车被一起认掉的。
+  // 在复述里标明是谁写的，确认才是知情的行为。用（）不用「」：界面和测试都按「」切分内容。
+  // 模板态和模型态的 source 都是 ai，只能靠 draft.copy 在不在来区分。
+  const copyBy = !draft.copy ? "（按模板生成，确认即采用）" : draft.copy.source === "ai" ? "（模型起草，确认即采用）" : "";
+  parts.push(`活动名称「${info.name.value}」，活动内容「${info.content.value}」${copyBy}`);
+  defaults.push(`品牌${info.brand.value ?? "待指定"}${info.brand.source === "default" ? "（页面默认）" : ""}，审批流${info.approvalFlow.value ? `选「${info.approvalFlow.value}」` : "不选（涉及多个品牌，由系统取最高审批等级）"}`);
+  defaults.push(`${stripCode(info.channel.value)}，活动级优惠类型为${stripCode(info.offerNature.value)}`);
   const cycle = info.cycle.value === "0" ? "每天生效（周期填 0）" : `每周${info.cycle.value.split(",").map((day) => WEEKDAY_NAME[Number(day)]).join("、")}生效（周期填 ${info.cycle.value}）`;
   const { value: start } = info.startDate;
   const { value: end } = info.endDate;
@@ -82,14 +96,14 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
   const limits = [heads.length ? `号头限 ${heads.join("、")}` : "", members.length ? `会员级别限 ${members.join("、")}` : "", prices.length ? `售价类型限 ${prices.join("、")}` : "", floatNote].filter(Boolean);
   const unlimited = [heads.length ? "" : "号头", members.length ? "" : "会员级别", prices.length || floatOnly ? "" : "售价类型"].filter(Boolean);
   const restrictionRows = details.flatMap((detail) => detail.restrictions.map((item) => `${item.label}填 ${item.value.value}`));
-  parts.push([
+  defaults.push([
     `货品范围为${stripCode(info.productScope.value)}${menu}`,
     [...limits, unlimited.length ? `不限${unlimited.join("、")}` : ""].filter(Boolean).join("，"),
     restrictionRows.length ? `限制条件：${[...new Set(restrictionRows)].join("、")}，其余不限` : "不排除任何商品，没有整单或单件的金额、件数、克重限制",
   ].join("，"));
 
   const payments = info.paymentMethods.basis.startsWith("默认") ? "付款方式按默认（含 GLP 积分抵现）" : `付款方式：${info.paymentMethods.value.join("、")}`;
-  parts.push(payments);
+  defaults.push(payments);
 
   const rates = f.rates ? (f.rates.value.concession === 0 && f.rates.value.collection === 0 ? "没有让扣点和回款率" : `让扣点 ${f.rates.value.concession}、回款率 ${f.rates.value.collection}`) : "让扣点和回款率待补";
   const commission = info.commission.value === "不计算折上折" ? "销售提成按实际售价计算" : info.commission.value === "计算折上折" ? "销售提成按实际售价 × 折扣计算（计算折上折）" : "提成口径待补";
@@ -102,8 +116,8 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
     const has = fill.settlement.has.value;
     parts.push(has === true ? `结算说明函 ${fill.settlement.fileNames.length} 份，文件名建议：${fill.settlement.fileNames.join("、")}` : has === false ? "没有结算说明函" : "结算说明函待补");
   }
-  parts.push(fill.activityGroup.value.startsWith("3)") ? `活动分组保持默认「${fill.activityGroup.value}」` : `活动分组建完后在 ICS-1815 改为「${fill.activityGroup.value}」`);
-  parts.push("是否参与打折、预售时间、是否凭券使用按默认值");
+  defaults.push(fill.activityGroup.value.startsWith("3)") ? `活动分组保持默认「${fill.activityGroup.value}」` : `活动分组建完后在 ICS-1815 改为「${fill.activityGroup.value}」`);
+  defaults.push("是否参与打折、预售时间、是否凭券使用按默认值");
 
   const blockers = checks.filter((check) => check.severity === "blocker");
   const attention = [
@@ -112,11 +126,25 @@ export function buildReadback(draft: Ics1811Draft, fill: FillModel, checks: read
     ...Object.values(info).filter((item) => item.tbc).map((item) => ({ id: `tbc:${item.tbc}`, text: item.tbc as string, dismissible: false })),
   ];
   const canConfirm = missing.length === 0 && blockers.length === 0;
+  // 结论只放最能决定「要不要确认」的三项：名称、日期、门店。优惠和明细在折叠的完整复述里。
+  const shortDate = start && end
+    ? `${Number(start.slice(5, 7))}月${Number(start.slice(8, 10))}日–${Number(end.slice(5, 7))}月${Number(end.slice(8, 10))}日`
+    : "日期待补";
+  const branches = info.branches.value;
+  const shortStores = !branches.length
+    ? "门店待补"
+    : branches.length > 2 ? `${branches[0]} 等 ${branches.length} 家门店` : `${branches.join("、")} 门店`;
+  const summary = `「${info.name.value}」 · ${shortDate} · ${shortStores}`;
   return {
-    paragraph: `${parts.join("；")}。确认无误后生成填写内容。`,
+    summary,
+    essentials: parts,
+    defaults,
+    // 整段仍然保留：复制用，旧会话也还在读它。
+    paragraph: `${[...parts, ...defaults].join("；")}。确认无误后生成填写内容。`,
     attention: attention.filter((item, index) => attention.findIndex((other) => other.id === item.id) === index),
     blockers: blockers.filter((check) => !check.id.startsWith("V-A08")).map((check) => check.message),
-    missing: missing.map((gap) => gap.title),
+    // 两轮追问结束后，缺项只剩这一处能告诉用户怎么答，所以把追问时那句能照抄的示例一起带上。
+    missing: missing.map((gap) => (QUESTION_EXAMPLE[gap.id] ? `${gap.title}（直接打字回答，比如「${QUESTION_EXAMPLE[gap.id]}」）` : gap.title)),
     canConfirm,
   };
 }

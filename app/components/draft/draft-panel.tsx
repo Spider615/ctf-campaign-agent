@@ -7,7 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { factText } from "../../lib/campaign/ics1811/messages";
+import { draftCompletion } from "../../lib/campaign/ics1811/progress";
 import { QUESTION_TITLE } from "../../lib/campaign/ics1811/questions";
+import { highlightedFields, recentlyFilled } from "../../lib/campaign/ics1811/recent-fill";
 import type { FactKey, Gap, QuestionId } from "../../lib/campaign/ics1811/types";
 import type { Snapshot } from "../../lib/server/turns";
 import { initialRaw, QuestionControl, toAnswer, type RawAnswer } from "../chat/question-controls";
@@ -22,6 +24,8 @@ type DraftPanelProps = {
   onTabChange: (tab: string) => void;
   onEdit: (edit: PanelEdit) => Promise<boolean>;
   onRollback: (seq: number) => void;
+  // 点填写值里的「出处」跳回对话中说这句话的那条消息。
+  onShowSource: (messageId: string) => void;
 };
 
 export const PHASE_LABEL: Record<Snapshot["flow"]["phase"], string> = {
@@ -46,12 +50,12 @@ function AnswerEditor({ gap, snapshot, busy, onSave, onCancel }: { gap: Gap; sna
   const [raw, setRaw] = useState<RawAnswer>(() => initialRaw(gap, snapshot.latest.draft));
   const { answer, error } = toAnswer(gap, raw);
   return (
-    <div className="mt-3 space-y-2 rounded-xl border border-[#e8ddd1] bg-[#faf7f2] p-3">
+    <div className="mt-3 space-y-2 rounded-xl border border-[#d5e5f5] bg-[#f5f9ff] p-3">
       <QuestionControl gap={gap} raw={raw} disabled={busy} onChange={(patch) => setRaw((current) => ({ ...current, ...patch }))} />
-      {error ? <p className="text-[12px] text-[#9a3f24]">{error}</p> : null}
+      {error ? <p className="text-[12px] text-[#b2443b]">{error}</p> : null}
       <div className="flex gap-2">
-        <Button type="button" size="sm" disabled={busy || !answer} onClick={() => answer && onSave({ [gap.id]: answer })} className="h-8 bg-[#651427] text-white hover:bg-[#791a30]">保存</Button>
-        <Button type="button" size="sm" variant="outline" onClick={onCancel} className="h-8 bg-white">取消</Button>
+        <Button type="button" size="sm" disabled={busy || !answer} onClick={() => answer && onSave({ [gap.id]: answer })} className="h-11 bg-[#247cff] text-white hover:bg-[#176bea]">保存</Button>
+        <Button type="button" size="sm" variant="outline" onClick={onCancel} className="h-11 bg-white">取消</Button>
       </div>
     </div>
   );
@@ -63,8 +67,8 @@ function CopyEditor({ initial, busy, onSave, onCancel }: { initial: string; busy
     <div className="mt-2 space-y-2">
       <Textarea value={value} onChange={(event) => setValue(event.target.value)} className="min-h-20 bg-white text-sm" />
       <div className="flex gap-2">
-        <Button type="button" size="sm" disabled={busy || !value.trim()} onClick={() => onSave(value.trim())} className="h-8 bg-[#651427] text-white hover:bg-[#791a30]">保存</Button>
-        <Button type="button" size="sm" variant="outline" onClick={onCancel} className="h-8 bg-white">取消</Button>
+        <Button type="button" size="sm" disabled={busy || !value.trim()} onClick={() => onSave(value.trim())} className="h-11 bg-[#247cff] text-white hover:bg-[#176bea]">保存</Button>
+        <Button type="button" size="sm" variant="outline" onClick={onCancel} className="h-11 bg-white">取消</Button>
       </div>
     </div>
   );
@@ -75,10 +79,10 @@ function EditRow({ label, value, editing, onToggle, children }: { label: string;
     <div className="px-3 py-2.5">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-[12px] text-[#8a7d80]">{label}</p>
-          <p className={`mt-0.5 break-words text-[13px] ${value === "未填" ? "text-[#a15a24]" : "text-[#35262a]"}`}>{value}</p>
+          <p className="text-[12px] text-[#71869f]">{label}</p>
+          <p className={`mt-0.5 break-words text-[13px] ${value === "未填" ? "text-[#b36b16]" : "text-[#293b54]"}`}>{value}</p>
         </div>
-        <button type="button" aria-label={`修改${label}`} onClick={onToggle} className="grid size-7 shrink-0 place-items-center rounded-lg text-[#8a7d80] hover:bg-[#f3ece4] hover:text-[#651427]">
+        <button type="button" aria-label={`修改${label}`} onClick={onToggle} className="grid size-11 shrink-0 place-items-center rounded-lg text-[#71869f] hover:bg-[#eaf3ff] hover:text-[#2470cc]">
           <PencilLine className="size-3.5" />
         </button>
       </div>
@@ -87,14 +91,20 @@ function EditRow({ label, value, editing, onToggle, children }: { label: string;
   );
 }
 
-export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollback }: DraftPanelProps) {
+export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollback, onShowSource }: DraftPanelProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const { draft, fill, checks, sheet } = snapshot.latest;
   const { flow } = snapshot;
+  // 这一轮刚填了哪些事实：活动信息行按页面字段标，明细行按事实本身标。
+  const freshKeys = recentlyFilled(snapshot.messages, snapshot.latest.seq);
+  const freshFacts = new Set<string>(freshKeys);
   const blockers = checks.filter((check) => check.severity === "blocker");
   const warnings = checks.filter((check) => check.severity === "warning");
   const tbc = [...new Set([...Object.values(fill.info), ...fill.details.map((detail) => detail.businessCategory)].flatMap((item) => (item.tbc ? [item.tbc] : [])))];
   const attentionCount = fill.notes.length + tbc.length;
+  const filledCount = Object.values(draft.facts).filter(Boolean).length;
+  const totalRequired = filledCount + flow.missing.length;
+  const completion = draftCompletion(totalRequired, flow.missing.length);
   const save = async (edit: PanelEdit) => {
     if (await onEdit(edit)) setEditing(null);
   };
@@ -102,20 +112,30 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollbac
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-[#e4dbd2] p-5">
+      <div className="border-b border-[#dce9f6] bg-white/55 p-5">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-[12px] text-[#8e7f82]">1811 填写值</p>
-          <span className="rounded-full bg-[#f5efe7] px-2 py-0.5 text-[11px] text-[#8b6b3b]">{PHASE_LABEL[flow.phase]}</span>
+          <p className="text-[12px] font-semibold tracking-[0.08em] text-[#2470cc]">ICS-1811 实时草稿</p>
+          <span className="rounded-full bg-[#e8f3ff] px-2.5 py-1 text-[11px] font-medium text-[#2470cc]">{PHASE_LABEL[flow.phase]}</span>
         </div>
-        <h2 className="mt-1 line-clamp-2 text-lg font-semibold text-[#2d1d22]">{fill.info.name.value || snapshot.session.title}</h2>
-        <p className="mt-2 text-[12px] leading-5 text-[#75676a]">
-          1 个活动 · {fill.details.length} 条明细 · 仍缺 {flow.missing.length} 项 · 已追问 {flow.roundsUsed}/2 轮
-        </p>
+        <h2 className="mt-1.5 line-clamp-2 text-lg font-semibold text-[#21344d]">{fill.info.name.value || snapshot.session.title}</h2>
+        <div className="mt-3 flex items-center justify-between text-[11px] font-medium text-[#69809b]">
+          <span>草稿完整度</span>
+          <span className="text-[#2470cc]">{completion}%</span>
+        </div>
+        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[#dceafb]" role="progressbar" aria-label="草稿完整度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={completion}>
+          <div className="h-full rounded-full bg-[linear-gradient(90deg,#247cff,#5ea8ff)] transition-[width] duration-300" style={{ width: `${completion}%` }} />
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+          <div className="rounded-xl bg-[#f2f7ff] px-2 py-2"><strong className="block text-sm text-[#294866]">{fill.details.length}</strong><span className="text-[10px] text-[#8296ad]">优惠明细</span></div>
+          <div className="rounded-xl bg-[#f2f7ff] px-2 py-2"><strong className="block text-sm text-[#294866]">{flow.missing.length}</strong><span className="text-[10px] text-[#8296ad]">仍缺项目</span></div>
+          <div className="rounded-xl bg-[#f2f7ff] px-2 py-2"><strong className="block text-sm text-[#294866]">{flow.roundsUsed}/2</strong><span className="text-[10px] text-[#8296ad]">追问轮次</span></div>
+        </div>
       </div>
 
       <Tabs value={tab} onValueChange={onTabChange} className="flex min-h-0 flex-1 flex-col">
-        <TabsList variant="line" className="flex w-full shrink-0 justify-start overflow-x-auto border-b border-[#e4dbd2] px-3">
+        <TabsList variant="line" className="flex w-full shrink-0 justify-start overflow-x-auto border-b border-[#dce9f6] bg-white/45 px-3">
           <TabsTrigger value="sheet" className="flex-none px-2.5">填写值</TabsTrigger>
+          <TabsTrigger value="promo" className="flex-none px-2.5">对外文案</TabsTrigger>
           <TabsTrigger value="edit" className="flex-none px-2.5">修改</TabsTrigger>
           <TabsTrigger value="tbc" className="flex-none px-2.5">待确认 {attentionCount}</TabsTrigger>
           <TabsTrigger value="checks" className="flex-none px-2.5">校验 {blockers.length}</TabsTrigger>
@@ -124,12 +144,52 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollbac
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <TabsContent value="sheet">
-            <FillSheetView sheet={sheet} confirmed={flow.phase === "confirmed"} />
+            <FillSheetView
+              sheet={sheet}
+              confirmed={flow.phase === "confirmed"}
+              highlighted={highlightedFields(freshKeys)}
+              freshFacts={freshFacts}
+              jump={{ messages: snapshot.messages, onShowSource }}
+            />
+          </TabsContent>
+
+          <TabsContent value="promo" className="space-y-3">
+            {snapshot.latest.promo ? (
+              <>
+                <div className="rounded-xl border border-[#d8e6f5] bg-white p-3">
+                  <p className="text-[11px] text-[#8296ad]">主标题</p>
+                  <p className="mt-1 text-base font-semibold text-[#17243a]">{snapshot.latest.promo.headline}</p>
+                  {snapshot.latest.promo.slogan ? <p className="mt-1 text-[13px] text-[#5f7690]">{snapshot.latest.promo.slogan}</p> : null}
+                </div>
+                <div className="space-y-2 rounded-xl border border-[#d8e6f5] bg-white p-3">
+                  {snapshot.latest.promo.highlights.map((item) => (
+                    <p key={item} className="text-[13px] leading-5 text-[#4b5f78]">· {item}</p>
+                  ))}
+                </div>
+                <div className="space-y-1.5 rounded-xl border border-[#d8e6f5] bg-white p-3 text-[13px] leading-5 text-[#4b5f78]">
+                  <p><span className="text-[#8296ad]">活动时间　</span>{snapshot.latest.promo.period || "待补"}</p>
+                  <p><span className="text-[#8296ad]">适用门店　</span>{snapshot.latest.promo.stores || "待补"}</p>
+                  {snapshot.latest.promo.offer.map((line) => (
+                    <p key={line}><span className="text-[#8296ad]">优惠说明　</span>{line}</p>
+                  ))}
+                </div>
+                {snapshot.latest.promo.notes.map((note) => (
+                  <div key={note} className="flex gap-2 rounded-xl border border-[#f1d6ad] bg-[#fff8eb] p-3">
+                    <Info className="mt-0.5 size-4 shrink-0 text-[#b36b16]" />
+                    <p className="text-[13px] leading-5 text-[#4b5f78]">{note}</p>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <p className="rounded-xl bg-[#eef6ff] p-3 text-[13px] leading-6 text-[#5f7690]">
+                还没有对外宣传文案。在对话里说「给我一份对外宣传文案」，AI 会按已经记下的活动信息起草主标题和卖点；活动时间、门店和优惠力度由系统按事实填，不让模型改写。这份文案是给运营的草稿，对外发布前要走法务确认。
+              </p>
+            )}
           </TabsContent>
 
           <TabsContent value="edit" className="space-y-3">
-            <p className="rounded-xl bg-[#f7f2eb] p-3 text-[13px] leading-6 text-[#6d5d5f]">这里能直接改日期、门店、结算与标语，以及名称和内容。优惠方式、货类这类会影响明细拆分的，请在对话里说。</p>
-            <div className="divide-y divide-[#efe7de] rounded-xl border border-[#e7ddd2] bg-white">
+            <p className="rounded-xl bg-[#eef6ff] p-3 text-[13px] leading-6 text-[#5f7690]">这里能直接改日期、门店、结算与标语，以及名称和内容。优惠方式、货类这类会影响明细拆分的，请在对话里说。</p>
+            <div className="divide-y divide-[#e4edf7] rounded-xl border border-[#d8e6f5] bg-white">
               {EDITABLE.map(({ id, fact }) => (
                 <EditRow key={id} label={QUESTION_TITLE[id]} value={factText(fact, draft.facts[fact])} editing={editing === id} onToggle={() => toggle(id)}>
                   <AnswerEditor key={`${id}-${snapshot.latest.seq}`} gap={{ id, title: QUESTION_TITLE[id] }} snapshot={snapshot} busy={busy} onCancel={() => setEditing(null)} onSave={(answers) => void save({ answers })} />
@@ -145,43 +205,43 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onRollbac
 
           <TabsContent value="tbc" className="space-y-2">
             {fill.notes.map((note) => (
-              <div key={note.id} className={`flex gap-2 rounded-xl border p-3 ${note.blocking ? "border-[#efc8bb] bg-[#fff2ec]" : "border-[#ead7c4] bg-[#fcf5ec]"}`}>
-                {note.blocking ? <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[#a33a25]" /> : <Info className="mt-0.5 size-4 shrink-0 text-[#9c642b]" />}
-                <p className="text-[13px] leading-5 text-[#4b3037]">{note.text}<span className="ml-1 text-[11px] text-[#9a8d8f]">（{note.sop}）</span></p>
+              <div key={note.id} className={`flex gap-2 rounded-xl border p-3 ${note.blocking ? "border-[#f1cbc5] bg-[#fff4f2]" : "border-[#f1d6ad] bg-[#fff8eb]"}`}>
+                {note.blocking ? <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[#b2443b]" /> : <Info className="mt-0.5 size-4 shrink-0 text-[#b36b16]" />}
+                <p className="text-[13px] leading-5 text-[#4b5f78]">{note.text}<span className="ml-1 text-[11px] text-[#8ca0b7]">（{note.sop}）</span></p>
               </div>
             ))}
             {tbc.map((item) => (
-              <div key={item} className="flex gap-2 rounded-xl border border-[#e7ddd2] bg-white p-3">
-                <Info className="mt-0.5 size-4 shrink-0 text-[#8b6b3b]" />
-                <p className="text-[13px] leading-5 text-[#4b3037]">{item}</p>
+              <div key={item} className="flex gap-2 rounded-xl border border-[#d8e6f5] bg-white p-3">
+                <Info className="mt-0.5 size-4 shrink-0 text-[#2470cc]" />
+                <p className="text-[13px] leading-5 text-[#4b5f78]">{item}</p>
               </div>
             ))}
-            {attentionCount === 0 ? <div className="flex items-center gap-2 rounded-xl bg-[#eaf3ec] p-4 text-sm text-[#47704f]"><CheckCircle2 className="size-4" />没有需要确认的项</div> : null}
+            {attentionCount === 0 ? <div className="flex items-center gap-2 rounded-xl bg-[#e8f7f1] p-4 text-sm text-[#26785e]"><CheckCircle2 className="size-4" />没有需要确认的项</div> : null}
           </TabsContent>
 
           <TabsContent value="checks" className="space-y-2">
-            <div className="flex items-center gap-2 rounded-xl bg-[#eaf3ec] p-3 text-sm font-medium text-[#47704f]">
+            <div className="flex items-center gap-2 rounded-xl bg-[#e8f7f1] p-3 text-sm font-medium text-[#26785e]">
               <ShieldCheck className="size-4" />
               代码校验：{blockers.length} 条阻断，{warnings.length} 条提醒
             </div>
             {[...blockers, ...warnings].map((check, index) => (
-              <div key={`${check.id}-${index}`} className={`flex gap-2 rounded-xl border p-3 ${check.severity === "blocker" ? "border-[#efc8bb] bg-[#fff2ec]" : "border-[#ead7c4] bg-[#fcf5ec]"}`}>
-                <AlertTriangle className={`mt-0.5 size-4 shrink-0 ${check.severity === "blocker" ? "text-[#a33a25]" : "text-[#9c642b]"}`} />
-                <p className="text-[13px] leading-5 text-[#4b3037]">{check.message}<span className="ml-1 text-[11px] text-[#9a8d8f]">（{check.sop}）</span></p>
+              <div key={`${check.id}-${index}`} className={`flex gap-2 rounded-xl border p-3 ${check.severity === "blocker" ? "border-[#f1cbc5] bg-[#fff4f2]" : "border-[#f1d6ad] bg-[#fff8eb]"}`}>
+                <AlertTriangle className={`mt-0.5 size-4 shrink-0 ${check.severity === "blocker" ? "text-[#b2443b]" : "text-[#b36b16]"}`} />
+                <p className="text-[13px] leading-5 text-[#4b5f78]">{check.message}<span className="ml-1 text-[11px] text-[#8ca0b7]">（{check.sop}）</span></p>
               </div>
             ))}
           </TabsContent>
 
           <TabsContent value="versions" className="space-y-2">
             {[...snapshot.versions].reverse().map((version, index) => (
-              <div key={version.seq} className="rounded-xl border border-[#e7ddd2] bg-white p-3">
+              <div key={version.seq} className="rounded-xl border border-[#d8e6f5] bg-white p-3 shadow-[0_4px_14px_rgba(43,94,151,0.04)]">
                 <div className="flex items-center justify-between">
-                  <strong className="text-sm text-[#35262a]">版本 {version.seq}</strong>
-                  <span className="text-[12px] text-[#8a7e80]">{index === 0 ? "当前" : new Date(version.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <strong className="text-sm text-[#293b54]">版本 {version.seq}</strong>
+                  <span className="text-[12px] text-[#8094ab]">{index === 0 ? "当前" : new Date(version.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
                 </div>
-                <p className="mt-1 text-[13px] text-[#6f6265]">{version.source}{version.diffCount ? ` · ${version.diffCount} 处变化` : ""}</p>
+                <p className="mt-1 text-[13px] text-[#617790]">{version.source}{version.diffCount ? ` · ${version.diffCount} 处变化` : ""}</p>
                 {index !== 0 ? (
-                  <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => onRollback(version.seq)} className="mt-1 h-8 px-0 text-[#651427]">
+                  <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => onRollback(version.seq)} className="mt-1 h-11 px-1 text-[#2470cc] hover:bg-[#edf5ff]">
                     <RotateCcw />
                     恢复此版本
                   </Button>

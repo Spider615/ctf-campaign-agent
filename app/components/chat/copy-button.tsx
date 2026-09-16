@@ -44,7 +44,7 @@ export function CopyButton({ text, className = "" }: { text: string; className?:
       type="button"
       onClick={() => void copy()}
       aria-label={state === "copied" ? "已复制" : "复制消息"}
-      className={`inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[12px] text-[#9a8d8f] transition hover:bg-[#efe8df] hover:text-[#651427] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9c6b2f] ${className}`}
+      className={`inline-flex min-h-11 items-center gap-1 rounded-md px-1.5 text-[12px] text-[#899db4] transition hover:bg-[#eaf3ff] hover:text-[#2470cc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#247cff] md:min-h-7 ${className}`}
     >
       {state === "copied" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
       {state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制"}

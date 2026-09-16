@@ -8,8 +8,8 @@ export function Chip({ selected, disabled, onClick, children }: { selected: bool
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`min-h-9 rounded-full border px-3.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9c6b2f] disabled:cursor-not-allowed disabled:opacity-55 ${
-        selected ? "border-[#7a2134] bg-[#f6e9ec] font-medium text-[#651427]" : "border-[#ddd4ca] bg-white text-[#5f5256] hover:border-[#bda998]"
+      className={`min-h-11 rounded-full border px-3.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#247cff] disabled:cursor-not-allowed disabled:opacity-55 ${
+        selected ? "border-[#78adf8] bg-[#e9f3ff] font-medium text-[#1769c5]" : "border-[#cfdeee] bg-white text-[#536b87] hover:border-[#8dbafa] hover:bg-[#f5f9ff]"
       }`}
     >
       {selected ? <Check className="mr-1 inline size-3.5" /> : null}

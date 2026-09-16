@@ -2,22 +2,23 @@ import { env } from "cloudflare:workers";
 
 import { getDbBinding } from "../../../db/index.ts";
 import { parseAgentResult, type AgentRequest, type AgentResult } from "../agent/protocol.ts";
+import { decodeAgentStreamLine } from "../agent/stream.ts";
+import type { AgentTraceEvent } from "../tool-trace.ts";
 import { createD1Store } from "./session-store.ts";
 import { TurnError, type TurnDeps } from "./turns.ts";
 
 const DEFAULT_AGENT_URL = "http://127.0.0.1:8788";
 
-// Agent 服务（agent/server.ts）跑 Claude Agent SDK；这里只负责把这一轮发过去、把结果拿回来。
-async function runAgentRemote(request: AgentRequest): Promise<AgentResult> {
-  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  let response: Response;
+const agentHeaders = () => ({
+  "content-type": "application/json",
+  ...(env.AGENT_SERVICE_TOKEN ? { authorization: `Bearer ${env.AGENT_SERVICE_TOKEN}` } : {}),
+});
+
+async function agentFetch(url: string, request: AgentRequest, accept?: string): Promise<Response> {
   try {
-    response = await fetch(`${base}/turn`, {
+    return await fetch(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(env.AGENT_SERVICE_TOKEN ? { authorization: `Bearer ${env.AGENT_SERVICE_TOKEN}` } : {}),
-      },
+      headers: { ...agentHeaders(), ...(accept ? { accept } : {}) },
       body: JSON.stringify(request),
       signal: AbortSignal.timeout(150_000),
     });
@@ -25,20 +26,69 @@ async function runAgentRemote(request: AgentRequest): Promise<AgentResult> {
     if (error instanceof Error && error.name === "TimeoutError") throw new Error("Agent 超时了，请重试");
     throw new Error("连不上 Agent 服务，请先运行 npm run dev:agent");
   }
+}
+
+async function agentHttpError(response: Response): Promise<Error> {
   const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
-  if (!response.ok) throw new Error(typeof body?.error === "string" ? body.error : `Agent 服务出错（${response.status}）`);
-  return parseAgentResult(body);
+  return new Error(typeof body?.error === "string" ? body.error : `Agent 服务出错（${response.status}）`);
+}
+
+async function runAgentJson(base: string, request: AgentRequest): Promise<AgentResult> {
+  const response = await agentFetch(`${base}/turn`, request);
+  if (!response.ok) throw await agentHttpError(response);
+  return parseAgentResult(await response.json().catch(() => null));
+}
+
+// Agent 服务（agent/server.ts）跑 Claude Agent SDK；Workers 转发真实工具事件，最终仍只接受受校验的 AgentResult。
+async function runAgentRemote(request: AgentRequest, onTrace?: (event: AgentTraceEvent) => void): Promise<AgentResult> {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const response = await agentFetch(`${base}/turn/stream`, request, "application/x-ndjson");
+  if (response.status === 404) return runAgentJson(base, request);
+  if (!response.ok) throw await agentHttpError(response);
+  if (!response.body) throw new Error("Agent 服务没有返回数据流");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: AgentResult | null = null;
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return;
+    const event = decodeAgentStreamLine(line);
+    if (event.type === "trace") onTrace?.(event.event);
+    if (event.type === "result") {
+      if (result) throw new Error("Agent 服务返回了多个结果");
+      result = event.result;
+    }
+    if (event.type === "error") throw new Error(event.error);
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      consumeLine(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf("\n");
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) consumeLine(buffer);
+  if (!result) throw new Error("Agent 服务没有返回最终结果");
+  return result;
 }
 
 export function todayInShanghai(date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
-export function runtimeDeps(): TurnDeps {
+export function runtimeDeps(emitTrace?: (event: AgentTraceEvent) => void): TurnDeps {
   return {
     store: createD1Store(getDbBinding()),
     runAgent: runAgentRemote,
     today: todayInShanghai(),
+    emitTrace,
   };
 }
 
@@ -46,4 +96,9 @@ export function errorResponse(error: unknown, fallback: string): Response {
   if (error instanceof TurnError) return Response.json({ error: error.message }, { status: error.status });
   console.error(fallback, error);
   return Response.json({ error: fallback }, { status: 503 });
+}
+
+export function publicTurnError(error: unknown): string {
+  if (error instanceof TurnError) return error.message;
+  return "没保存成功，可以重试";
 }

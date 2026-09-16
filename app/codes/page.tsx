@@ -6,10 +6,10 @@ type Row = { key: string; display: string; origin: Origin; note: string };
 type Table = { name: string; rows: Row[] };
 
 const ORIGIN_STYLE: Record<Origin, string> = {
-  截图: "border-[#d9c7a6] bg-[#f6efe2] text-[#8b6b3b]",
-  指引文字: "border-[#d9c7a6] bg-[#f6efe2] text-[#8b6b3b]",
-  导入模板: "border-[#cfd8c4] bg-[#eff4ea] text-[#4f6b3f]",
-  编造: "border-[#efc8bb] bg-[#fff2ec] text-[#9a3f24]",
+  截图: "border-[#bfd8fa] bg-[#eaf4ff] text-[#2470cc]",
+  指引文字: "border-[#c9d9f5] bg-[#eef3ff] text-[#536fa8]",
+  导入模板: "border-[#bfe7d8] bg-[#e8f7f1] text-[#26785e]",
+  编造: "border-[#f1cbc5] bg-[#fff4f2] text-[#b2443b]",
 };
 
 const SUPPORT_TEXT = { A: "有录入截图", B: "参数栏是推断的", C: "提示人工录入", D: "SOP 明确不支持" } as const;
@@ -74,14 +74,14 @@ function OriginBadge({ origin }: { origin: Origin }) {
 export default function CodesPage() {
   const all = TABLES.flatMap((table) => table.rows);
   return (
-    <div className="mx-auto w-full max-w-[1100px] px-4 py-6 md:px-8">
-      <header>
-        <p className="text-[12px] font-medium tracking-[0.12em] text-[#8b6b3b]">资料</p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-[#2c1720] md:text-3xl">代码表</h1>
-        <p className="mt-3 text-[15px] leading-7 text-[#2f2226]">
+    <div className="mx-auto w-full max-w-[1100px] px-4 py-8 md:px-8 md:py-10">
+      <header className="rounded-3xl border border-[#d6e6f7] bg-white/70 p-5 shadow-[0_14px_40px_rgba(43,94,151,0.07)] backdrop-blur md:p-7">
+        <p className="text-[12px] font-semibold tracking-[0.12em] text-[#2470cc]">规则资料</p>
+        <h1 className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-[#20314d] md:text-3xl">ICS 演示代码表</h1>
+        <p className="mt-3 text-[15px] leading-7 text-[#4f6681]">
           Agent 生成 1811 填写值时只用这里的取值（{CODEBOOK.version}）。取值优先来自 SOP 第九部分和截图；SOP 没给的对应关系是演示编造的，录入时以 ICS 系统为准。
         </p>
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px] text-[#817578]">
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-[13px] text-[#6f849d]">
           {ORIGINS.map((origin) => (
             <span key={origin} className="inline-flex items-center gap-1.5">
               <OriginBadge origin={origin} />
@@ -93,17 +93,17 @@ export default function CodesPage() {
 
       <div className="mt-8 space-y-5">
         {TABLES.map((table) => (
-          <section key={table.name} className="rounded-2xl border border-[#ded5cb] bg-[#fffdfa] p-4 md:p-5">
+          <section key={table.name} className="rounded-2xl border border-[#d6e6f7] bg-white/78 p-4 shadow-[0_8px_26px_rgba(43,94,151,0.05)] backdrop-blur md:p-5">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <h2 className="text-lg font-semibold text-[#2c1720]">{table.name}</h2>
-              <span className="text-[13px] text-[#817578]">
+              <h2 className="text-lg font-semibold text-[#20314d]">{table.name}</h2>
+              <span className="text-[13px] text-[#71869f]">
                 {table.rows.length} 个取值{table.rows.some((row) => row.origin === "编造") ? ` · ${table.rows.filter((row) => row.origin === "编造").length} 个编造` : ""}
               </span>
             </div>
-            <div className="mt-3 overflow-x-auto rounded-xl border border-[#ded5cb] bg-white">
+            <div className="mt-3 overflow-x-auto rounded-xl border border-[#d9e7f6] bg-white">
               <table className="w-full min-w-[640px] text-left text-sm">
                 <thead>
-                  <tr className="border-b border-[#ded5cb] bg-[#f6f1ea] text-[13px] text-[#817578]">
+                  <tr className="border-b border-[#d9e7f6] bg-[#f1f7ff] text-[13px] text-[#637a95]">
                     <th className="px-3 py-2 font-medium">页面上显示</th>
                     <th className="px-3 py-2 font-medium">来源</th>
                     <th className="px-3 py-2 font-medium">说明与出处</th>
@@ -111,12 +111,12 @@ export default function CodesPage() {
                 </thead>
                 <tbody>
                   {table.rows.map((row) => (
-                    <tr key={row.key} className="border-b border-[#ece5dc] last:border-b-0">
-                      <td className="px-3 py-2.5 align-top font-medium whitespace-nowrap text-[#2c1720]">{row.display}</td>
+                    <tr key={row.key} className="border-b border-[#e5eef8] transition-colors last:border-b-0 hover:bg-[#f8fbff]">
+                      <td className="px-3 py-2.5 align-top font-medium whitespace-nowrap text-[#293b54]">{row.display}</td>
                       <td className="px-3 py-2.5 align-top">
                         <OriginBadge origin={row.origin} />
                       </td>
-                      <td className="px-3 py-2.5 align-top text-[13px] leading-6 text-[#5d4a4f]">{row.note}</td>
+                      <td className="px-3 py-2.5 align-top text-[13px] leading-6 text-[#566d88]">{row.note}</td>
                     </tr>
                   ))}
                 </tbody>

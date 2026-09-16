@@ -5,6 +5,7 @@ import { byCode, CODEBOOK } from "./codebook.ts";
 import { fillSheetText, type FillSheet } from "./fill-sheet.ts";
 import type { Readback } from "./readback.ts";
 import type { FactKey, Facts, Gap, Ics1811Draft, OfferFact, QuestionId } from "./types.ts";
+import { isToolTrace, traceSummary, type ToolTrace } from "../../tool-trace.ts";
 
 export type ChangeItem = { label: string; before: string; after: string };
 export type RetryInput = { type: "text"; text: string } | { type: "interpret" };
@@ -16,6 +17,7 @@ export type StoredMessage =
   | { v: 2; kind: "user_event"; event: "confirm" | "undo" | "rollback" | "dismiss"; label: string }
   | { v: 2; kind: "agent_text"; text: string }
   | { v: 2; kind: "agent_error"; text: string; retry?: RetryInput }
+  | { v: 2; kind: "agent_tool_trace"; trace: ToolTrace }
   | { v: 2; kind: "agent_round_card"; round: 1 | 2; questions: Gap[] }
   | { v: 2; kind: "agent_change"; title: string; items: ChangeItem[]; versionSeq: number }
   | { v: 2; kind: "agent_readback"; versionSeq: number; readback: Readback }
@@ -45,8 +47,11 @@ function legacyText(raw: string): string {
 
 export function decodeMessage(role: string, raw: string): StoredMessage {
   try {
-    const parsed = JSON.parse(raw) as { v?: unknown; kind?: unknown };
-    if (parsed && parsed.v === 2 && typeof parsed.kind === "string") return parsed as StoredMessage;
+    const parsed = JSON.parse(raw) as { v?: unknown; kind?: unknown; trace?: unknown };
+    if (parsed && parsed.v === 2 && typeof parsed.kind === "string") {
+      if (parsed.kind === "agent_tool_trace" && !isToolTrace(parsed.trace)) throw new Error("工具执行记录不完整");
+      return parsed as StoredMessage;
+    }
   } catch {
     // 旧数据可能是纯文本。
   }
@@ -59,6 +64,8 @@ export function messageToText(message: StoredMessage): string {
     case "agent_text":
     case "agent_error":
       return message.text;
+    case "agent_tool_trace":
+      return traceSummary(message.trace);
     case "user_card_submit":
     case "user_edit":
     case "user_event":

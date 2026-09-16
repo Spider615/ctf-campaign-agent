@@ -1,4 +1,6 @@
-import type { Snapshot } from "../server/turns";
+import type { Snapshot } from "../server/turns.ts";
+import type { AgentTraceEvent } from "../tool-trace.ts";
+import { consumeTurnStream } from "./stream.ts";
 
 export const SESSIONS_CHANGED = "campaign:sessions-changed";
 export const SESSION_UPDATED = "campaign:session-updated";
@@ -45,6 +47,18 @@ export function createSessionRequest(body: { entryMode: "new"; text: string } | 
 
 export function postTurn(id: string, body: TurnBody & { expectedSeq: number }): Promise<Snapshot> {
   return request<Snapshot>(`/api/sessions/${encodeURIComponent(id)}/turns`, json(body));
+}
+
+export async function postTurnStream(
+  id: string,
+  body: TurnBody & { expectedSeq: number },
+  onTrace: (event: AgentTraceEvent) => void,
+): Promise<Snapshot> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/turns`, {
+    ...json(body),
+    headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+  });
+  return consumeTurnStream(response, onTrace);
 }
 
 export function notifySessionsChanged() {

@@ -18,7 +18,7 @@ export function emptyFacts(): Facts {
 }
 
 export function createEmptyDraft(id: string, requestText: string): Ics1811Draft {
-  return { schema: "ics1811/v1", id, requestText, facts: emptyFacts(), unresolvedStores: [], unresolvedCategories: [], copy: null, dismissedNotes: [] };
+  return { schema: "ics1811/v1", id, requestText, facts: emptyFacts(), unresolvedStores: [], unresolvedCategories: [], copy: null, promo: null, dismissedNotes: [] };
 }
 
 export type FactWrite = { key: FactKey; value?: unknown; quote: string };
@@ -105,6 +105,12 @@ const RULES: Record<FactKey, Rule> = {
   stores: (draft, quote, value, context) => {
     const mentions = strings(value);
     const found = new Set(storesInText(quote).map((entry) => entry.code));
+    // 「不限门店」「全部门店」在业务上说得通，填不进去是设计决策、不是没认出来：1811 的分行至少要选 1 家，
+    // 「只选区域算不算全部分行」还没跟 ICS 确认（待确认清单第 10 条）。理由要说准，否则用户会以为解析坏了。
+    // 放在解析门店说法之前：不然这句话会被当成一个待澄清的门店名记进 unresolvedStores，之后一直当候选。
+    if (!found.size && /不限|全部|所有|都参加|每家|各家|随便/.test(quote)) {
+      return fail("1811 的分行至少要选 1 家，「只选区域是不是等于全部分行」还没跟 ICS 确认，所以「不限门店」这句填不进去；请给具体的门店编号或店名");
+    }
     const unresolved: string[] = [];
     for (const mention of mentions) {
       if (!compactQuote(quote).includes(compactQuote(mention))) continue;

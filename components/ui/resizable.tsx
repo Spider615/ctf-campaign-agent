@@ -50,4 +50,7 @@ function ResizableHandle({
   )
 }
 
+// 只转出组件，不转 hook。这个库的 useDefaultLayout / usePanelRef 是裸 hook，
+// 在 RSC/SSR 渲染阶段执行会打到空的 React dispatcher，让整个页面 500（已实测）。
+// 需要面板句柄就用 React 自带的 useRef，配合 Panel 的 panelRef。
 export { ResizableHandle, ResizablePanel, ResizablePanelGroup }

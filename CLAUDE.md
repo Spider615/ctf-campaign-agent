@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 周大福「优惠开单活动」创建助手的产品 demo：运营用对话描述一个优惠活动，Agent 按《优惠开单活动创建 SOP》§9 追问人定字段（最多两轮），白话复述、确认后输出 ICS-1811「优惠开单活动新增」页面的逐项填写值。不连接任何周大福生产系统（1811/1815/1816），代码表是演示编造的。代码注释、界面文案、错误信息都用中文，新增内容保持一致。
 
-实现依据是 `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`（下称设计文档）；文中「§」指 SOP 章节，「第 X 节」指设计文档章节。
+业务实现依据是 `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`，浅色工作台和工具轨迹依据是 `docs/superpowers/specs/2026-09-16-light-ai-workspace-design.md`；文中「§」指 SOP 章节，「第 X 节」指业务设计文档章节。
 
 ## 命令
 
@@ -48,15 +48,17 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 两个进程共用一份领域逻辑：
 
 - **页面和数据（Workers）**：`app/api/sessions/**` → `app/lib/server/turns.ts`（`createSession` / `runTurn`）→ `SessionStore`（`session-store.ts`，D1 实现和测试用的内存实现）。版本、消息、落库都在这一侧，一个回合一次 `db.batch`。`app/lib/server/runtime.ts` 是唯一接 `cloudflare:workers` 的地方，负责组装 `TurnDeps`。
-- **Agent 服务（Node）**：`agent/server.ts`，`POST /turn`。用 Claude Agent SDK 跑一轮对话，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。SDK 内置工具全部关闭（`tools: []`、`settingSources: []`，配置目录隔离在 `agent/.claude-runtime/`），只挂 4 个工具。服务不存数据：收当前草稿，回改好的草稿。
+- **Agent 服务（Node）**：`agent/server.ts`，提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON。用 Claude Agent SDK 跑一轮对话，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。SDK 内置工具全部关闭（`tools: []`、`settingSources: []`，配置目录隔离在 `agent/.claude-runtime/`），只挂 8 个活动工具。服务不存数据：收当前草稿，回改好的草稿。
 - 两边的协议是 `app/lib/agent/protocol.ts`（`AgentRequest` / `AgentResult`）。Workers 侧请求超时 150s，要大于 Agent 侧单轮超时 120s。
+- 工具事件协议在 `app/lib/tool-trace.ts`，Agent 流协议在 `app/lib/agent/stream.ts`，浏览器解码在 `app/lib/client/stream.ts`。轨迹摘要不能包含隐藏思维、系统提示词、完整入参、密钥或内部堆栈。
 
 `runTurn` 的流程：
 
 1. `expectedSeq` 必须等于最新版本的 seq，否则 409，客户端会重新拉快照。D1 上 `(session_id, seq)` 的唯一索引是第二道防线。
 2. 只有 `interpret`（新建会话后由对话页自动发起）和 `text` 调模型。`card`（选项提交）、`edit`（面板、WebMCP）、`confirm`、`dismiss`、`undo`、`rollback` 由代码直接处理。示例会话（`entryMode: "example"`）用 T1 夹具，不调模型。
-3. 模型回来后代码重算 `deriveFill` → `checkDraft` → `planNext`，决定出追问、出复述，还是（确认后）出填写值。追问内容、轮次、复述、能不能确认都不由模型决定。追问开着时用户打字：问题都还在这一轮里就不出新追问；回答引出了新追问就出下一轮。
-4. 有 diff 才写新版本，并追加 `agent_change`；Agent 失败时写一条带 retry 的 `agent_error`，用户输入不丢。
+3. 模型工具事件由 Workers 流式转发；若模型漏掉必需的规则分析或复述工具，编排器真实补跑确定性工具并写入同一轨迹。按钮确认由编排器调用确认和填写值工具，不伪造模型调用。
+4. 模型回来后代码重算 `deriveFill` → `checkDraft` → `planNext`，决定出追问、出复述，还是（确认后）出填写值。追问内容、轮次、复述、能不能确认都不由模型决定。追问开着时用户打字：问题都还在这一轮里就不出新追问；回答引出了新追问就出下一轮。
+5. 有 diff 才写新版本，并追加 `agent_change`；完整工具轨迹作为 `agent_tool_trace` 落库。Agent 失败时写一条带 retry 的 `agent_error`，用户输入不丢。
 
 对话状态（第几轮、追问是否还开着、最新复述、是否已确认）全部由 `ics1811/messages.ts` 的 `flowOf` 从消息记录推出，不另存，撤销和恢复不会重置轮次。
 
@@ -76,11 +78,13 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 ### Agent 工具 `app/lib/agent/`
 
-`tools.ts` 实现 `update_fields` / `draft_copy` / `confirm_readback` / `undo_last_change`。工具只改这一轮的 `AgentState`，不依赖 SDK。
+`tools.ts` 实现 8 个工具：`extract_campaign_facts` / `lookup_ics_reference` / `analyze_campaign_state` / `draft_campaign_copy` / `build_campaign_readback` / `generate_ics1811_sheet` / `confirm_campaign_readback` / `undo_campaign_change`。工具只改这一轮的 `AgentState` 或读取确定性推导结果，不依赖 SDK。
 
-- `update_fields` 走 `applyFactWrites`，被拒的以 `dropped` 返回给模型。
-- `draft_copy`：名称不超过 13 个字，名称和内容只允许汉字、字母、数字、小数点和百分号，数字必须来自事实层。
-- `confirm_readback`：只有当前复述对应最新版本、可以确认、且用户这句话是在确认时才生效。
+- `extract_campaign_facts` 走 `applyFactWrites`，被拒的以 `dropped` 返回给模型。
+- `lookup_ics_reference` 只查 demo 代码表并返回来源；`analyze_campaign_state` 复用 `deriveFill`、`checkDraft` 和 `planNext`，两者都不写草稿。
+- `draft_campaign_copy`：名称不超过 13 个字，名称和内容只允许汉字、字母、数字、小数点和百分号，数字必须来自事实层。
+- `build_campaign_readback` 与 `generate_ics1811_sheet` 只给模型结构摘要，最终复述和填写值仍由 Workers 重新生成。
+- `confirm_campaign_readback`：只有当前复述对应最新版本、可以确认、且用户这句话是在确认时才生效。
 - `finishAgentTurn` 删掉问句和「提升 X%」这类预估，超长回复在句末截断。模型不在回复里提问，要问的由代码接在回复后面展示。
 
 改工具要同时改三处：`tools.ts`（`AGENT_TOOL_NAMES`、`runAgentTool`）、`agent/server.ts`（zod 入参和 `tool(...)` 注册）、`prompt.ts`（系统提示词里的工具说明）。
@@ -90,6 +94,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 ### 界面 `app/components/`
 
 - 以对话为主：`chat/clarify-card.tsx` 把这一轮的问题写在对话里，附一句能照抄的回答示例；`chat/question-controls.tsx` 的选项默认收起，只是快捷方式。
+- `chat/tool-run-card.tsx` 与 `chat/tool-step.tsx` 展示实时和已落库的真实工具轨迹；完成轨迹默认折叠，`conversation.tsx` 收到最终 Snapshot 后替换临时轨迹。
 - `chat/readback-card.tsx` 是复述和确认按钮；`draft/draft-panel.tsx` 是右侧填写值面板（填写值、修改、待确认、校验、版本）。
 - 页面通过 `app/lib/webmcp.ts` 暴露 WebMCP 工具（在 `app-shell.tsx` 注册），只能改名称、内容和日期，走 `edit` 回合，`origin: "tool"`。
 

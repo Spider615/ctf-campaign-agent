@@ -2,7 +2,7 @@
 // ACTIVITY_FIELDS 同时是字段登记表：每个活动信息字段的页面顺序、控件、归属，以及复述里必须出现的字样。
 
 import { OFFER_TYPES } from "./offer-spec.ts";
-import type { ActivityInfo, Check, Field, FillModel, PostAction, Source } from "./types.ts";
+import type { ActivityInfo, Check, FactKey, Field, FillModel, PostAction, Source } from "./types.ts";
 
 export type Owner = "人定" | "AI 定" | "待确认";
 
@@ -37,7 +37,14 @@ export const ACTIVITY_FIELDS: FieldSpec[] = [
 // 明细里由 AI 定、复述必须覆盖的字样。
 export const DETAIL_READBACK_PROBES = ["折扣模式", "业务大类", "号头", "会员级别", "售价类型", "活动分组"];
 
-export type SheetRow = { label: string; control: string; value: string; source: Source; note?: string };
+// field：这一行对应活动信息里的哪个字段。界面靠它把「这一轮新填了什么」标到具体的行上。
+// 明细行是就地拼的、没有对应字段，所以是可选的。
+// field：活动信息行对应页面上的哪个字段。
+// factKey：明细行由哪个事实驱动——明细行不走 ACTIVITY_FIELDS，只能自己带着来源，
+// 否则「这一轮刚填了什么」标不到明细上。两条路径互不干扰。
+// basis：这个值凭什么是这个值。source 为 user 时它就是用户那句原话，
+// 界面靠它反查回对话里的出处（quote-source.ts），让填写值不像是凭空出现的。
+export type SheetRow = { label: string; control: string; value: string; source: Source; note?: string; field?: keyof ActivityInfo; factKey?: FactKey; basis?: string };
 
 export type SelfCheckItem = { item: string; status: "通过" | "不通过" | "需注意" | "需人工" | "不适用" };
 
@@ -61,28 +68,45 @@ function valueText(value: unknown, empty = "待补"): string {
 
 const row = (label: string, control: string, fieldValue: Field<unknown>, empty = "待补", note?: string): SheetRow => {
   const notes = [note, fieldValue.tbc].filter(Boolean).join("；");
-  return { label, control, value: valueText(fieldValue.value, empty), source: fieldValue.source, ...(notes ? { note: notes } : {}) };
+  return {
+    label,
+    control,
+    value: valueText(fieldValue.value, empty),
+    source: fieldValue.source,
+    ...(notes ? { note: notes } : {}),
+    ...(fieldValue.basis ? { basis: fieldValue.basis } : {}),
+  };
 };
 
 export function renderFillSheet(fill: FillModel, checks: readonly Check[]): FillSheet {
-  const info = ACTIVITY_FIELDS.map((spec) => row(spec.label, spec.control, fill.info[spec.key] as Field<unknown>, EMPTY_TEXT[spec.key] ?? "待补", spec.pageNote));
+  const info = ACTIVITY_FIELDS.map((spec) => ({
+    ...row(spec.label, spec.control, fill.info[spec.key] as Field<unknown>, EMPTY_TEXT[spec.key] ?? "待补", spec.pageNote),
+    field: spec.key,
+  }));
 
   const details = fill.details.map((detail) => {
     const typeSpec = detail.offerType.value ? OFFER_TYPES[detail.offerType.value] : undefined;
-    const rows: SheetRow[] = [row("折扣模式", "单选钮", detail.mode, "待定")];
-    if (detail.mode.value !== "浮动折扣模式") rows.push({ ...row("优惠类型", "下拉", detail.offerType, "待定"), ...(typeSpec ? { value: typeSpec.pageLabel } : {}) });
+    // 每一行标出它由哪个事实驱动，界面才能把「这一轮刚填了什么」标到明细上。
+    // 对照 derive.ts 里真实的推导关系，不臆造。
+    const byFact = (item: SheetRow, factKey: FactKey): SheetRow => ({ ...item, factKey });
+
+    const rows: SheetRow[] = [byFact(row("折扣模式", "单选钮", detail.mode, "待定"), "discountEditable")];
+    if (detail.mode.value !== "浮动折扣模式") {
+      rows.push(byFact({ ...row("优惠类型", "下拉", detail.offerType, "待定"), ...(typeSpec ? { value: typeSpec.pageLabel } : {}) }, "offer"));
+    }
     rows.push(
-      ...detail.params.map((param) => row(param.label, "文本框", param.value, "待补", param.inferred ? "栏位推断，以页面为准" : undefined)),
-      row("货类", "多选面板，点「确定」", detail.categories),
-      row("货类明细（号头）", "多选面板，点「确定」", detail.headCodes, "不勾"),
-      row("会员级别", "多选面板，点「确定」", detail.memberLevels, "不勾"),
+      ...detail.params.map((param) => byFact(row(param.label, "文本框", param.value, "待补", param.inferred ? "栏位推断，以页面为准" : undefined), "offer")),
+      byFact(row("货类", "多选面板，点「确定」", detail.categories), "categories"),
+      byFact(row("货类明细（号头）", "多选面板，点「确定」", detail.headCodes, "不勾"), "headCodes"),
+      byFact(row("会员级别", "多选面板，点「确定」", detail.memberLevels, "不勾"), "memberLevels"),
     );
-    if (detail.priceTypes) rows.push(row("售价类型", "多选面板，点「确定」", detail.priceTypes, "不勾"));
+    if (detail.priceTypes) rows.push(byFact(row("售价类型", "多选面板，点「确定」", detail.priceTypes, "不勾"), "priceTypes"));
     rows.push(
-      row("业务大类", "文本框", detail.businessCategory),
-      row("让扣点", "文本框", detail.concessionRate),
-      row("回款率", "文本框", detail.collectionRate),
-      ...detail.restrictions.map((item) => row(item.label, "文本框", item.value, "留空", item.baseVersion ? undefined : "部分版本页面才有此栏")),
+      // 业务大类是按货类对照出来的，所以跟着货类亮。
+      byFact(row("业务大类", "文本框", detail.businessCategory), "categories"),
+      byFact(row("让扣点", "文本框", detail.concessionRate), "rates"),
+      byFact(row("回款率", "文本框", detail.collectionRate), "rates"),
+      ...detail.restrictions.map((item) => byFact(row(item.label, "文本框", item.value, "留空", item.baseVersion ? undefined : "部分版本页面才有此栏"), "restrictions")),
     );
     return { index: detail.index, rows, restNote: "其余限制条件留空（数值栏保持 0）", action: "点「添加明细」" };
   });

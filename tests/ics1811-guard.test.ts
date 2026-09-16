@@ -43,6 +43,22 @@ test("colloquial wording converts the same way, and unsure answers never count",
   assert.equal(write("还不确定", [{ key: "commission", quote: "还不确定" }], ["Q5b"]).draft.facts.commission, null);
 });
 
+test("an unlimited-stores answer is refused with the 1811 reason, not a parse error", () => {
+  const result = write("是不限制门店的", [{ key: "stores", quote: "是不限制门店的", value: ["不限制门店"] }]);
+  assert.equal(result.draft.facts.stores, null, "「不限门店」不能当成门店写进去");
+  assert.match(result.dropped[0]?.reason ?? "", /分行至少要选 1 家/, "理由要说是 1811 的限制，不能说成没认出来");
+  assert.deepEqual(result.draft.unresolvedStores, [], "这句话不该被当成待澄清的门店名留下来当候选");
+
+  for (const text of ["全部门店都参加", "闽深区所有门店", "每家店都参加"]) {
+    assert.match(write(text, [{ key: "stores", quote: text, value: [text] }]).dropped[0]?.reason ?? "", /分行至少要选 1 家/, text);
+  }
+
+  // 两轮追问结束后 openQuestions 为空，用户补打门店仍然要能记下，否则复述里的缺项永远补不上。
+  const filled = write("7590门店", [{ key: "stores", quote: "7590门店", value: ["7590"] }]);
+  assert.deepEqual(filled.draft.facts.stores?.value, ["7590"]);
+  assert.equal(gapsOf(filled.draft).some((gap) => gap.id === "Q2"), false, "补上门店后 Q2 不再是缺项");
+});
+
 test("a special-campaign quote that leaves out the campaign name is judged by the whole sentence", () => {
   const gold = "国庆在7590门店做黄金以旧换新，换大50%的工费打8折，换大100%的免工费。";
   const goldOffer = write(gold, [{ key: "offer", quote: "换大50%的工费打8折，换大100%的免工费" }]).draft.facts.offer?.value;

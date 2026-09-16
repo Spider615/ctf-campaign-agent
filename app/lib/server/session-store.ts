@@ -55,6 +55,8 @@ export interface SessionStore {
   list(): Promise<SessionListItem[]>;
   load(id: string): Promise<SessionBundle | null>;
   commit(write: TurnWrite): Promise<void>;
+  // 幂等：删不存在的会话不是错误（重复点删除、多个标签页同时删都会走到这里）。
+  remove(id: string): Promise<void>;
 }
 
 export class ConflictError extends Error {}
@@ -143,6 +145,17 @@ export function createD1Store(db: D1Database): SessionStore {
         throw error;
       }
     },
+
+    // message、draft_version、patch 都只按 session_id 关联，schema 里没有外键级联，
+    // 所以四张表要自己按顺序清干净，漏一张就会留下读不到的孤儿行。
+    async remove(id) {
+      await db.batch([
+        db.prepare("DELETE FROM message WHERE session_id = ?").bind(id),
+        db.prepare("DELETE FROM draft_version WHERE session_id = ?").bind(id),
+        db.prepare("DELETE FROM patch WHERE session_id = ?").bind(id),
+        db.prepare("DELETE FROM session WHERE id = ?").bind(id),
+      ]);
+    },
   };
 }
 
@@ -174,6 +187,9 @@ export function createMemoryStore(): SessionStore {
         bundle.messages.push(structuredClone({ ...message, createdAt: write.now }));
       }
       sessions.set(write.session.id, bundle);
+    },
+    async remove(id) {
+      sessions.delete(id);
     },
   };
 }

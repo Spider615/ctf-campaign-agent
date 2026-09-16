@@ -9,6 +9,7 @@ import { applyFactWrites, createEmptyDraft, type FactWrite } from "../app/lib/ca
 import type { StoredMessage } from "../app/lib/campaign/ics1811/messages.ts";
 import { createMemoryStore } from "../app/lib/server/session-store.ts";
 import { createSession, runTurn, type Snapshot, type TurnDeps } from "../app/lib/server/turns.ts";
+import { finishTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
 
 const TODAY = "2026-09-16";
 type Step = [AgentToolName, Record<string, unknown>?];
@@ -43,7 +44,7 @@ function deps(scripts: Array<Script | Error> = []): TurnDeps & { calls: () => nu
 }
 
 const example = (id: string) => EXAMPLES.find((item) => item.id === id)!;
-const record = (writes: FactWrite[]): Script => ({ steps: [["update_fields", { facts: writes }]], reply: "记下了。" });
+const record = (writes: FactWrite[]): Script => ({ steps: [["extract_campaign_facts", { facts: writes }]], reply: "记下了。" });
 const lastAgent = (snapshot: Snapshot) => [...snapshot.messages].reverse().find((message) => message.role === "assistant")!.content;
 const lastOfKind = <K extends StoredMessage["kind"]>(snapshot: Snapshot, kind: K) =>
   [...snapshot.messages].reverse().find((message) => message.content.kind === kind)?.content as Extract<StoredMessage, { kind: K }> | undefined;
@@ -97,6 +98,34 @@ test("a new request is understood by the agent, asks one round, then reads back 
   const sheet = lastOfKind(snapshot, "agent_fill_sheet")!.sheet;
   assert.equal(sheet.info.find((row) => row.label === "计折上折")?.value, "计算折上折");
   assert.ok(sheet.postActions.some((action) => action.id === "group_17"));
+});
+
+test("submitting the card reads back as a sentence the user could have typed", async () => {
+  const d = deps([record(example("T2").firstWrites)]);
+  let snapshot = await interpret(await startNew(d, "T2"), d);
+  assert.deepEqual(cardIds(snapshot), ["Q1", "Q5a", "Q5b", "Q6a"]);
+
+  snapshot = await submit(snapshot, d, {
+    Q1: { start: "2026-10-01", end: "2026-10-07" },
+    Q5a: { none: true },
+    Q5b: { commission: "price_times_discount" },
+    Q6a: { wanted: false },
+  });
+
+  const card = lastOfKind(snapshot, "agent_round_card")!;
+  const submitted = lastOfKind(snapshot, "user_card_submit")!;
+  // 选项提交只是替用户省了打字，结果在对话里要长得跟用户自己打的一样：
+  // 问题原话带着问号，答案紧跟在后面，顺序照卡片上的顺序。
+  // 只取第一问：标题后面常跟着填写提示或追加问句，拼进去会把话截断。
+  const firstAsk = (title: string) => (title.includes("？") ? `${title.split("？")[0]}？` : title);
+  for (const question of card.questions) {
+    assert.ok(submitted.label.includes(firstAsk(question.title)), `拼接里要有问题「${firstAsk(question.title)}」`);
+  }
+  assert.ok(submitted.label.startsWith(firstAsk(card.questions[0].title)), "第一段就是卡片上的第一个问题");
+  // 锁住截断本身：Q5a 标题里的这句填写提示不能跟着拼进用户消息里。
+  assert.doesNotMatch(submitted.label, /没有就都填 0。/);
+  // 不再是「字段名：值」那种系统标签写法（原来是「让扣点和回款率：没有」）。
+  assert.doesNotMatch(submitted.label, /^[^？]+：/);
 });
 
 test("the second round only asks what the first answers triggered", async () => {
@@ -175,10 +204,77 @@ test("an activity without any priced offer is explained once, by the code", asyn
   assert.match(texts[0], /不在 1811 优惠开单范围/);
 });
 
+test("the readback separates what decides confirmation from what is just defaults", async () => {
+  const snapshot = await createSession({ entryMode: "example" }, deps());
+  const readback = lastOfKind(snapshot, "agent_readback")!.readback;
+
+  // 决定「要不要确认」的几件事必须在 essentials 里。
+  const essentials = readback.essentials.join("；");
+  for (const probe of ["黄金每克减15", "5 月 1 日", "7590", "每克减 15"]) {
+    assert.ok(essentials.includes(probe), `结论部分要包含「${probe}」：${essentials}`);
+  }
+
+  // 「按默认」这类不影响判断的，挪到 defaults，别和上面平铺在一起。
+  for (const probe of ["付款方式", "活动分组", "是否凭券使用"]) {
+    assert.ok(!essentials.includes(probe), `「${probe}」不该占据结论部分：${essentials}`);
+    assert.ok(readback.defaults.join("；").includes(probe), `「${probe}」应收进默认项`);
+  }
+
+  // 要为「确认与否」而读的内容应当明显变少。
+  // 不要求更激进：再往下砍就得藏起明细或日期，而那些正是决定确认的内容——
+  // 隐藏决策内容的审批卡片只是表演，折叠该折叠的就够了。
+  assert.ok(
+    essentials.length <= readback.paragraph.length * 0.6,
+    `为做决定要读 ${essentials.length} 字 / 整段 ${readback.paragraph.length} 字，没有真正瘦下来`,
+  );
+  assert.ok(readback.defaults.length >= 4, "按默认的项应该成批折叠，而不是零星几条");
+  // 整段保留，复制和旧会话还要用。
+  assert.ok(readback.paragraph.includes("确认无误后生成填写内容"));
+});
+
+test("复述要说清名称和内容不是用户写的，确认才是知情的", async () => {
+  const { buildReadback } = await import("../app/lib/campaign/ics1811/readback.ts");
+  const { deriveFill } = await import("../app/lib/campaign/ics1811/derive.ts");
+  const { checkDraft } = await import("../app/lib/campaign/ics1811/checks.ts");
+  const t1 = example("T1");
+  const base = applyFactWrites(createEmptyDraft("c", t1.first), t1.firstWrites, { text: t1.first, today: TODAY }).draft;
+
+  const readbackOf = (draft: typeof base) => {
+    const fill = deriveFill(draft);
+    return buildReadback(draft, fill, checkDraft(draft, fill, TODAY), []);
+  };
+
+  // 模板拼的：确认时用户应当知道这两段不是自己说的。
+  const fromTemplate = readbackOf(base).essentials[0];
+  assert.match(fromTemplate, /活动名称「黄金每克减15」/);
+  assert.match(fromTemplate, /模板/, `模板生成要标明出处：${fromTemplate}`);
+
+  // 模型起草的：标注要和模板区分开，因为二者的失败方式不同。
+  const drafted = { ...base, copy: { name: "足金每克减15元", content: "一般足金类黄金每克减15元", source: "ai" as const } };
+  const fromModel = readbackOf(drafted).essentials[0];
+  assert.match(fromModel, /活动名称「足金每克减15元」/);
+  assert.match(fromModel, /模型/, `模型起草要标明出处：${fromModel}`);
+  assert.notEqual(fromTemplate.replace(/「[^」]*」/g, ""), fromModel.replace(/「[^」]*」/g, ""), "模板和模型起草的标注不能一样");
+
+  // 用户自己改过的不该再被标成 AI 写的。
+  const byUser = { ...base, copy: { name: "足金每克减15元", content: "一般足金类黄金每克减15元", source: "user" as const } };
+  const fromUser = readbackOf(byUser).essentials[0];
+  assert.doesNotMatch(fromUser, /模型|模板/, `用户写的不该标成 AI 产出：${fromUser}`);
+});
+
 test("readback notes name the field they are about", async () => {
   const snapshot = await createSession({ entryMode: "example" }, deps());
   const attention = lastOfKind(snapshot, "agent_readback")!.readback.attention.map((item) => item.text);
   for (const label of ["是否参与打折", "预售时间", "是否凭券使用"]) assert.ok(attention.some((text) => text.startsWith(label)), `复述提示里要写明「${label}」`);
+});
+
+test("the readback leads with a one-line summary so the card can stay small", async () => {
+  const snapshot = await createSession({ entryMode: "example" }, deps());
+  const readback = lastOfKind(snapshot, "agent_readback")!.readback;
+  assert.ok(readback.summary, "复述要有一句话结论，卡片才能瘦下来");
+  assert.ok([...readback.summary].length <= 40, `结论不能超过 40 字，现在 ${[...readback.summary].length} 字：${readback.summary}`);
+  assert.ok(readback.summary.includes("黄金每克减15"), `结论里要有活动名称：${readback.summary}`);
+  assert.ok(readback.paragraph.length > readback.summary.length, "完整复述仍然保留，只是默认折叠");
 });
 
 test("a change after the readback asks the new follow-up question in a new round", async () => {
@@ -190,8 +286,8 @@ test("a change after the readback asks the new follow-up question in a new round
   await assert.rejects(() => confirm(snapshot, d), (error: { status?: number }) => error.status === 409, "复述已过期时不能确认");
 });
 
-test("confirming in chat goes through confirm_readback", async () => {
-  const d = deps([{ steps: [["confirm_readback"]], reply: "好的，填写值生成了。" }]);
+test("confirming in chat goes through confirm_campaign_readback", async () => {
+  const d = deps([{ steps: [["confirm_campaign_readback"]], reply: "好的，填写值生成了。" }]);
   let snapshot = await createSession({ entryMode: "example" }, d);
   snapshot = await say(snapshot, d, "确认，没问题");
   assert.ok(lastOfKind(snapshot, "agent_fill_sheet"));
@@ -200,7 +296,7 @@ test("confirming in chat goes through confirm_readback", async () => {
 });
 
 test("undo in chat restores the previous version", async () => {
-  const d = deps([record([{ key: "offer", quote: "每克减20元" }]), { steps: [["undo_last_change"]], reply: "撤销了。" }]);
+  const d = deps([record([{ key: "offer", quote: "每克减20元" }]), { steps: [["undo_campaign_change"]], reply: "撤销了。" }]);
   let snapshot = await createSession({ entryMode: "example" }, d);
   snapshot = await say(snapshot, d, "改成每克减20元");
   assert.equal(snapshot.latest.draft.facts.offer?.value.items[0].amount, 20);
@@ -211,7 +307,7 @@ test("undo in chat restores the previous version", async () => {
 
 test("model-drafted copy is kept until the facts it describes change", async () => {
   const d = deps([
-    { steps: [["draft_copy", { name: "足金每克减15元", content: "一般足金类黄金每克减15元" }]], reply: "名称改好了。" },
+    { steps: [["draft_campaign_copy", { name: "足金每克减15元", content: "一般足金类黄金每克减15元" }]], reply: "名称改好了。" },
     record([{ key: "offer", quote: "每克减20元" }]),
   ]);
   let snapshot = await createSession({ entryMode: "example" }, d);
@@ -219,6 +315,22 @@ test("model-drafted copy is kept until the facts it describes change", async () 
   assert.equal(snapshot.latest.fill.info.name.value, "足金每克减15元");
   snapshot = await say(snapshot, d, "改成每克减20元");
   assert.deepEqual([snapshot.latest.draft.copy, snapshot.latest.fill.info.name.value], [null, "黄金每克减20"]);
+});
+
+test("changing a fact the copy never mentions keeps the model-drafted name", async () => {
+  const d = deps([
+    { steps: [["draft_campaign_copy", { name: "足金每克减15元", content: "一般足金类黄金每克减15元" }]], reply: "名称改好了。" },
+    record([{ key: "stores", quote: "3319门店", value: ["3319"] }]),
+  ]);
+  let snapshot = await createSession({ entryMode: "example" }, d);
+  snapshot = await say(snapshot, d, "名称写得正式一点");
+  assert.equal(snapshot.latest.fill.info.name.value, "足金每克减15元");
+
+  // 门店不出现在名称和内容里，改门店不该把模型起草的文案抹回模板。
+  snapshot = await say(snapshot, d, "改成3319门店");
+  assert.equal(snapshot.latest.draft.copy?.source, "ai", "改门店后模型起草的文案要保住");
+  assert.equal(snapshot.latest.fill.info.name.value, "足金每克减15元");
+  assert.equal(snapshot.latest.fill.info.name.basis, "模型起草");
 });
 
 test("agent failures keep the request retryable", async () => {
@@ -237,6 +349,87 @@ test("agent failures keep the request retryable", async () => {
   assert.equal(snapshot.latest.seq, seq);
 });
 
+test("real tool events stream once and persist before the related Agent output", async () => {
+  const d = deps([record(example("T2").firstWrites)]);
+  const runAgent = d.runAgent;
+  const seen: AgentTraceEvent[] = [];
+  d.emitTrace = (event) => seen.push(event);
+  d.runAgent = async (request, onTrace) => {
+    const started = startTraceEvent({
+      id: "trace-persist",
+      tool: "extract_campaign_facts",
+      title: "提取活动信息",
+      initiatedBy: "model",
+      at: 100,
+    });
+    onTrace?.(started);
+    const result = await runAgent(request);
+    const completed = finishTraceEvent(started, { status: "completed", summary: "识别并核验 4 项信息", at: 180 });
+    onTrace?.(completed);
+    return { ...result, trace: { status: "completed", durationMs: 80, steps: [completed] } };
+  };
+
+  const snapshot = await interpret(await startNew(d, "T2"), d);
+  assert.deepEqual(seen.map((event) => [event.tool, event.status, event.initiatedBy]), [
+    ["extract_campaign_facts", "started", "model"],
+    ["extract_campaign_facts", "completed", "model"],
+    ["analyze_campaign_state", "started", "orchestrator"],
+    ["analyze_campaign_state", "completed", "orchestrator"],
+  ]);
+  const kinds = snapshot.messages.map((message) => message.content.kind);
+  const traceIndex = kinds.indexOf("agent_tool_trace");
+  assert.ok(traceIndex >= 0);
+  assert.ok(traceIndex < kinds.indexOf("agent_text"), "工具记录要排在相关 Agent 输出之前");
+  assert.equal(snapshot.messages.filter((message) => message.content.kind === "agent_tool_trace").length, 1);
+});
+
+test("a failed streamed tool trace stays retryable", async () => {
+  const d = deps();
+  d.runAgent = async (_request, onTrace) => {
+    onTrace?.(startTraceEvent({
+      id: "trace-failed",
+      tool: "analyze_campaign_state",
+      title: "运行 1811 规则分析",
+      initiatedBy: "model",
+      at: 100,
+    }));
+    throw new Error("Agent 连接中断");
+  };
+
+  const snapshot = await interpret(await startNew(d, "T2"), d);
+  const trace = lastOfKind(snapshot, "agent_tool_trace");
+  assert.equal(trace?.trace.status, "failed");
+  assert.equal(snapshot.flow.pendingInterpretation, true);
+  assert.deepEqual(lastAgent(snapshot).kind, "agent_error");
+});
+
+test("button confirmation persists deterministic confirmation and sheet tools", async () => {
+  const d = deps();
+  const snapshot = await confirm(await createSession({ entryMode: "example" }, d), d);
+  const trace = lastOfKind(snapshot, "agent_tool_trace")?.trace;
+  assert.deepEqual(trace?.steps.map((step) => [step.tool, step.initiatedBy]), [
+    ["confirm_campaign_readback", "orchestrator"],
+    ["generate_ics1811_sheet", "orchestrator"],
+  ]);
+});
+
+test("the orchestrator supplements required rule and readback tools the model omitted", async () => {
+  const t2 = example("T2");
+  const d = deps([
+    record(t2.firstWrites),
+    { steps: [["draft_campaign_copy", { name: "足金每克减15元", content: "一般足金类黄金每克减15元" }]], reply: "名称和内容改好了。" },
+  ]);
+
+  let snapshot = await interpret(await startNew(d, "T2"), d);
+  let trace = lastOfKind(snapshot, "agent_tool_trace")?.trace;
+  assert.ok(trace?.steps.some((step) => step.tool === "analyze_campaign_state" && step.initiatedBy === "orchestrator"));
+
+  snapshot = await createSession({ entryMode: "example" }, d);
+  snapshot = await say(snapshot, d, "名称写得正式一点");
+  trace = lastOfKind(snapshot, "agent_tool_trace")?.trace;
+  assert.ok(trace?.steps.some((step) => step.tool === "build_campaign_readback" && step.initiatedBy === "orchestrator"));
+});
+
 test("tools drop quotes the user did not say, reject bad copy and only confirm a confirmable readback", () => {
   const text = "满5000减500，钻石类";
   const request: AgentRequest = {
@@ -244,18 +437,30 @@ test("tools drop quotes the user did not say, reject bad copy and only confirm a
     phase: "asking", roundsUsed: 1, openQuestions: [], readbackSeq: null, canConfirm: false, canUndo: false,
   };
   const state = createAgentState(request);
-  const outcome = JSON.parse(runAgentTool(state, "update_fields", { facts: [{ key: "offer", quote: "满3000减300" }, { key: "categories", quote: "钻石类", value: ["钻石类"] }] }).text);
+  const outcome = JSON.parse(runAgentTool(state, "extract_campaign_facts", { facts: [{ key: "offer", quote: "满3000减300" }, { key: "categories", quote: "钻石类", value: ["钻石类"] }] }).text);
   assert.equal(state.draft.facts.offer, null);
   assert.equal(outcome.dropped.length, 1);
   assert.equal(state.draft.facts.categories?.value.all[0], "钻石类");
 
-  assert.equal(runAgentTool(state, "draft_copy", { name: "钻石类满减大促销活动名称很长", content: "钻石类" }).isError, true);
-  assert.equal(runAgentTool(state, "confirm_readback").isError, true);
+  assert.equal(runAgentTool(state, "draft_campaign_copy", { name: "钻石类满减大促销活动名称很长", content: "钻石类" }).isError, true);
+  assert.equal(runAgentTool(state, "confirm_campaign_readback").isError, true);
 
   const confirmable = createAgentState({ ...request, draft: applyFactWrites(createEmptyDraft("c", "确认"), [], { text: "确认", today: TODAY }).draft, trigger: { kind: "user_message", text: "确认" }, readbackSeq: 3, canConfirm: true });
-  assert.equal(runAgentTool(confirmable, "confirm_readback").isError, undefined);
-  assert.equal(finishAgentTurn(confirmable, "好的。还要加标语吗？").reply, "好的。");
-  const long = finishAgentTurn(createAgentState(request), `日期记下了。${"货类和优惠也都对上了".repeat(20)}。最后一句。`).reply ?? "";
+  assert.equal(runAgentTool(confirmable, "confirm_campaign_readback").isError, undefined);
+  // 卡片开着时系统正在问用户，模型再问会和卡片重复、打乱两轮限制，问句要删。
+  const whileAsking = createAgentState({ ...request, openQuestions: ["Q6a"] });
+  assert.equal(finishAgentTurn(whileAsking, "好的。还要加标语吗？").reply, "好的。");
+  // 没有卡片时放它正常说话：「这样理解对吗」这类澄清是对话该有的样子，
+  // 一刀切删问句正是它显得死板的来源。
+  assert.equal(finishAgentTurn(confirmable, "好的。还要加标语吗？").reply, "好的。还要加标语吗？", "没有卡片时不删问句");
+  // 换行是模型表达结构的方式：它分点写的「1. …」若被拼成一行，界面就解析不出列表。
+  // 这条锁住的是一次真实故障——切句正则把 \n 排除在外，重新拼接时换行被静默删光。
+  const multiline = finishAgentTurn(createAgentState(request), "先说几个方向：\n\n1. 满减拉客单价。\n2. 以旧换新引老客。").reply ?? "";
+  assert.ok(multiline.includes("\n1. 满减"), "分点前的换行必须保留");
+  assert.ok(multiline.includes("\n2. 以旧换新"), "每一点都要各占一行");
+
+  // 上限放宽到 800 字（实测模型自然输出 420-440 字），但截断本身还在：宁可少一句，不留半句。
+  const long = finishAgentTurn(createAgentState(request), `日期记下了。${"货类和优惠也都对上了".repeat(100)}。最后一句。`).reply ?? "";
   assert.equal(long, "日期记下了。", "超长回复在句末截断，不留半句");
 });
 
@@ -263,12 +468,18 @@ test("prompts carry today, the open questions and the recorded facts", () => {
   const t2 = example("T2");
   const draft = applyFactWrites(createEmptyDraft("p", t2.first), t2.firstWrites, { text: t2.first, today: TODAY }).draft;
   assert.match(buildAgentSystemPrompt(TODAY), /今天是 2026-09-16/);
+  assert.match(buildAgentSystemPrompt(TODAY), /extract_campaign_facts 后必须调用 analyze_campaign_state/);
+  assert.doesNotMatch(buildAgentSystemPrompt(TODAY), /\bupdate_fields\b/);
   const prompt = buildAgentUserPrompt({
     today: TODAY, draft, history: [], trigger: { kind: "user_message", text: "下周开始" },
     phase: "asking", roundsUsed: 1, openQuestions: ["Q1"], readbackSeq: null, canConfirm: false, canUndo: true,
   });
   assert.match(prompt, /正在问用户的问题：活动从哪天到哪天？/);
   assert.doesNotMatch(buildAgentSystemPrompt(TODAY), /系统会出卡片/);
+  // 模型曾承诺「帮你按区域拆成 3 张单」，没有工具能拆单，它就一直空转到 120s 超时。
+  // 这两句是那次的修复，删掉会让同样的超时重新出现，所以在这里盯住。
+  assert.match(buildAgentSystemPrompt(TODAY), /不能拆单/);
+  assert.match(buildAgentSystemPrompt(TODAY), /一个活动只能选一个区域/);
   assert.match(prompt, /门店：7590/);
   assert.match(prompt, /用户说：「下周开始」/);
 });

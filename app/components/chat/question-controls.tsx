@@ -174,7 +174,7 @@ export function toAnswer(gap: Gap, raw: RawAnswer): { answer: Record<string, unk
 }
 
 function Label({ children }: { children: React.ReactNode }) {
-  return <span className="text-[12px] text-[#7d6f72]">{children}</span>;
+  return <span className="text-[12px] text-[#667d97]">{children}</span>;
 }
 
 const toggle = (list: string[], value: string) => (list.includes(value) ? list.filter((item) => item !== value) : [...list, value]);
@@ -197,8 +197,8 @@ export function QuestionControl({ gap, raw, disabled, onChange }: { gap: Gap; ra
     case "Q1":
       return (
         <div className="grid gap-2 sm:grid-cols-2">
-          <label><Label>开始日期</Label><Input type="date" disabled={disabled} value={raw.start} onChange={(event) => onChange({ start: event.target.value })} className="mt-1 h-9 bg-white" /></label>
-          <label><Label>结束日期（当天有效）</Label><Input type="date" disabled={disabled} value={raw.end} onChange={(event) => onChange({ end: event.target.value })} className="mt-1 h-9 bg-white" /></label>
+          <label><Label>开始日期</Label><Input type="date" disabled={disabled} value={raw.start} onChange={(event) => onChange({ start: event.target.value })} className="mt-1 h-11 border-[#cfe0f2] bg-white" /></label>
+          <label><Label>结束日期（当天有效）</Label><Input type="date" disabled={disabled} value={raw.end} onChange={(event) => onChange({ end: event.target.value })} className="mt-1 h-11 border-[#cfe0f2] bg-white" /></label>
         </div>
       );
     case "Q2": {
@@ -209,7 +209,7 @@ export function QuestionControl({ gap, raw, disabled, onChange }: { gap: Gap; ra
         .sort((a, b) => Number(candidates.includes(b.display)) - Number(candidates.includes(a.display)));
       return (
         <div className="space-y-2">
-          <Input disabled={disabled} value={raw.query} onChange={(event) => onChange({ query: event.target.value })} className="h-9 bg-white" placeholder="按店号或店名查找" />
+          <Input disabled={disabled} value={raw.query} onChange={(event) => onChange({ query: event.target.value })} className="h-11 border-[#cfe0f2] bg-white" placeholder="按店号或店名查找" />
           <div className="flex flex-wrap gap-2">
             {stores.map((store) => (
               <Chip key={store.code} disabled={disabled} selected={raw.stores.includes(store.code)} onClick={() => onChange({ stores: toggle(raw.stores, store.code) })}>
@@ -246,8 +246,8 @@ export function QuestionControl({ gap, raw, disabled, onChange }: { gap: Gap; ra
           <Chip disabled={disabled} selected={raw.none} onClick={() => onChange({ none: !raw.none })}>没有，都填 0</Chip>
           {raw.none ? null : (
             <div className="grid gap-2 sm:grid-cols-2">
-              <label><Label>让扣点</Label><Input disabled={disabled} value={raw.concession} onChange={(event) => onChange({ concession: event.target.value })} className="mt-1 h-9 bg-white" placeholder="例如 0.02 或 2%" /></label>
-              <label><Label>回款率</Label><Input disabled={disabled} value={raw.collection} onChange={(event) => onChange({ collection: event.target.value })} className="mt-1 h-9 bg-white" placeholder="例如 0.98 或 98%" /></label>
+              <label><Label>让扣点</Label><Input disabled={disabled} value={raw.concession} onChange={(event) => onChange({ concession: event.target.value })} className="mt-1 h-11 border-[#cfe0f2] bg-white" placeholder="例如 0.02 或 2%" /></label>
+              <label><Label>回款率</Label><Input disabled={disabled} value={raw.collection} onChange={(event) => onChange({ collection: event.target.value })} className="mt-1 h-11 border-[#cfe0f2] bg-white" placeholder="例如 0.98 或 98%" /></label>
             </div>
           )}
         </div>
@@ -261,7 +261,7 @@ export function QuestionControl({ gap, raw, disabled, onChange }: { gap: Gap; ra
           </div>
           {raw.choice === "yes" ? (
             <>
-              <Input disabled={disabled} value={raw.text} onChange={(event) => onChange({ text: event.target.value })} className="h-9 bg-white" placeholder="法务确认过的标语原文，照抄" />
+              <Input disabled={disabled} value={raw.text} onChange={(event) => onChange({ text: event.target.value })} className="h-11 border-[#cfe0f2] bg-white" placeholder="法务确认过的标语原文，照抄" />
               <div className="flex flex-wrap gap-2">
                 <Chip disabled={disabled} selected={raw.legal === "true"} onClick={() => onChange({ legal: "true" })}>法务确认过</Chip>
                 <Chip disabled={disabled} selected={raw.legal === "false"} onClick={() => onChange({ legal: "false" })}>还没确认（这次不填）</Chip>
@@ -271,13 +271,13 @@ export function QuestionControl({ gap, raw, disabled, onChange }: { gap: Gap; ra
         </div>
       );
     default:
-      return <p className="text-[12px] text-[#8a7d80]">这一项请直接在对话里说明。</p>;
+      return <p className="text-[12px] text-[#71869f]">这一项请直接在对话里说明。</p>;
   }
 }
 
 function OfferControl({ gap, raw, disabled, onChange }: { gap: Gap; raw: RawAnswer; disabled: boolean; onChange: (patch: Partial<RawAnswer>) => void }) {
   const number = (key: "discount" | "threshold" | "amount" | "multiple", label: string, placeholder: string) => (
-    <label key={key}><Label>{label}</Label><Input inputMode="decimal" disabled={disabled} value={raw[key]} onChange={(event) => onChange({ [key]: event.target.value })} className="mt-1 h-9 bg-white" placeholder={placeholder} /></label>
+    <label key={key}><Label>{label}</Label><Input inputMode="decimal" disabled={disabled} value={raw[key]} onChange={(event) => onChange({ [key]: event.target.value })} className="mt-1 h-11 border-[#cfe0f2] bg-white" placeholder={placeholder} /></label>
   );
   return (
     <div className="space-y-3">
@@ -303,15 +303,15 @@ function OfferControl({ gap, raw, disabled, onChange }: { gap: Gap; raw: RawAnsw
         <div className="space-y-2">
           {raw.tiers.map((tier, index) => (
             <div key={index} className="flex flex-wrap items-end gap-2">
-              <label className="w-28"><Label>换大比例（%）</Label><Input inputMode="decimal" disabled={disabled} value={tier.ratio} onChange={(event) => onChange({ tiers: raw.tiers.map((item, at) => (at === index ? { ...item, ratio: event.target.value } : item)) })} className="mt-1 h-9 bg-white" placeholder="50" /></label>
-              {tier.free ? null : <label className="w-28"><Label>工费打几折</Label><Input inputMode="decimal" disabled={disabled} value={tier.labor} onChange={(event) => onChange({ tiers: raw.tiers.map((item, at) => (at === index ? { ...item, labor: event.target.value } : item)) })} className="mt-1 h-9 bg-white" placeholder="8" /></label>}
+              <label className="w-28"><Label>换大比例（%）</Label><Input inputMode="decimal" disabled={disabled} value={tier.ratio} onChange={(event) => onChange({ tiers: raw.tiers.map((item, at) => (at === index ? { ...item, ratio: event.target.value } : item)) })} className="mt-1 h-11 border-[#cfe0f2] bg-white" placeholder="50" /></label>
+              {tier.free ? null : <label className="w-28"><Label>工费打几折</Label><Input inputMode="decimal" disabled={disabled} value={tier.labor} onChange={(event) => onChange({ tiers: raw.tiers.map((item, at) => (at === index ? { ...item, labor: event.target.value } : item)) })} className="mt-1 h-11 border-[#cfe0f2] bg-white" placeholder="8" /></label>}
               <Chip disabled={disabled} selected={tier.free} onClick={() => onChange({ tiers: raw.tiers.map((item, at) => (at === index ? { ...item, free: !item.free } : item)) })}>免工费</Chip>
               {raw.tiers.length > 1 ? (
-                <button type="button" aria-label="删除这一档" disabled={disabled} onClick={() => onChange({ tiers: raw.tiers.filter((_, at) => at !== index) })} className="grid size-9 place-items-center rounded-lg text-[#8a7d80] hover:bg-[#f3ece4]"><Trash2 className="size-4" /></button>
+                <button type="button" aria-label="删除这一档" disabled={disabled} onClick={() => onChange({ tiers: raw.tiers.filter((_, at) => at !== index) })} className="grid size-11 place-items-center rounded-lg text-[#71869f] hover:bg-[#edf5ff] hover:text-[#2470cc]"><Trash2 className="size-4" /></button>
               ) : null}
             </div>
           ))}
-          <button type="button" disabled={disabled} onClick={() => onChange({ tiers: [...raw.tiers, { ratio: "", labor: "", free: false }] })} className="inline-flex items-center gap-1 text-[13px] text-[#651427]"><Plus className="size-3.5" />再加一个换大比例</button>
+          <button type="button" disabled={disabled} onClick={() => onChange({ tiers: [...raw.tiers, { ratio: "", labor: "", free: false }] })} className="inline-flex min-h-11 items-center gap-1 rounded-lg px-1 text-[13px] text-[#2470cc] hover:bg-[#edf5ff]"><Plus className="size-3.5" />再加一个换大比例</button>
         </div>
       ) : null}
     </div>
