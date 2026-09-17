@@ -711,6 +711,10 @@ test("prompts carry today, what the agent asked and proposed, and the recorded f
     assert.match(system, new RegExp(skill));
   }
   assert.match(system, /解释性问题且不需要读取或修改活动数据时，不需要调用活动工具；需要业务知识时仍必须先用 Skill/);
+  assert.match(
+    system,
+    /解释字段后，只有 analyze_campaign_state 把该项列为缺项时，才用 ask_campaign_questions 登记；已经有值或用户只是问含义时，不登记、不追问/,
+  );
   assert.match(system, /活动工具和确定性代码结果优先于 Skill/);
   assert.match(system, /Skill 只负责解释和指导，不能声称已经保存、已经齐全或已经通过校验/);
   assert.match(system, /每一轮都是新的/);
