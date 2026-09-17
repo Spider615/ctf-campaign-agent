@@ -12,6 +12,7 @@ import { buildAgentSystemPrompt, buildAgentUserPrompt } from "../app/lib/agent/p
 import type { AgentRequest, AgentResult } from "../app/lib/agent/protocol.ts";
 import { createReplyStreamState, reduceReplyStream } from "../app/lib/agent/reply-stream.ts";
 import type { AgentProgressEvent } from "../app/lib/agent/stream.ts";
+import { relayAbort, TurnCancelledError } from "../app/lib/cancellation.ts";
 import {
   AGENT_TOOL_META,
   AGENT_TOOL_NAMES,
@@ -46,7 +47,6 @@ export type AgentRuntimeConfig = {
   apiKey: string;
   runtimeDir: string;
   pluginDir: string;
-  timeoutMs: number;
   debug?: boolean;
 };
 
@@ -54,6 +54,7 @@ export type AgentTurnRunner = (
   request: AgentRequest,
   onTrace?: (event: AgentTraceEvent) => void,
   onProgress?: (event: Exclude<AgentProgressEvent, { type: "trace" }>) => void,
+  externalSignal?: AbortSignal,
 ) => Promise<AgentResult>;
 
 export type AgentQuery = (
@@ -75,7 +76,7 @@ export function createAgentRunner(
   config: AgentRuntimeConfig,
   dependencies: AgentRuntimeDependencies = DEFAULT_AGENT_RUNTIME_DEPENDENCIES,
 ): AgentTurnRunner {
-  return async (request, onTrace, onProgress) => {
+  return async (request, onTrace, onProgress, externalSignal) => {
     const turnStartedAt = Date.now();
     const turnStartedMonotonic = performance.now();
     const catalog = loadSkillCatalog(config.pluginDir);
@@ -194,7 +195,7 @@ export function createAgentRunner(
 
     mkdirSync(config.runtimeDir, { recursive: true });
     const abortController = new AbortController();
-    const timer = setTimeout(() => abortController.abort(), config.timeoutMs);
+    const stopRelaying = externalSignal ? relayAbort(externalSignal, abortController) : () => {};
     const stderr: string[] = [];
     let reply: string | null = null;
 
@@ -275,14 +276,17 @@ export function createAgentRunner(
           );
         }
       }
+      if (externalSignal?.aborted) throw new TurnCancelledError();
     } catch (error) {
-      if (abortController.signal.aborted) throw new Error("Agent 超时了，请重试");
+      if (externalSignal?.aborted) throw new TurnCancelledError();
       const tail = stderr.join("").slice(-1500);
       if (tail) console.error(tail);
       throw error;
     } finally {
-      for (const event of finishPendingSkillLoads(skillLoads, Date.now())) recordSkill(event);
-      clearTimeout(timer);
+      stopRelaying();
+      for (const event of finishPendingSkillLoads(skillLoads, Date.now())) {
+        if (!externalSignal?.aborted) recordSkill(event);
+      }
     }
 
     const result = finishSkillCheckedTurn(

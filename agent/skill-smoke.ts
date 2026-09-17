@@ -165,7 +165,6 @@ async function main(): Promise<void> {
       apiKey,
       runtimeDir: resolve(temporaryRoot, "runtime"),
       pluginDir: PLUGIN_DIR,
-      timeoutMs: 120_000,
     };
     const productionRunner = createAgentRunner(config);
 

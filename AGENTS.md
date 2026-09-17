@@ -22,7 +22,7 @@ npm run dev:all                  # 同时起 Agent 服务（8788）和页面（5
 npm run dev                      # 只起页面（vinext + Cloudflare Workers + 本地 D1）
 npm run dev:agent                # 只起 Agent 服务；AGENT_DEBUG=1 打印每次工具调用的参数和结果
 
-npm test                                                     # 全部单测（node:test），不装依赖也能跑
+npm test                                                     # 全部单测（node:test），SDK 取消测试需先安装 agent/ 依赖
 node --test --experimental-strip-types tests/conversation.test.ts                                   # 单个文件
 node --test --experimental-strip-types --test-name-pattern="short reply" tests/conversation.test.ts  # 按测试名过滤
 npx tsc --noEmit                 # 页面侧类型检查（tsconfig 排除了 agent/）
@@ -34,7 +34,7 @@ npm run build
 - 端口被占：Agent 服务读 `.dev.vars` 里的 `AGENT_PORT`，同时把 `AGENT_SERVICE_URL` 改成对应地址；页面端口被占时 Vite 自动顺延，以终端打印的地址为准。
 - 只改 `agent/plugin/skills/*/SKILL.md`，下一次 Agent 回合直接生效，不需要重启 `dev:agent`；Skill 格式或出处不符合约定时，下一回合会明确报错。
 - 改 `agent/skills.ts`、`agent/server.ts`、`app/lib/agent/` 或 `app/lib/campaign/`，需要重启 `dev:agent`；页面侧仍会热更新。
-- 没有有效 key 时 Agent 不会立刻报认证错误，而是等满单轮超时（120s）才报「Agent 超时了」。
+- 应用没有总时限定时器；供应商或鉴权错误按真实上游错误反馈，持续挂起的回合可以主动停止。
 
 本地 D1 首次使用前，先 `npm run build`，再应用迁移：
 
@@ -64,7 +64,7 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 
 - **页面和数据（Workers）**：`app/api/sessions/**` → `app/lib/server/turns.ts`（`createSession` / `runTurn`）→ `SessionStore`。会话、消息、版本和落库都在这一侧，一个回合一次 `db.batch`。`app/lib/server/runtime.ts` 是唯一接 `cloudflare:workers` 的地方。
 - **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。服务不存数据，只接收当前父文档与最近对话，返回本回合经工具修改的受控字段。
-- **协议**：`app/lib/agent/protocol.ts` 定义 `AgentRequest` / `AgentResult`，分别携带整体 `campaignStage` 和可空的 `ics1811Phase`。Workers 请求超时 150s，大于 Agent 单轮超时 120s。
+- **协议**：`app/lib/agent/protocol.ts` 定义 `AgentRequest` / `AgentResult`，分别携带整体 `campaignStage` 和可空的 `ics1811Phase`。Workers 和 Agent 都不设置应用层墙钟总时限，取消从浏览器经 Workers 传递到 Agent SDK；`maxTurns = 12` 仍是逻辑循环上限。
 
 Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开放 `Skill`；活动读写由本地 MCP server 的 11 个确定性工具完成。`settingSources: []` 隔离个人和项目 Claude 配置，运行时只允许校验通过的 `ics1811` 本地插件 Skill。所有模型回合必须先加载 `campaign-orchestrator`；只有交易优惠或 1811 语境才叠加 `campaign-sop`，其他专项 Skill 按意图加载。
 
