@@ -1,19 +1,21 @@
 import type { AgentPhase, AgentRequest, AgentResult, AgentTrigger } from "../agent/protocol.ts";
 import type { AgentProgressEvent } from "../agent/stream.ts";
 import { AGENT_TOOL_META } from "../agent/tools.ts";
+import type { CampaignBriefKey, CampaignDraft, CampaignWorkspace } from "../campaign/types.ts";
+import { buildCampaignWorkspace, createCampaignDraft, normalizeCampaignDraft } from "../campaign/workspace.ts";
 import { applyCardAnswers } from "../campaign/ics1811/card.ts";
 import { checkDraft } from "../campaign/ics1811/checks.ts";
 import { deriveFill } from "../campaign/ics1811/derive.ts";
 import { EXAMPLES } from "../campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../campaign/ics1811/facts.ts";
 import { renderFillSheet, type FillSheet } from "../campaign/ics1811/fill-sheet.ts";
-import { flowOf, messageToText, summarizeFactChanges, type ChatMessage, type StoredMessage } from "../campaign/ics1811/messages.ts";
+import { flowOf, messageToText, summarizeFactChanges, type ChangeItem, type ChatMessage, type StoredMessage } from "../campaign/ics1811/messages.ts";
 import { isPureAgreement } from "../campaign/ics1811/phrases.ts";
 import { renderPromo, type PromoDoc } from "../campaign/ics1811/promo.ts";
 import { acceptProposals, liveProposals, withoutEitherOr } from "../campaign/ics1811/proposals.ts";
 import { byPriority, planNext } from "../campaign/ics1811/questions.ts";
 import { buildReadback } from "../campaign/ics1811/readback.ts";
-import type { Check, FactKey, FillModel, FlowPhase, Gap, Ics1811Draft, Plan, Proposal, QuestionId } from "../campaign/ics1811/types.ts";
+import type { Check, FactKey, FillModel, FlowPhase, Gap, Ics1811Draft, Proposal, QuestionId } from "../campaign/ics1811/types.ts";
 import { finishTraceEvent, intervalUnionDurationMs, isToolTraceTiming, mergeTraceEvent, startTraceEvent, type AgentTraceEvent, type CampaignToolName, type ToolTrace, type ToolTraceTiming } from "../tool-trace.ts";
 import { ConflictError, type SessionBundle, type SessionStatus, type SessionStore, type TurnWrite } from "./session-store.ts";
 
@@ -63,8 +65,17 @@ export type Snapshot = {
   session: { id: string; title: string; status: string; entryMode: string; createdAt: string; updatedAt: string };
   messages: ChatMessage[];
   versions: VersionSummary[];
-  // promo 只有模型起草过创意部分才有；事实部分每轮由 renderPromo 重算，和 sheet 一样不入库。
-  latest: { seq: number; draft: Ics1811Draft; fill: FillModel; checks: Check[]; sheet: FillSheet; promo: PromoDoc | null };
+  // Campaign 是唯一持久化文档；1811 是可选子流程。fill/sheet/promo 都从子草稿重算，不另存。
+  latest: {
+    seq: number;
+    campaign: CampaignDraft;
+    draft: Ics1811Draft | null;
+    fill: FillModel | null;
+    checks: Check[];
+    sheet: FillSheet | null;
+    promo: PromoDoc | null;
+  };
+  workspace: CampaignWorkspace;
   flow: {
     phase: FlowPhase;
     replyId: string | null; // Agent 最近一次回复；asking 和 proposals 出自这条
@@ -178,24 +189,77 @@ export function isPendingInterpretation(bundle: SessionBundle): boolean {
     !bundle.messages.some((message) => message.role === "assistant" && message.content.kind !== "agent_error" && message.content.kind !== "agent_tool_trace");
 }
 
-function evaluate(draft: Ics1811Draft, messages: readonly ChatMessage[], today: string) {
+function evaluate(campaign: CampaignDraft, messages: readonly ChatMessage[], today: string) {
+  const workspace = buildCampaignWorkspace(campaign, today);
+  const flow = flowOf(messages);
+  const draft = campaign.ics1811;
+  if (!draft) {
+    return {
+      workspace,
+      draft,
+      fill: null,
+      checks: [] as Check[],
+      plan: null,
+      flow,
+      missing: [] as Gap[],
+      asking: [] as QuestionId[],
+      proposals: [] as Proposal[],
+    };
+  }
   const fill = deriveFill(draft);
   const checks = checkDraft(draft, fill, today);
   const plan = planNext(draft, fill, checks);
-  const flow = flowOf(messages);
   const missing: Gap[] = plan.action === "collect" ? plan.missing : [];
   const missingIds = missing.map((gap) => gap.id);
   // Agent 上一句问的只留现在仍缺的；提议只留仍然成立的（用户之后自己改过的作废）。建好后的改值提议也算。
   const asking = flow.asking.filter((id) => missingIds.includes(id));
   const proposals = plan.action === "out_of_scope" ? [] : liveProposals(draft, flow.proposals, today);
-  return { fill, checks, plan, flow, missing, asking, proposals };
+  return { workspace, draft, fill, checks, plan, flow, missing, asking, proposals };
 }
 
-function phaseOf(plan: Plan, pendingInterpretation: boolean): FlowPhase {
+function phaseOf(state: ReturnType<typeof evaluate>, pendingInterpretation: boolean): FlowPhase {
   if (pendingInterpretation) return "interpreting";
+  const { plan } = state;
+  if (!plan) {
+    if (state.workspace.stage === "blocked") return "blocked";
+    return state.workspace.brief.status === "ready" ? "ready" : "collecting";
+  }
   if (plan.action === "out_of_scope") return "out_of_scope";
   if (plan.action === "ready") return "ready";
   return plan.missing.length ? "collecting" : "blocked";
+}
+
+const BRIEF_LABEL: Record<CampaignBriefKey, string> = {
+  name: "活动名称",
+  objective: "活动目标",
+  audience: "目标受众",
+  theme: "活动主题",
+  channels: "传播渠道",
+  timing: "活动时机",
+  scope: "活动范围",
+};
+
+function briefValue(campaign: CampaignDraft, key: CampaignBriefKey): string {
+  const value = campaign.brief[key]?.value;
+  if (value === undefined || value === null) return "未填";
+  return Array.isArray(value) ? value.join("、") : String(value);
+}
+
+function summarizeCampaignChanges(before: CampaignDraft, after: CampaignDraft): ChangeItem[] {
+  const brief = (Object.keys(BRIEF_LABEL) as CampaignBriefKey[]).flatMap((key) => {
+    const previous = briefValue(before, key);
+    const next = briefValue(after, key);
+    return previous === next ? [] : [{ label: BRIEF_LABEL[key], before: previous, after: next }];
+  });
+  const child = before.ics1811 && after.ics1811
+    ? summarizeFactChanges(before.ics1811, after.ics1811)
+    : before.ics1811 === after.ics1811
+      ? []
+      : [{ label: "1811 优惠配置", before: before.ics1811 ? "已创建" : "不适用", after: after.ics1811 ? "已创建" : "不适用" }];
+  const communication = JSON.stringify(before.communication) === JSON.stringify(after.communication)
+    ? []
+    : [{ label: "传播方案", before: before.communication ? "已起草" : "未起草", after: after.communication ? "已起草" : "未起草" }];
+  return [...brief, ...child, ...communication];
 }
 
 // 活动建好（或建好后又改了）时放进对话的那条：填写值，外加代码写的「这次建了什么」。
@@ -235,11 +299,20 @@ export function buildSnapshot(bundle: SessionBundle, today: string): Snapshot {
       seq: version.seq,
       source: versionSource(index, triggers.get(version.id), version.createdBy),
       createdAt: version.createdAt,
-      diffCount: index === 0 ? 0 : summarizeFactChanges(bundle.versions[index - 1].draft, version.draft).length,
+      diffCount: index === 0 ? 0 : summarizeCampaignChanges(bundle.versions[index - 1].draft, version.draft).length,
     })),
-    latest: { seq: latest.seq, draft: latest.draft, fill: state.fill, checks: state.checks, sheet: renderFillSheet(state.fill, state.checks), promo: renderPromo(latest.draft, state.fill) },
+    latest: {
+      seq: latest.seq,
+      campaign: latest.draft,
+      draft: state.draft,
+      fill: state.fill,
+      checks: state.checks,
+      sheet: state.fill ? renderFillSheet(state.fill, state.checks) : null,
+      promo: state.draft && state.fill ? renderPromo(state.draft, state.fill) : null,
+    },
+    workspace: state.workspace,
     flow: {
-      phase: phaseOf(state.plan, pendingInterpretation),
+      phase: phaseOf(state, pendingInterpretation),
       replyId: state.flow.replyId,
       asking: state.missing.filter((gap) => state.asking.includes(gap.id)),
       proposals: state.proposals,
@@ -305,7 +378,7 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
   if (entryMode === "new") {
     const text = typeof input.text === "string" ? input.text.trim().slice(0, 1000) : "";
     if (text.length < 4) throw new TurnError(400, "请用一句话说明活动");
-    const draft = createEmptyDraft(newId(), text);
+    const draft = createCampaignDraft(newId(), text);
     return commitAndLoad(deps, {
       isNew: true,
       now: createdAt,
@@ -317,8 +390,10 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
 
   // 示例：SOP 第九部分的复述示例（T1），一句话说全了，不调 Agent，直接建好。
   const example = EXAMPLES[0];
-  const draft = applyFactWrites(createEmptyDraft(newId(), example.first), example.firstWrites, { text: example.first, today: deps.today }).draft;
+  const child = applyFactWrites(createEmptyDraft(newId(), example.first), example.firstWrites, { text: example.first, today: deps.today }).draft;
+  const draft = normalizeCampaignDraft(child);
   const { fill, checks, plan } = evaluate(draft, [], deps.today);
+  if (!fill || !plan) throw new Error("示例活动缺少 1811 子流程");
   const sheet = renderFillSheet(fill, checks);
   const ready = plan.action === "ready";
   const assistantAt = timestamp();
@@ -331,8 +406,8 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
     version: { id: versionId, seq: 1, draft, sheet, createdBy: "human", patch: null },
     messages: [
       { id: newId(), role: "user", content: { v: 2, kind: "user_text", text: example.first }, producedVersionId: versionId, createdAt },
-      { id: newId(), role: "assistant", content: { v: 2, kind: "agent_text", text: "一句话都说全了，不用再问，活动直接建好了。1811 填写值在右边，哪里不对直接跟我说，改完会同步更新。", asking: [], proposals: [] }, producedVersionId: null, createdAt: assistantAt },
-      ...(ready ? [{ id: newId(), role: "assistant" as const, content: sheetMessage(draft, fill, checks, 1, sheet), producedVersionId: null, createdAt: sheetAt! }] : []),
+      { id: newId(), role: "assistant", content: { v: 2, kind: "agent_text", text: "一句话里已经包含 1811 所需信息，填写值已准备。这只代表系统配置产物就绪，对外上线仍要按上线检查确认。", asking: [], proposals: [] }, producedVersionId: null, createdAt: assistantAt },
+      ...(ready ? [{ id: newId(), role: "assistant" as const, content: sheetMessage(child, fill, checks, 1, sheet), producedVersionId: null, createdAt: sheetAt! }] : []),
     ],
   });
 }
@@ -409,7 +484,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     });
   };
 
-  let next: Ics1811Draft = prev;
+  let next: CampaignDraft = prev;
   let userContent: StoredMessage | null = null;
   let createdBy: "ai" | "human" | "rollback" = "human";
   let patch: { ops: unknown; source: "ai" | "human"; reason: string } | null = null;
@@ -430,14 +505,14 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       trigger = { kind: "user_message", text: input.text };
       createdBy = "ai";
       // 整句只是「行」「对」：不靠模型理解，按上一句的提议直接记下，模型拿到的是记好之后的草稿。
-      if (before.proposals.length && isPureAgreement(input.text)) {
+      if (prev.ics1811 && before.proposals.length && isPureAgreement(input.text)) {
         const accepted = runOrchestratorTool(
           "accept_campaign_proposals",
-          () => acceptProposals(prev, before.proposals, input.text),
+          () => acceptProposals(prev.ics1811!, before.proposals, input.text),
           (value) => `按提议记下 ${value.accepted.length} 项`,
         );
         if (accepted.accepted.length) {
-          next = accepted.draft;
+          next = { ...prev, ics1811: accepted.draft };
           acceptedByOrchestrator = true;
           acceptedTexts = accepted.accepted.map((item) => item.text);
           patch = { ops: { accepted: accepted.accepted.map((item) => item.id) }, source: "human", reason: `同意提议：${input.text.slice(0, 50)}` };
@@ -445,19 +520,21 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       }
       break;
     case "edit": {
-      const result = applyCardAnswers(prev, input.answers);
-      next = result.draft;
+      if (!prev.ics1811 || !before.fill) throw new TurnError(400, "当前活动没有 1811 优惠配置可修改");
+      const result = applyCardAnswers(prev.ics1811, input.answers);
+      let child = result.draft;
       if (input.copy) {
-        next = { ...next, copy: { name: input.copy.name ?? before.fill.info.name.value, content: input.copy.content ?? before.fill.info.content.value, source: "user" } };
+        child = { ...child, copy: { name: input.copy.name ?? before.fill.info.name.value, content: input.copy.content ?? before.fill.info.content.value, source: "user" } };
       }
+      next = { ...prev, ics1811: child };
       if (result.ignored.length) throw new TurnError(400, result.ignored.map((item) => item.reason).join("；"));
-      userContent = { v: 2, kind: "user_edit", label: input.origin === "panel" ? editSaidLabel(prev, next) : changeLabel(prev, next, "没有改动"), origin: input.origin };
+      userContent = { v: 2, kind: "user_edit", label: input.origin === "panel" ? editSaidLabel(prev.ics1811, child) : changeLabel(prev.ics1811, child, "没有改动"), origin: input.origin };
       patch = { ops: { answers: input.answers, copy: input.copy }, source: "human", reason: input.origin === "panel" ? "草稿手改" : "工具修改" };
       break;
     }
     case "dismiss":
-      if (!before.fill.notes.some((note) => note.id === input.noteId && note.kind === "restriction_unresolved")) throw new TurnError(400, "这条提示不能直接跳过");
-      next = { ...prev, dismissedNotes: [...prev.dismissedNotes, input.noteId] };
+      if (!prev.ics1811 || !before.fill?.notes.some((note) => note.id === input.noteId && note.kind === "restriction_unresolved")) throw new TurnError(400, "这条提示不能直接跳过");
+      next = { ...prev, ics1811: { ...prev.ics1811, dismissedNotes: [...prev.ics1811.dismissedNotes, input.noteId] } };
       userContent = { v: 2, kind: "user_event", event: "dismiss", label: "这条限制不限定" };
       break;
     case "undo":
@@ -479,15 +556,24 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   let result: AgentResult | null = null;
   if (trigger) {
     const current = acceptedByOrchestrator ? evaluate(next, bundle.messages, deps.today) : before;
-    // 阶段按这一轮开始前算：点头刚好补齐时仍是 collecting，模型才会宣布「建好了」，而不是说「已同步」。
-    const phase: AgentPhase = input.type === "interpret" ? "interpreting" : before.plan.action === "ready" ? "ready" : "collecting";
+    // 1811 子阶段与父 Campaign 阶段分开；没有子流程时不伪造 collecting。
+    const phase: AgentPhase | null = input.type === "interpret"
+      ? "interpreting"
+      : before.plan?.action === "ready"
+        ? "ready"
+        : before.plan
+          ? "collecting"
+          : null;
     try {
       result = await deps.runAgent({
         today: deps.today,
-        draft: next,
+        campaign: next,
+        draft: next.ics1811,
         history: historyForAgent(bundle.messages),
         trigger,
-        phase,
+        ...(phase ? { phase } : {}),
+        campaignStage: current.workspace.stage,
+        ics1811Phase: phase,
         openQuestions: current.asking,
         // 已经按提议记下的不再交给模型，免得它再采纳一遍；只告诉它记下了什么。
         proposals: acceptedByOrchestrator ? [] : before.proposals,
@@ -517,33 +603,56 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       next = previousVersion();
       createdBy = "rollback";
     } else {
-      next = result.draft;
-      if (result.applied.length || result.dropped.length) {
-        patch = { ops: { applied: result.applied, dropped: result.dropped, ...(patch ? { proposals: patch.ops } : {}) }, source: "ai", reason: trigger.text.slice(0, 200) };
+      next = {
+        ...next,
+        brief: result.brief ?? next.brief,
+        ics1811: result.draft,
+        communication: result.communication !== undefined ? result.communication : next.communication,
+      };
+      if (result.briefApplied?.length || result.applied.length || result.dropped.length) {
+        patch = {
+          ops: {
+            briefApplied: result.briefApplied ?? [],
+            applied: result.applied,
+            dropped: result.dropped,
+            ...(patch ? { proposals: patch.ops } : {}),
+          },
+          source: "ai",
+          reason: trigger.text.slice(0, 200),
+        };
       }
     }
   }
 
   // 撤销、恢复是回到那个版本本来的样子，不按「事实变了」清掉当时起草的名称。
-  if (createdBy !== "rollback" && next.copy?.source === "ai" && !(result?.copyDrafted && !result.undo) && copyOutdated(prev, next)) next = { ...next, copy: null };
+  if (createdBy !== "rollback" && prev.ics1811 && next.ics1811 && next.ics1811.copy?.source === "ai" && !(result?.copyDrafted && !result.undo) && copyOutdated(prev.ics1811, next.ics1811)) {
+    next = { ...next, ics1811: { ...next.ics1811, copy: null } };
+  }
 
   const changed = JSON.stringify(prev) !== JSON.stringify(next);
   const versionSeq = changed ? latest.seq + 1 : latest.seq;
   const versionId = changed ? newId() : null;
   const deterministicEdit = input.type === "edit" || input.type === "dismiss" || input.type === "undo" || input.type === "rollback";
   const factsTouched = acceptedByOrchestrator || agentTools.has("extract_campaign_facts") || agentTools.has("accept_campaign_proposals");
-  const shouldSupplementAnalysis = !agentTools.has("analyze_campaign_state") && (factsTouched || deterministicEdit);
-  const after = shouldSupplementAnalysis
+  const shouldSupplementChildAnalysis = Boolean(next.ics1811) && !agentTools.has("analyze_campaign_state") && (factsTouched || deterministicEdit);
+  let after = shouldSupplementChildAnalysis
     ? runOrchestratorTool(
         "analyze_campaign_state",
         () => evaluate(next, bundle.messages, deps.today),
-        (value) => (value.plan.action === "ready" ? "完成规则分析 · 信息已齐" : `完成规则分析 · ${value.missing.length} 项待补`),
+        (value) => (value.plan?.action === "ready" ? "完成规则分析 · 信息已齐" : `完成规则分析 · ${value.missing.length} 项待补`),
       )
     : evaluate(next, bundle.messages, deps.today);
+  if (!agentTools.has("analyze_campaign_plan") && (trigger || deterministicEdit)) {
+    after = runOrchestratorTool(
+      "analyze_campaign_plan",
+      () => evaluate(next, bundle.messages, deps.today),
+      (value) => `完成整体活动计划分析 · ${value.workspace.routing.tracks.length || 0} 条执行轨`,
+    );
+  }
   const agentMessages: StoredMessage[] = [];
 
   if (changed && input.type !== "interpret") {
-    const items = summarizeFactChanges(prev, next);
+    const items = summarizeCampaignChanges(prev, next);
     if (items.length) {
       const title = input.type === "rollback" ? `已恢复到版本 ${input.seq}` : createdBy === "rollback" ? "已撤销" : items.length === 1 ? "记下了" : `改了 ${items.length} 处`;
       agentMessages.push({ v: 2, kind: "agent_change", title, items, versionSeq });
@@ -551,12 +660,16 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   }
 
   if (result && trigger) {
-    const reply = replyWithQuestions(result, after, input.type === "interpret" || (factsTouched && changed), next, deps.today);
+    const reply = after.draft
+      ? replyWithQuestions(result, after, input.type === "interpret" || (factsTouched && changed), after.draft, deps.today)
+      : result.reply
+        ? { v: 2 as const, kind: "agent_text" as const, text: result.reply, asking: [], proposals: [] }
+        : null;
     if (reply) agentMessages.push(reply);
   }
 
   let status: SessionStatus = "collecting";
-  if (after.plan.action === "ready") {
+  if (after.plan?.action === "ready" && after.draft && after.fill) {
     status = "confirmed";
     // 齐了就建好：刚补齐的这一轮、或者建好以后又改了，都出一份最新的填写值；什么都没变就不重复出。
     const lastSheet = [...bundle.messages].reverse().find((message) => message.content.kind === "agent_fill_sheet")?.content;
@@ -565,16 +678,16 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     // 但中间掉回过「还缺」（比如改出新缺项又撤销），回到建好要再出一份，对话里才看得到。
     const sameAsLast = lastSheet?.kind === "agent_fill_sheet" &&
       JSON.stringify(lastSheet.sheet) === JSON.stringify(rendered) &&
-      bundle.versions.filter((version) => version.seq > lastSheet.versionSeq).every((version) => evaluate(version.draft, [], deps.today).plan.action === "ready");
+      bundle.versions.filter((version) => version.seq > lastSheet.versionSeq).every((version) => evaluate(version.draft, [], deps.today).plan?.action === "ready");
     if ((changed || before.flow.sheetSeq !== latest.seq) && !sameAsLast) {
       // 模型自己已经成功生成过就不再补跑一步，免得轨迹里同一件事出现两次；内容照样按最终草稿重算。
       const modelGenerated = traceEvents.some((event) => event.tool === "generate_ics1811_sheet" && event.initiatedBy === "model" && event.status === "completed");
       const sheet = modelGenerated
         ? rendered
         : runOrchestratorTool("generate_ics1811_sheet", () => rendered, (value) => `生成 ${value.details.length} 条优惠明细`);
-      agentMessages.push(sheetMessage(next, after.fill, after.checks, versionSeq, sheet));
+      agentMessages.push(sheetMessage(after.draft, after.fill, after.checks, versionSeq, sheet));
     }
-  } else if (after.plan.action === "out_of_scope" && trigger && !agentMessages.some((message) => message.kind === "agent_text")) {
+  } else if (after.plan?.action === "out_of_scope" && trigger && !agentMessages.some((message) => message.kind === "agent_text")) {
     // 不在 1811 范围：模型会先接住想法再说明录不进去（提示词里要求的），它什么都没说时才由代码说明。
     agentMessages.push(agentText(after.plan.reason));
   }
@@ -583,7 +696,8 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   const trace = traceContent();
   if (trace) agentMessages.unshift(trace);
 
-  const title = next.facts.offer ? after.fill.info.name.value : bundle.session.title;
+  if (!after.plan && after.workspace.brief.status === "ready") status = "preparing";
+  const title = next.brief.name?.value ?? (after.draft?.facts.offer && after.fill ? after.fill.info.name.value : bundle.session.title);
   const messageRecords = [
     ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: versionId, createdAt: userOccurredAt }] : []),
     // 没有用户消息的回合（理解需求），由第一条 Agent 消息标记它产生的版本。
@@ -601,7 +715,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     now: committedAt,
     session: { ...bundle.session, title, status, updatedAt: committedAt },
     version: versionId
-      ? { id: versionId, seq: versionSeq, draft: next, sheet: renderFillSheet(after.fill, after.checks), createdBy, patch: patch ? { id: newId(), ...patch } : null }
+      ? { id: versionId, seq: versionSeq, draft: next, sheet: after.fill ? renderFillSheet(after.fill, after.checks) : null, createdBy, patch: patch ? { id: newId(), ...patch } : null }
       : null,
     messages: messageRecords,
   });
@@ -619,7 +733,7 @@ function replyWithQuestions(result: AgentResult, after: Evaluation, recordedSome
   if (result.asking !== null) {
     asking = result.asking.filter((id) => missingIds.includes(id));
     // 提议按最终回复再过一遍：二选一的问法配提议，用户一句「对」会记成其中一边。
-    proposals = after.plan.action === "out_of_scope" ? [] : withoutEitherOr(text, liveProposals(draft, result.proposals, today));
+    proposals = after.plan?.action === "out_of_scope" ? [] : withoutEitherOr(text, liveProposals(draft, result.proposals, today));
   } else if (missingIds.length && recordedSomething && !/[？?]/.test(text)) {
     const fallback = byPriority(after.missing).slice(0, 2);
     text = [text, `还想跟你确认一下：${fallback.map((gap) => gap.title).join("")}`].filter(Boolean).join("\n\n");

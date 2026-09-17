@@ -122,7 +122,7 @@ test("the agent asks in its own words and registers what it asks and proposes", 
   assert.deepEqual(snapshot.flow.proposals.map((item) => item.text), ["让扣点和回款率：让扣点 0，回款率 0", "提成口径：按实际售价算提成"]);
   assert.deepEqual(snapshot.flow.missingIds, ["Q1", "Q5a", "Q5b", "Q6a"]);
   assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["collecting", "collecting"]);
-  assert.deepEqual(traceSteps(snapshot).map(([tool]) => tool), ["extract_campaign_facts", "analyze_campaign_state", "ask_campaign_questions"]);
+  assert.deepEqual(traceSteps(snapshot).map(([tool]) => tool), ["extract_campaign_facts", "analyze_campaign_state", "ask_campaign_questions", "analyze_campaign_plan"]);
 });
 
 test("a bare nod records the proposals before the agent runs", async () => {
@@ -135,10 +135,10 @@ test("a bare nod records the proposals before the agent runs", async () => {
   assert.deepEqual(request.accepted, ["让扣点和回款率：让扣点 0，回款率 0", "提成口径：按实际售价算提成"], "告诉模型这一轮已经记下了什么");
   assert.equal(request.phase, "collecting");
   assert.deepEqual(request.openQuestions, ["Q1"], "补上的不再算在问");
-  assert.deepEqual(request.draft.facts.rates?.value, { concession: 0, collection: 0 });
-  assert.equal(request.draft.facts.commission?.value, "actual_price");
+  assert.deepEqual(request.draft!.facts.rates?.value, { concession: 0, collection: 0 });
+  assert.equal(request.draft!.facts.commission?.value, "actual_price");
 
-  const { rates, commission } = snapshot.latest.draft.facts;
+  const { rates, commission } = snapshot.latest.draft!.facts;
   assert.deepEqual([rates?.via, rates?.quote, commission?.via], ["proposal", "行", "proposal"]);
   assert.deepEqual(traceSteps(snapshot)[0], ["accept_campaign_proposals", "orchestrator"]);
   assert.ok(traceSteps(snapshot).some(([tool, by]) => tool === "analyze_campaign_state" && by === "orchestrator"), "按提议记下后要补跑规则分析");
@@ -165,7 +165,7 @@ test("a nod with a correction lets the agent accept part of the proposals and re
 
   assert.equal(d.requests[1].proposals.length, 2, "不是纯点头，编排器不预先采纳");
   assert.ok(!traceSteps(snapshot).some(([tool, by]) => tool === "accept_campaign_proposals" && by === "orchestrator"));
-  const { rates, commission } = snapshot.latest.draft.facts;
+  const { rates, commission } = snapshot.latest.draft!.facts;
   assert.deepEqual([rates?.value, rates?.via, rates?.quote], [{ concession: 0, collection: 0 }, "proposal", "对"]);
   assert.deepEqual([commission?.value, commission?.via], ["price_times_discount", "text"], "改的那项按原话记，不按提议");
 });
@@ -182,11 +182,11 @@ test("accepting proposals needs a proposal, the user's own words and a clear yes
   for (const text of ["不对", "改成让扣点2%，回款率98%"]) {
     const state = stateFor(text, [proposal]);
     assert.equal(runAgentTool(state, "accept_campaign_proposals", { quote: text }).isError, true, `「${text}」不是同意`);
-    assert.equal(state.draft.facts.rates, null);
+    assert.equal(state.draft!.facts.rates, null);
   }
   const ok = stateFor("对的", [proposal]);
   assert.equal(runAgentTool(ok, "accept_campaign_proposals", { quote: "对的" }).isError, undefined);
-  assert.deepEqual([ok.draft.facts.rates?.via, ok.applied], ["proposal", ["rates"]]);
+  assert.deepEqual([ok.draft!.facts.rates?.via, ok.applied], ["proposal", ["rates"]]);
 });
 
 test("asking only registers what is missing, and only proposable values that pass the code table", () => {
@@ -366,7 +366,7 @@ test("a question the agent did not register opens nothing, so a short reply cann
   assert.deepEqual([reply.asking, reply.proposals], [[], []]);
   snapshot = await say(snapshot, d, "还没");
   assert.deepEqual(d.requests[1].openQuestions, []);
-  assert.deepEqual([snapshot.latest.draft.facts.rates, snapshot.latest.draft.facts.slogan], [null, null]);
+  assert.deepEqual([snapshot.latest.draft!.facts.rates, snapshot.latest.draft!.facts.slogan], [null, null]);
 });
 
 test("answering a side question keeps the earlier questions open but not the proposals", async () => {
@@ -381,7 +381,7 @@ test("answering a side question keeps the earlier questions open but not the pro
   assert.deepEqual(snapshot.flow.proposals, []);
   assert.equal(snapshot.latest.seq, seq, "只是在聊，不产生新版本");
   snapshot = await say(snapshot, d, "好的");
-  assert.deepEqual([snapshot.latest.draft.facts.rates, snapshot.latest.draft.facts.commission], [null, null]);
+  assert.deepEqual([snapshot.latest.draft!.facts.rates, snapshot.latest.draft!.facts.commission], [null, null]);
 });
 
 test("a short reply answers the question the agent registered", async () => {
@@ -392,12 +392,12 @@ test("a short reply answers the question the agent registered", async () => {
   let snapshot = await askedT2(d);
   snapshot = await say(snapshot, d, "没有");
   assert.deepEqual(d.requests[1].openQuestions, ["Q5a"]);
-  assert.deepEqual(snapshot.latest.draft.facts.rates?.value, { concession: 0, collection: 0 });
-  assert.equal(snapshot.latest.draft.facts.rates?.via, "text");
+  assert.deepEqual(snapshot.latest.draft!.facts.rates?.value, { concession: 0, collection: 0 });
+  assert.equal(snapshot.latest.draft!.facts.rates?.via, "text");
 });
 
-test("a request that has not said how to discount asks for the offer instead of calling it out of scope", async () => {
-  const text = "想在3319店搞个黄金活动";
+test("an explicit 1811 request that has not said how to discount asks for the offer", async () => {
+  const text = "想在3319店搞个黄金优惠开单活动";
   const d = deps([record([{ key: "stores", quote: "3319店", value: ["3319"] }])]);
   const snapshot = await interpret(await createSession({ entryMode: "new", text }, d), d);
   assert.equal(snapshot.flow.phase, "collecting");
@@ -408,18 +408,19 @@ test("a request that has not said how to discount asks for the offer instead of 
   assert.match(lastOfKind(snapshot, "agent_text")?.text ?? "", /还想跟你确认一下：怎么优惠、给多少？哪些货类参加？/);
 });
 
-test("an activity without any priced offer is explained once: by the model when it talks, by the code when it does not", async () => {
+test("a non-transaction activity stays in the parent campaign instead of being rejected by 1811", async () => {
   const textsOf = (snapshot: Snapshot) => snapshot.messages.flatMap((message) => (message.content.kind === "agent_text" ? [message.content.text] : []));
   // 模型先接住想法、再说明录不进去：留它的话，不再叠一句意思相同的代码说明（原来一律换成代码那句，显得死板）。
   const d = deps([{ steps: [], reply: "国庆抽奖挺能聚人气的。不过抽奖不带成交优惠，1811 录不进去，得走别的系统。" }, { steps: [], reply: null }]);
   let snapshot = await interpret(await createSession({ entryMode: "new", text: "7590门店国庆搞个抽奖活动" }, d), d);
-  assert.equal(snapshot.flow.phase, "out_of_scope");
+  assert.notEqual(snapshot.flow.phase, "out_of_scope");
+  assert.equal(snapshot.latest.draft, null);
   assert.deepEqual(textsOf(snapshot), ["国庆抽奖挺能聚人气的。不过抽奖不带成交优惠，1811 录不进去，得走别的系统。"]);
 
-  // 模型什么都没说时，由代码说明一次。
+  // 模型什么都没说时，只说明没有理解到改动，不伪造 1811 拒绝。
   snapshot = await interpret(await createSession({ entryMode: "new", text: "7590门店国庆搞个签到抽奖" }, d), d);
   assert.equal(textsOf(snapshot).length, 1);
-  assert.match(textsOf(snapshot)[0], /不在 1811 优惠开单范围/);
+  assert.doesNotMatch(textsOf(snapshot)[0], /不在 1811 优惠开单范围/);
 });
 
 test("the build summary separates the essentials from what is just defaults", () => {
@@ -472,9 +473,9 @@ test("undo in chat restores the previous version and the fill sheet follows", as
   const d = deps([record([{ key: "offer", quote: "每克减20元" }]), { steps: [["undo_campaign_change"]], reply: "撤销了。" }]);
   let snapshot = await createSession({ entryMode: "example" }, d);
   snapshot = await say(snapshot, d, "改成每克减20元");
-  assert.equal(snapshot.latest.draft.facts.offer?.value.items[0].amount, 20);
+  assert.equal(snapshot.latest.draft!.facts.offer?.value.items[0].amount, 20);
   snapshot = await say(snapshot, d, "撤销");
-  assert.equal(snapshot.latest.draft.facts.offer?.value.items[0].amount, 15);
+  assert.equal(snapshot.latest.draft!.facts.offer?.value.items[0].amount, 15);
   assert.equal(lastOfKind(snapshot, "agent_change")?.title, "已撤销");
   assert.equal(lastOfKind(snapshot, "agent_fill_sheet")?.versionSeq, snapshot.latest.seq);
 });
@@ -486,9 +487,9 @@ test("model-drafted copy is kept until the facts it describes change", async () 
   ]);
   let snapshot = await createSession({ entryMode: "example" }, d);
   snapshot = await say(snapshot, d, "名称写得正式一点");
-  assert.equal(snapshot.latest.fill.info.name.value, "足金每克减15元");
+  assert.equal(snapshot.latest.fill!.info.name.value, "足金每克减15元");
   snapshot = await say(snapshot, d, "改成每克减20元");
-  assert.deepEqual([snapshot.latest.draft.copy, snapshot.latest.fill.info.name.value], [null, "黄金每克减20"]);
+  assert.deepEqual([snapshot.latest.draft!.copy, snapshot.latest.fill!.info.name.value], [null, "黄金每克减20"]);
 });
 
 test("changing a fact the copy never mentions keeps the model-drafted name", async () => {
@@ -498,13 +499,13 @@ test("changing a fact the copy never mentions keeps the model-drafted name", asy
   ]);
   let snapshot = await createSession({ entryMode: "example" }, d);
   snapshot = await say(snapshot, d, "名称写得正式一点");
-  assert.equal(snapshot.latest.fill.info.name.value, "足金每克减15元");
+  assert.equal(snapshot.latest.fill!.info.name.value, "足金每克减15元");
 
   // 门店不出现在名称和内容里，改门店不该把模型起草的文案抹回模板。
   snapshot = await say(snapshot, d, "改成3319门店");
-  assert.equal(snapshot.latest.draft.copy?.source, "ai", "改门店后模型起草的文案要保住");
-  assert.equal(snapshot.latest.fill.info.name.value, "足金每克减15元");
-  assert.equal(snapshot.latest.fill.info.name.basis, "模型起草");
+  assert.equal(snapshot.latest.draft!.copy?.source, "ai", "改门店后模型起草的文案要保住");
+  assert.equal(snapshot.latest.fill!.info.name.value, "足金每克减15元");
+  assert.equal(snapshot.latest.fill!.info.name.basis, "模型起草");
 });
 
 test("agent failures keep the request retryable", async () => {
@@ -530,7 +531,7 @@ test("a nod that fails in the agent keeps nothing and can be retried", async () 
   snapshot = await say(snapshot, d, "行");
   assert.equal(lastAgent(snapshot).kind, "agent_error");
   assert.equal(snapshot.latest.seq, seq, "失败时按提议记下的也不落库");
-  assert.equal(snapshot.latest.draft.facts.rates, null);
+  assert.equal(snapshot.latest.draft!.facts.rates, null);
   assert.deepEqual(snapshot.flow.proposals.map((item) => item.id), ["Q5a", "Q5b"], "重试时提议还在");
 });
 
@@ -565,6 +566,8 @@ test("real tool events stream once and persist before the related Agent output",
     ["extract_campaign_facts", "completed", "model"],
     ["analyze_campaign_state", "started", "orchestrator"],
     ["analyze_campaign_state", "completed", "orchestrator"],
+    ["analyze_campaign_plan", "started", "orchestrator"],
+    ["analyze_campaign_plan", "completed", "orchestrator"],
   ]);
   assert.deepEqual(progress, [
     { type: "phase", phase: "analyzing", at: 90 },
@@ -730,7 +733,7 @@ test("the orchestrator supplements the rule analysis and the fill sheet the mode
 
   snapshot = await createSession({ entryMode: "example" }, d);
   snapshot = await say(snapshot, d, "名称写得正式一点");
-  assert.deepEqual(traceSteps(snapshot), [["draft_campaign_copy", "model"], ["generate_ics1811_sheet", "orchestrator"]]);
+  assert.deepEqual(traceSteps(snapshot), [["draft_campaign_copy", "model"], ["analyze_campaign_plan", "orchestrator"], ["generate_ics1811_sheet", "orchestrator"]]);
 });
 
 test("card submissions and confirm buttons are gone", () => {
@@ -747,9 +750,9 @@ test("tools drop quotes the user did not say, reject bad copy, and replies keep 
   };
   const state = createAgentState(request);
   const outcome = JSON.parse(runAgentTool(state, "extract_campaign_facts", { facts: [{ key: "offer", quote: "满3000减300" }, { key: "categories", quote: "钻石类", value: ["钻石类"] }] }).text);
-  assert.equal(state.draft.facts.offer, null);
+  assert.equal(state.draft!.facts.offer, null);
   assert.equal(outcome.dropped.length, 1);
-  assert.equal(state.draft.facts.categories?.value.all[0], "钻石类");
+  assert.equal(state.draft!.facts.categories?.value.all[0], "钻石类");
 
   assert.equal(runAgentTool(state, "draft_campaign_copy", { name: "钻石类满减大促销活动名称很长", content: "钻石类" }).isError, true);
 

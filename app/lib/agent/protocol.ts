@@ -1,7 +1,8 @@
 import type { Dropped } from "../campaign/ics1811/facts.ts";
 import { QUESTION_IDS } from "../campaign/ics1811/questions.ts";
 import type { Ics1811Draft, Proposal, QuestionId } from "../campaign/ics1811/types.ts";
-import { isIcs1811Draft } from "../server/request-validation.ts";
+import type { CampaignBrief, CampaignDraft, CampaignWorkspaceStage, CommunicationCreative } from "../campaign/types.ts";
+import { isCampaignDraft, isIcs1811Draft } from "../server/request-validation.ts";
 import { CAMPAIGN_TOOL_NAMES, isToolTrace, type CampaignToolName, type ToolTrace } from "../tool-trace.ts";
 
 // Workers 与 Agent 服务之间的约定：Workers 发当前草稿和这一轮的触发，
@@ -17,10 +18,15 @@ export type AgentPhase = "interpreting" | "collecting" | "ready";
 
 export type AgentRequest = {
   today: string;
-  draft: Ics1811Draft;
+  // 新协议带父 Campaign；旧请求可暂时省略，由 Agent 从 1811 子草稿稳定包装。
+  campaign?: CampaignDraft;
+  draft: Ics1811Draft | null;
   history: AgentHistoryItem[];
   trigger: AgentTrigger;
-  phase: AgentPhase;
+  // phase 只为旧调用方兼容；新调用方把父层和可选子流程阶段分开传。
+  phase?: AgentPhase;
+  campaignStage?: CampaignWorkspaceStage;
+  ics1811Phase?: AgentPhase | null;
   // Agent 上一句问过、现在仍缺的问题；「可以」「没有」这类短回答按这些问题记。
   openQuestions: QuestionId[];
   // Agent 上一句给的、现在仍适用的提议；用户点头时按它记。
@@ -31,7 +37,11 @@ export type AgentRequest = {
 };
 
 export type AgentResult = {
-  draft: Ics1811Draft;
+  draft: Ics1811Draft | null;
+  // 父层工具的受控结果；旧 AgentResult 可以省略，Workers 会保留原值。
+  brief?: CampaignBrief;
+  communication?: CommunicationCreative | null;
+  briefApplied?: string[];
   applied: string[];
   dropped: Dropped[];
   reply: string | null;
@@ -46,6 +56,7 @@ export type AgentResult = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const PHASES = new Set(["interpreting", "collecting", "ready"]);
+const CAMPAIGN_STAGES = new Set(["briefing", "planning", "preparing", "blocked", "needs_confirmation"]);
 const TRIGGERS = new Set(["first_message", "user_message"]);
 const TOOL_NAMES = new Set<string>(CAMPAIGN_TOOL_NAMES);
 const QUESTIONS = new Set<string>(QUESTION_IDS);
@@ -57,12 +68,19 @@ const isProposal = (value: unknown): value is Proposal =>
 
 export function isAgentRequest(value: unknown): value is AgentRequest {
   if (!isRecord(value) || !isRecord(value.trigger)) return false;
+  const draftValid = value.draft === null || isIcs1811Draft(value.draft);
+  const campaignValid = value.campaign === undefined || isCampaignDraft(value.campaign);
+  const oldPhaseValid = PHASES.has(String(value.phase));
+  const newPhaseValid = CAMPAIGN_STAGES.has(String(value.campaignStage)) &&
+    (value.ics1811Phase === null || PHASES.has(String(value.ics1811Phase)));
   return typeof value.today === "string" &&
-    isIcs1811Draft(value.draft) &&
+    draftValid &&
+    campaignValid &&
+    (isCampaignDraft(value.campaign) || isIcs1811Draft(value.draft)) &&
     Array.isArray(value.history) &&
     TRIGGERS.has(String(value.trigger.kind)) &&
     typeof value.trigger.text === "string" &&
-    PHASES.has(String(value.phase)) &&
+    (oldPhaseValid || newPhaseValid) &&
     Array.isArray(value.openQuestions) &&
     Array.isArray(value.proposals) &&
     value.proposals.every(isProposal) &&
@@ -75,7 +93,20 @@ function invalid(): never {
 }
 
 export function parseAgentResult(value: unknown): AgentResult {
-  if (!isRecord(value) || !isIcs1811Draft(value.draft)) invalid();
+  if (!isRecord(value) || !(value.draft === null || isIcs1811Draft(value.draft))) invalid();
+  const hasParentFields = value.brief !== undefined || value.communication !== undefined || value.briefApplied !== undefined;
+  if (value.draft === null && !hasParentFields) invalid();
+  if (hasParentFields) {
+    const candidate = {
+      schema: "campaign/v1",
+      id: "agent-result",
+      requestText: "agent-result",
+      brief: value.brief,
+      ics1811: value.draft,
+      communication: value.communication ?? null,
+    };
+    if (!isCampaignDraft(candidate)) invalid();
+  }
   if (typeof value.copyDrafted !== "boolean" || typeof value.undo !== "boolean") invalid();
   if (value.trace !== undefined && value.trace !== null && !isToolTrace(value.trace)) invalid();
   const dropped = Array.isArray(value.dropped)
@@ -83,6 +114,11 @@ export function parseAgentResult(value: unknown): AgentResult {
     : [];
   return {
     draft: value.draft,
+    ...(hasParentFields ? {
+      brief: value.brief as CampaignBrief,
+      communication: (value.communication ?? null) as CommunicationCreative | null,
+      briefApplied: strings(value.briefApplied),
+    } : {}),
     applied: strings(value.applied),
     dropped,
     reply: typeof value.reply === "string" && value.reply.trim() ? value.reply.trim() : null,

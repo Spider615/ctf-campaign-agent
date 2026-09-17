@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { AgentRequest } from "../app/lib/agent/protocol.ts";
-import { createAgentState, runAgentTool, safeToolSummary } from "../app/lib/agent/tools.ts";
+import { createAgentState, finishAgentTurn, runAgentTool, safeToolSummary } from "../app/lib/agent/tools.ts";
+import { buildCampaignWorkspace, createCampaignDraft } from "../app/lib/campaign/workspace.ts";
 import { EXAMPLES } from "../app/lib/campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
 
@@ -18,6 +19,72 @@ const requestFor = (text: string): AgentRequest => ({
   openQuestions: [],
   proposals: [],
   canUndo: false,
+});
+
+const parentRequestFor = (text: string): AgentRequest => {
+  const campaign = createCampaignDraft("campaign-tool-test", text);
+  const workspace = buildCampaignWorkspace(campaign, TODAY);
+  return {
+    today: TODAY,
+    campaign,
+    draft: campaign.ics1811,
+    history: [],
+    trigger: { kind: "user_message", text },
+    campaignStage: workspace.stage,
+    ics1811Phase: campaign.ics1811 ? "collecting" : null,
+    openQuestions: [],
+    proposals: [],
+    canUndo: false,
+  };
+};
+
+test("campaign brief tools work through the parent state without an 1811 child", () => {
+  const text = "目标是提升新品认知，面向年轻情侣，主题是福启新章，通过门店和微信发布";
+  const state = createAgentState(parentRequestFor(text));
+
+  assert.equal(state.draft, null);
+  const updated = runAgentTool(state, "update_campaign_brief", {
+    writes: [
+      { key: "objective", quote: "提升新品认知" },
+      { key: "audience", quote: "年轻情侣" },
+      { key: "theme", quote: "福启新章" },
+      { key: "channels", quote: "门店和微信" },
+      { key: "scope", quote: "全国" },
+    ],
+  });
+  const body = JSON.parse(updated.text);
+
+  assert.equal(updated.isError, undefined);
+  assert.deepEqual(body.applied, ["objective", "audience", "theme", "channels"]);
+  assert.equal(body.dropped.length, 1);
+  assert.equal(state.campaign.brief.objective?.value, "提升新品认知");
+  assert.deepEqual(state.campaign.brief.channels?.value, ["store", "wechat"]);
+  assert.equal(state.campaign.brief.scope, null, "不在本轮原话里的范围不能落库");
+
+  const analysis = runAgentTool(state, "analyze_campaign_plan");
+  const plan = JSON.parse(analysis.text);
+  assert.equal(plan.brief.status, "ready");
+  assert.equal(plan.artifacts.ics1811.status, "not_applicable");
+  assert.ok(plan.executionTracks.some((track: { kind: string }) => track.kind === "communications"));
+  assert.equal(state.campaignAnalysisRan, true);
+
+  const result = finishAgentTurn(state, "Brief 已记下。");
+  assert.equal(result.draft, null);
+  assert.deepEqual(result.brief, state.campaign.brief);
+  assert.deepEqual(result.briefApplied, ["objective", "audience", "theme", "channels"]);
+});
+
+test("1811-only tools reject a parent campaign with no child and keep facts unchanged", () => {
+  const state = createAgentState(parentRequestFor("帮我策划一场新品发布活动"));
+  const before = structuredClone(state.campaign);
+
+  for (const name of ["extract_campaign_facts", "analyze_campaign_state", "generate_ics1811_sheet"] as const) {
+    const outcome = runAgentTool(state, name, name === "extract_campaign_facts" ? { facts: [{ key: "dates", quote: "十月" }] } : {});
+    assert.equal(outcome.isError, true, name);
+    assert.match(outcome.text, /不需要 1811|没有 1811/);
+  }
+  assert.deepEqual(state.campaign, before, "被拒的子流程工具不能改父层事实");
+  assert.equal(state.draft, null);
 });
 
 test("promo copy refuses an empty draft and invented numbers, then stores the creative part", () => {
@@ -38,14 +105,14 @@ test("promo copy refuses an empty draft and invented numbers, then stores the cr
   assert.equal(invented.isError, true, "事实层里没有的数字不能出现在对外文案里");
   // 用局部变量接住再断言：直接 assert.equal(ready.draft.promo, null) 会让 TS 把这个属性
   // 永久收窄成 null（它不知道后面的 runAgentTool 会改写它），后面读 promo.headline 就成了 never。
-  const afterInvented = ready.draft.promo;
+  const afterInvented = ready.draft!.promo;
   assert.equal(afterInvented, null, "被拒的文案不能落进草稿");
 
   const ok = runAgentTool(ready, "draft_promo_copy", { headline: "黄金每克减15", highlights: ["一般足金类每克立减15元"] }, PROMO_CONTEXT);
   assert.equal(ok.isError, undefined);
-  assert.equal(ready.draft.promo?.headline, "黄金每克减15");
-  assert.deepEqual(ready.draft.promo?.highlights, ["一般足金类每克立减15元"]);
-  assert.equal(ready.draft.promo?.source, "ai");
+  assert.equal(ready.draft!.promo?.headline, "黄金每克减15");
+  assert.deepEqual(ready.draft!.promo?.highlights, ["一般足金类每克立减15元"]);
+  assert.equal(ready.draft!.promo?.source, "ai");
 });
 
 test("promo copy requires the same-turn guide without mutating state", () => {

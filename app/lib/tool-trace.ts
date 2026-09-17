@@ -1,4 +1,6 @@
 export const CAMPAIGN_TOOL_NAMES = [
+  "update_campaign_brief",
+  "analyze_campaign_plan",
   "extract_campaign_facts",
   "accept_campaign_proposals",
   "lookup_ics_reference",

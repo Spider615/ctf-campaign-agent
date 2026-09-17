@@ -231,3 +231,8 @@ test("旧 trace 仍可解码，Skill trace 工具不进入活动工具名单", (
   assert.equal(legacy.tool, "build_campaign_readback");
   assert.equal(CAMPAIGN_TOOL_NAMES.includes(SKILL_TRACE_TOOL as never), false);
 });
+
+test("活动工具名单包含父层 Brief 与整体计划工具", () => {
+  assert.ok(CAMPAIGN_TOOL_NAMES.includes("update_campaign_brief" as never));
+  assert.ok(CAMPAIGN_TOOL_NAMES.includes("analyze_campaign_plan" as never));
+});

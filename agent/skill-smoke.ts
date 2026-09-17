@@ -253,7 +253,7 @@ async function main(): Promise<void> {
       assert.ok(loadedIndex >= 0, "没有看到宣传文案 Skill 加载完成");
       assert.ok(draftedIndex > loadedIndex, "必须先加载宣传文案 Skill，再调用文案工具");
       assert.ok(result.tools.includes("draft_promo_copy"), "结果中缺少 draft_promo_copy 工具记录");
-      assert.ok(result.draft.promo, "宣传文案没有写入草稿");
+      assert.ok(result.draft!.promo, "宣传文案没有写入草稿");
     });
 
     const t1 = EXAMPLES.find((item) => item.id === "T1");

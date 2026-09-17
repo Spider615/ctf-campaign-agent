@@ -21,6 +21,9 @@ import {
   safeToolSummary,
   type AgentToolName,
 } from "../app/lib/agent/tools.ts";
+import { CAMPAIGN_BRIEF_KEYS } from "../app/lib/campaign/brief.ts";
+import { routeCampaign } from "../app/lib/campaign/workspace.ts";
+import type { CampaignBriefKey } from "../app/lib/campaign/types.ts";
 import { QUESTION_IDS } from "../app/lib/campaign/ics1811/questions.ts";
 import type { FactKey, QuestionId } from "../app/lib/campaign/ics1811/types.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
@@ -64,6 +67,7 @@ export type AgentRuntimeDependencies = {
 const DEFAULT_AGENT_RUNTIME_DEPENDENCIES: AgentRuntimeDependencies = { query };
 
 const factKey = z.enum(FACT_KEYS as [FactKey, ...FactKey[]]);
+const campaignBriefKey = z.enum(CAMPAIGN_BRIEF_KEYS as [CampaignBriefKey, ...CampaignBriefKey[]]);
 const questionId = z.enum(QUESTION_IDS as [QuestionId, ...QuestionId[]]);
 
 export function createAgentRunner(
@@ -74,9 +78,13 @@ export function createAgentRunner(
     const turnStartedAt = Date.now();
     const turnStartedMonotonic = performance.now();
     const catalog = loadSkillCatalog(config.pluginDir);
-    const requiredSkills = requiredSkillsForTurn(request);
-    const skillLoads = createSkillLoadState();
     const state = createAgentState(request);
+    const routing = routeCampaign(state.campaign);
+    const requiredSkills = requiredSkillsForTurn(request, {
+      hasIcs1811: Boolean(state.draft),
+      tracks: routing.tracks,
+    });
+    const skillLoads = createSkillLoadState();
     let replyStream = createReplyStreamState();
     let publicPhase: "analyzing" | "writing" | null = null;
     const setPublicPhase = (phase: "analyzing" | "writing") => {
@@ -123,11 +131,19 @@ export function createAgentRunner(
       };
     };
 
-    // SDK 只开放 Skill；活动读写仍由这 9 个确定性工具完成。
+    // SDK 只开放 Skill；活动读写仍由这些确定性工具完成。
     const campaign = createSdkMcpServer({
       name: "campaign",
       version: "2.0.0",
       tools: [
+        tool("update_campaign_brief", "按用户这一轮的原话整理活动 Brief，不得猜测或补写用户没说的信息", {
+          writes: z.array(z.object({
+            key: campaignBriefKey,
+            value: z.unknown().optional(),
+            quote: z.string(),
+          })),
+        }, handle("update_campaign_brief")),
+        tool("analyze_campaign_plan", "运行确定性的活动 Brief、执行轨、产物与上线准备分析，返回整体活动状态", {}, handle("analyze_campaign_plan")),
         tool("extract_campaign_facts", "记下用户这一轮明确说过的活动信息，每项附原话片段；工具核对后返回还缺什么", {
           facts: z.array(z.object({
             key: factKey,

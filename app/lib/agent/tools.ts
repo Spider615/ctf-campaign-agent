@@ -1,4 +1,7 @@
 import { checkDraft } from "../campaign/ics1811/checks.ts";
+import { applyCampaignBriefWrites, CAMPAIGN_BRIEF_KEYS, type CampaignBriefWrite } from "../campaign/brief.ts";
+import type { CampaignDraft } from "../campaign/types.ts";
+import { buildCampaignWorkspace, normalizeCampaignDraft } from "../campaign/workspace.ts";
 import { CODEBOOK, type Entry } from "../campaign/ics1811/codebook.ts";
 import { deriveFill, discountText } from "../campaign/ics1811/derive.ts";
 import { applyFactWrites, compactQuote, emptyFacts, type Dropped, type FactWrite } from "../campaign/ics1811/facts.ts";
@@ -17,6 +20,8 @@ export const AGENT_TOOL_NAMES = CAMPAIGN_TOOL_NAMES;
 export type AgentToolName = CampaignToolName;
 
 export const AGENT_TOOL_META: Record<CampaignToolName, { title: string }> = {
+  update_campaign_brief: { title: "整理活动 Brief" },
+  analyze_campaign_plan: { title: "分析整体活动计划" },
   extract_campaign_facts: { title: "提取活动信息" },
   accept_campaign_proposals: { title: "按用户同意的提议记下" },
   lookup_ics_reference: { title: "查询 ICS 代码表" },
@@ -33,12 +38,15 @@ export const FACT_KEYS = Object.keys(emptyFacts()) as FactKey[];
 // 一轮对话里 Agent 的工作区：工具只改这里，整轮结束后由 Workers 重算齐没齐、要不要生成填写值，并一次性落库。
 export type AgentState = {
   request: AgentRequest;
-  draft: Ics1811Draft;
+  campaign: CampaignDraft;
+  draft: Ics1811Draft | null;
+  briefApplied: string[];
   applied: string[];
   dropped: Dropped[];
   copyDrafted: boolean;
   undo: boolean;
   analysisRan: boolean;
+  campaignAnalysisRan: boolean;
   sheetGenerated: boolean;
   // 模型登记的「这句回复在问什么」；没调 ask_campaign_questions 时为 null。
   asking: QuestionId[] | null;
@@ -58,20 +66,67 @@ const done = (value: unknown): ToolOutcome => ({ text: typeof value === "string"
 const refuse = (text: string): ToolOutcome => ({ text, isError: true });
 
 export function createAgentState(request: AgentRequest): AgentState {
+  const supplied = (request as AgentRequest & { campaign?: CampaignDraft }).campaign;
+  const campaign = supplied
+    ? structuredClone(supplied)
+    : request.draft
+      ? normalizeCampaignDraft(request.draft)
+      : {
+          schema: "campaign/v1" as const,
+          id: "agent:campaign",
+          requestText: request.trigger.text,
+          brief: { name: null, objective: null, audience: null, theme: null, channels: null, timing: null, scope: null },
+          ics1811: null,
+          communication: null,
+        };
+  // 请求里的 child 是 Workers 选定的受控叶子；父对象里若有旧值，以显式字段为准。
+  campaign.ics1811 = request.draft;
   return {
     request,
+    campaign,
     draft: request.draft,
+    briefApplied: [],
     applied: [],
     dropped: [],
     copyDrafted: false,
     undo: false,
     analysisRan: false,
+    campaignAnalysisRan: false,
     sheetGenerated: false,
     asking: null,
     proposals: [],
     trace: [],
     tools: [],
   };
+}
+
+const noIcs1811 = () => refuse("当前活动没有 1811 优惠配置子流程；请先分析整体活动计划，不要调用 1811 工具。");
+
+export function updateCampaignBrief(state: AgentState, input: Record<string, unknown>): ToolOutcome {
+  state.tools.push("update_campaign_brief");
+  if (state.undo) return refuse("这一轮已经撤销了，不能再修改 Brief。");
+  const writes: CampaignBriefWrite[] = (Array.isArray(input.writes) ? input.writes : []).filter(isRecord).flatMap((item) =>
+    typeof item.key === "string" && CAMPAIGN_BRIEF_KEYS.includes(item.key as CampaignBriefWrite["key"]) && typeof item.quote === "string"
+      ? [{ key: item.key as CampaignBriefWrite["key"], quote: item.quote, value: item.value }]
+      : [],
+  );
+  if (!writes.length) return refuse("writes 为空，或者 key、quote 不对。");
+  const result = applyCampaignBriefWrites(state.campaign.brief, writes, { text: state.request.trigger.text });
+  state.campaign = { ...state.campaign, brief: result.brief, ics1811: state.draft };
+  state.briefApplied.push(...result.applied);
+  return done({
+    applied: result.applied,
+    dropped: result.dropped.map((item) => `${item.key}：${item.reason}`),
+    brief: buildCampaignWorkspace(state.campaign, state.request.today).brief,
+  });
+}
+
+export function analyzeCampaignPlan(state: AgentState): ToolOutcome {
+  state.tools.push("analyze_campaign_plan");
+  state.campaign = { ...state.campaign, ics1811: state.draft };
+  const workspace = buildCampaignWorkspace(state.campaign, state.request.today);
+  state.campaignAnalysisRan = true;
+  return done(workspace);
 }
 
 // 告诉模型现在的样子：还缺什么（带题号，登记追问要用）、有什么挡着生成、齐没齐、当前名称内容。
@@ -92,6 +147,7 @@ export function draftStatus(draft: Ics1811Draft, today: string) {
 export function extractCampaignFacts(state: AgentState, input: Record<string, unknown>): ToolOutcome {
   state.tools.push("extract_campaign_facts");
   if (state.undo) return refuse("这一轮已经撤销了，不能再修改。");
+  if (!state.draft) return noIcs1811();
   const writes: FactWrite[] = (Array.isArray(input.facts) ? input.facts : []).filter(isRecord).flatMap((item) =>
     typeof item.key === "string" && FACT_KEYS.includes(item.key as FactKey) && typeof item.quote === "string"
       ? [{ key: item.key as FactKey, quote: item.quote, value: item.value }]
@@ -110,7 +166,7 @@ export function extractCampaignFacts(state: AgentState, input: Record<string, un
   state.dropped.push(...result.dropped);
   return done({
     // 带上记下后的值：模型照这个说「记下了什么」，不凭自己的理解复述（实测会说成反的）。
-    applied: result.applied.map((key) => `${FACT_LABEL[key]}：${factText(key, state.draft.facts[key])}`),
+    applied: result.applied.map((key) => `${FACT_LABEL[key]}：${factText(key, result.draft.facts[key])}`),
     dropped: result.dropped.map((item) => `${FACT_LABEL[item.key] ?? item.key}：${item.reason}。不要换个说法硬写，在回复里跟用户问清楚。`),
     status: draftStatus(state.draft, request.today),
   });
@@ -142,6 +198,7 @@ function allowedNumbers(draft: Ics1811Draft): Set<string> {
 export function draftCampaignCopy(state: AgentState, input: Record<string, unknown>): ToolOutcome {
   state.tools.push("draft_campaign_copy");
   if (state.undo) return refuse("这一轮已经撤销了，不要再改名称。");
+  if (!state.draft) return noIcs1811();
   const name = typeof input.name === "string" ? input.name.trim() : "";
   const content = typeof input.content === "string" ? input.content.trim() : "";
   const problems: string[] = [];
@@ -165,6 +222,7 @@ export function draftCampaignCopy(state: AgentState, input: Record<string, unkno
 function draftPromoCopy(state: AgentState, input: Record<string, unknown>): ToolOutcome {
   state.tools.push("draft_promo_copy");
   if (state.undo) return refuse("这一轮已经撤销了，不要再改文案。");
+  if (!state.draft) return refuse("当前活动没有 1811 优惠事实；请先补齐 Campaign Brief，再按传播方案规则起草。");
   if (!state.draft.facts.offer || !state.draft.facts.categories) return refuse("优惠方式和货类都记下来之后，才能起草对外宣传文案。");
   // 对外文案是要发出去的东西，源头就不该带 ** 这类标记——这个工具没套 COPY_SPECIAL
   // 白名单（宣传语要能用逗号和感叹号），所以标记拦不住，只能在这里剥掉。
@@ -196,6 +254,7 @@ const isQuestionId = (value: unknown): value is QuestionId => typeof value === "
 export function askCampaignQuestions(state: AgentState, input: Record<string, unknown>): ToolOutcome {
   state.tools.push("ask_campaign_questions");
   if (state.undo) return refuse("这一轮已经撤销了，不用再问。");
+  if (!state.draft) return noIcs1811();
   const { request } = state;
   const gaps = gapsOf(state.draft).map((gap) => gap.id);
   const questions = [...new Set(Array.isArray(input.questions) ? input.questions.filter(isQuestionId) : [])];
@@ -240,6 +299,7 @@ export function askCampaignQuestions(state: AgentState, input: Record<string, un
 export function acceptCampaignProposals(state: AgentState, input: Record<string, unknown>): ToolOutcome {
   state.tools.push("accept_campaign_proposals");
   if (state.undo) return refuse("这一轮已经撤销了，不能再修改。");
+  if (!state.draft) return noIcs1811();
   const { request } = state;
   if (!request.proposals.length) return refuse("上一句没有提议可以采纳。用户说的具体内容用 extract_campaign_facts 记。");
   const quote = typeof input.quote === "string" ? input.quote.trim() : "";
@@ -317,6 +377,7 @@ export function lookupIcsReference(state: AgentState, input: Record<string, unkn
 
 export function analyzeCampaignState(state: AgentState): ToolOutcome {
   state.tools.push("analyze_campaign_state");
+  if (!state.draft) return noIcs1811();
   const fill = deriveFill(state.draft);
   const checks = checkDraft(state.draft, fill, state.request.today);
   const status = draftStatus(state.draft, state.request.today);
@@ -340,6 +401,7 @@ export function analyzeCampaignState(state: AgentState): ToolOutcome {
 // 齐了才能生成；不需要用户再确认。最终填写值仍由 Workers 按最新草稿重新生成。
 export function generateIcs1811Sheet(state: AgentState): ToolOutcome {
   state.tools.push("generate_ics1811_sheet");
+  if (!state.draft) return noIcs1811();
   const fill = deriveFill(state.draft);
   const checks = checkDraft(state.draft, fill, state.request.today);
   if (planNext(state.draft, fill, checks).action !== "ready") return refuse("活动信息还没补齐或校验未通过，不能生成填写值。");
@@ -353,6 +415,8 @@ export function generateIcs1811Sheet(state: AgentState): ToolOutcome {
 }
 
 const TOOL_HANDLERS: Record<CampaignToolName, (state: AgentState, input: Record<string, unknown>) => ToolOutcome> = {
+  update_campaign_brief: updateCampaignBrief,
+  analyze_campaign_plan: (state) => analyzeCampaignPlan(state),
   extract_campaign_facts: extractCampaignFacts,
   accept_campaign_proposals: acceptCampaignProposals,
   lookup_ics_reference: lookupIcsReference,
@@ -378,6 +442,8 @@ export function runAgentTool(
 
 // 工具被拒时给界面看的话：说清是哪类没通过，不带入参原文和内部理由。
 const REFUSED_SUMMARY: Record<CampaignToolName, string> = {
+  update_campaign_brief: "没有能按原话记下的 Brief 信息",
+  analyze_campaign_plan: "整体活动分析未执行",
   extract_campaign_facts: "没有能按原话记下的内容，Agent 会跟你确认",
   accept_campaign_proposals: "这句不算同意提议，改按原话处理",
   lookup_ics_reference: "查询词为空，未查询",
@@ -399,6 +465,10 @@ export function safeToolSummary(name: CampaignToolName, outcome: ToolOutcome, st
     // 文案和撤销工具返回短文本，不需要解析。
   }
   switch (name) {
+    case "update_campaign_brief":
+      return `整理并核验 ${state.briefApplied.length} 项 Brief 信息`;
+    case "analyze_campaign_plan":
+      return "完成整体活动计划分析";
     case "extract_campaign_facts":
       return `识别并核验 ${state.applied.length} 项信息${state.dropped.length ? `，${state.dropped.length} 项需确认` : ""}`;
     case "lookup_ics_reference":
@@ -412,7 +482,7 @@ export function safeToolSummary(name: CampaignToolName, outcome: ToolOutcome, st
     case "draft_campaign_copy":
       return "活动名称与内容已起草";
     case "draft_promo_copy":
-      return `对外宣传文案已起草 · ${state.draft.promo?.highlights.length ?? 0} 条卖点`;
+      return `对外宣传文案已起草 · ${state.draft?.promo?.highlights.length ?? 0} 条卖点`;
     case "generate_ics1811_sheet":
       return `生成 ${Number(body?.detailCount ?? 0)} 条优惠明细`;
     case "undo_campaign_change":
@@ -433,6 +503,9 @@ export function finishAgentTurn(state: AgentState, reply: string | null): AgentR
     : null;
   return {
     draft: state.draft,
+    brief: state.campaign.brief,
+    communication: state.campaign.communication,
+    briefApplied: [...new Set(state.briefApplied)],
     applied: [...new Set(state.applied)],
     dropped: state.dropped,
     reply: cleaned || null,

@@ -1,4 +1,7 @@
 import { CODEBOOK } from "../campaign/ics1811/codebook.ts";
+import { CAMPAIGN_BRIEF_KEYS } from "../campaign/brief.ts";
+import type { CampaignBriefKey, CampaignDraft, CampaignWorkspaceStage } from "../campaign/types.ts";
+import { buildCampaignWorkspace, normalizeCampaignDraft } from "../campaign/workspace.ts";
 import { FACT_LABEL, factText } from "../campaign/ics1811/messages.ts";
 import { QUESTION_TITLE } from "../campaign/ics1811/questions.ts";
 import type { FactKey } from "../campaign/ics1811/types.ts";
@@ -67,9 +70,31 @@ export function buildAgentSystemPrompt(today: string): string {
 - 只承诺现有工具能做到的事。做不到或仍需人工完成的部分直接说明。`;
 }
 
-function buildToolApiContract(): string {
-  return [
+const CAMPAIGN_BRIEF_GUIDE: Record<CampaignBriefKey, string> = {
+  name: "活动名称或内部项目名",
+  objective: "本次活动要达成的目标",
+  audience: "要影响的目标人群",
+  theme: "用户给出的主题，或用户明确同意的创意提议",
+  channels: "门店、微信、电商、社媒、会员触达或活动现场等渠道",
+  timing: "活动时机或档期；没有明确日期时照原话记，不自行换算",
+  scope: "地域、门店、线上范围或商品系列等活动范围",
+};
+
+function buildToolApiContract(hasIcs1811: boolean): string {
+  const shared = [
     "## 本轮工具 API 合同",
+    "- update_campaign_brief：writes 是 [{key, value?, quote}]。quote 必须逐字取自用户这一轮原话；文本值由代码采用 quote，渠道由代码从 quote 识别。可用 key：",
+    CAMPAIGN_BRIEF_KEYS.map((key) => `  - ${key}：${CAMPAIGN_BRIEF_GUIDE[key]}`).join("\n"),
+    "- analyze_campaign_plan：运行确定性的多轨路由、Brief 缺项、执行轨和上线门禁分析；它返回的状态是整体活动真相。",
+  ];
+  if (!hasIcs1811) {
+    return [...shared,
+      "- 当前没有 1811 子流程，不要调用 1811 字段、代码表、追问或填写值工具。",
+      "- draft_promo_copy：起草传播内容；还必须在同一回合成功加载 promo-copy-guide，并满足工具返回的 Brief 门槛。",
+      "- undo_campaign_change：只撤销上一次修改，不和其他修改工具混用。",
+    ].join("\n");
+  }
+  return [...shared,
     "- extract_campaign_facts：facts 是 [{key, value?, quote}]。quote 必须逐字取自用户这一轮原话；用户没说的不写，数字和日期由代码从 quote 重算。可用 key：",
     FACT_KEYS.map((key) => `  - ${key}（${FACT_LABEL[key]}）：${FACT_GUIDE[key]}`).join("\n"),
     "- accept_campaign_proposals：只处理用户对上一句提议的明确同意；quote 取本轮同意原话，只同意部分时 questions 只列对应题号。用户给了具体新值时改用 extract_campaign_facts。",
@@ -85,39 +110,73 @@ function buildToolApiContract(): string {
   ].join("\n");
 }
 
-const PHASE_TEXT: Record<AgentRequest["phase"], string> = {
+const PHASE_TEXT: Record<AgentPhase, string> = {
   interpreting: "用户刚说完需求，第一次理解",
   collecting: "还在补信息",
-  ready: "活动已经建好，改动会同步到填写值",
+  ready: "1811 填写值已经就绪，改动会同步到填写值",
+};
+
+type AgentPhase = "interpreting" | "collecting" | "ready";
+
+const CAMPAIGN_STAGE_TEXT: Record<CampaignWorkspaceStage, string> = {
+  briefing: "正在整理活动 Brief",
+  planning: "正在规划适用执行轨",
+  preparing: "正在准备活动产物",
+  blocked: "当前存在阻断",
+  needs_confirmation: "活动方案待人工确认外部准备",
 };
 
 export function buildAgentUserPrompt(
   request: AgentRequest,
   requiredSkills: readonly string[] = [],
 ): string {
-  const status = draftStatus(request.draft, request.today);
+  const campaign: CampaignDraft = request.campaign
+    ? request.campaign
+    : request.draft
+      ? normalizeCampaignDraft(request.draft)
+      : {
+          schema: "campaign/v1",
+          id: "agent:campaign",
+          requestText: request.trigger.text,
+          brief: { name: null, objective: null, audience: null, theme: null, channels: null, timing: null, scope: null },
+          ics1811: null,
+          communication: null,
+        };
+  const workspace = buildCampaignWorkspace({ ...campaign, ics1811: request.draft }, request.today);
+  const status = request.draft ? draftStatus(request.draft, request.today) : null;
   const history = request.history.map((item) => `${item.role === "user" ? "用户" : "助手"}：${item.text}`).join("\n");
+  const legacyPhase = request.ics1811Phase ?? request.phase ?? (request.draft ? "collecting" : null);
+  const stageText = request.campaignStage
+    ? CAMPAIGN_STAGE_TEXT[request.campaignStage]
+    : legacyPhase
+      ? PHASE_TEXT[legacyPhase]
+      : CAMPAIGN_STAGE_TEXT[workspace.stage];
   return [
     "## 当前业务",
     "- 当前客户：周大福",
-    "- 目标页面：ICS-1811 优惠开单活动新增",
+    "- 目标：整理营销活动 Brief，按事实选择适用执行轨并准备产物",
+    `- ICS-1811 优惠配置：${request.draft ? "适用，当前正在处理" : "当前不适用"}`,
+    ...(request.draft ? ["- 目标页面：ICS-1811 优惠开单活动新增"] : []),
     "- 当前环境是产品 demo，不连接 1811、1815、1816 或 OA 生产系统",
     "## 当前状态",
-    `- 阶段：${PHASE_TEXT[request.phase]}`,
-    `- 还缺：${status.missing.map((gap) => `${gap.id} ${gap.question}`).join("；") || "无"}`,
+    `- 阶段：${stageText}`,
+    `- 活动执行轨：${workspace.routing.tracks.join("、") || "待判断"}`,
+    `- Brief 还缺：${workspace.brief.missing.join("、") || "无"}`,
+    `- 1811 还缺：${status?.missing.map((gap) => `${gap.id} ${gap.question}`).join("；") || "不适用或无"}`,
     `- 你上一句问的问题：${request.openQuestions.map((id) => `${id} ${QUESTION_TITLE[id]}`).join("；") || "无"}`,
     ...(request.accepted?.length ? [`- 用户这一轮同意了你上一句的提议，已经记下：${request.accepted.join("；")}（不用再记，直接往下走）`] : []),
     `- 你上一句的提议（用户同意就按这个记）：${request.proposals.map((item) => `${item.id} ${item.text}`).join("；") || "无"}`,
-    `- 挡着生成的问题：${status.blockers.join("；") || "无"}`,
-    `- 当前名称和内容：${status.name}｜${status.content}${request.draft.copy ? "" : "（模板生成，信息齐了可以用 draft_campaign_copy 重拟）"}`,
+    `- 挡着生成 1811 的问题：${status?.blockers.join("；") || "无"}`,
+    ...(status && request.draft ? [`- 当前 1811 名称和内容：${status.name}｜${status.content}${request.draft.copy ? "" : "（模板生成，信息齐了可以用 draft_campaign_copy 重拟）"}`] : []),
     "## 本轮业务规则",
     `- 必须先加载：${requiredSkills.length
       ? requiredSkills.map((name) => `ics1811:${name}`).join("、")
       : "无"}`,
     "- 成功加载后再回答；加载失败不要凭印象继续",
-    buildToolApiContract(),
-    "## 已记下的信息",
-    FACT_KEYS.map((key) => `- ${FACT_LABEL[key]}：${factText(key, request.draft.facts[key])}`).join("\n"),
+    buildToolApiContract(Boolean(request.draft)),
+    "## 已记下的 Campaign Brief",
+    workspace.brief.items.map((item) => `- ${item.label}：${item.value ?? "未填"}`).join("\n"),
+    ...(request.draft ? ["## 已记下的 1811 信息", FACT_KEYS.map((key) => `- ${FACT_LABEL[key]}：${factText(key, request.draft!.facts[key])}`).join("\n")] : []),
     ...(history ? ["## 最近对话", history] : []),
     "## 这一轮",
     request.trigger.kind === "first_message" ? `用户第一次描述需求：「${request.trigger.text}」` : `用户说：「${request.trigger.text}」`,
