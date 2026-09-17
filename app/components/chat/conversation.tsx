@@ -22,6 +22,7 @@ import {
   type TurnBody,
 } from "../../lib/client/api";
 import { appendLiveReply, emptyLiveReply } from "../../lib/client/live-reply";
+import { createTurnOwnership, type TurnOwner } from "../../lib/client/turn-ownership";
 import { CAMPAIGN_STAGE_LABEL, DEFAULT_WORKSPACE_TAB } from "../../lib/client/campaign-workspace";
 import { PROMO_CONTINUE_PROMPT, PROMO_GENERATION_PROMPT, promoWasGenerated } from "../../lib/client/promo-cta";
 import type { Snapshot } from "../../lib/server/turns";
@@ -95,10 +96,10 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const [busy, setBusy] = useState<TurnKind | null>(null);
   const [stopping, setStopping] = useState(false);
   const [interpretationStopped, setInterpretationStopped] = useState(false);
-  const inFlightTurn = useRef<symbol | null>(null);
-  const activeTurn = useRef<{ token: symbol; controller: AbortController; kind: TurnKind } | null>(null);
-  const currentSessionId = useRef(sessionId);
-  currentSessionId.current = sessionId;
+  const [inFlightTurn] = useState(() => createTurnOwnership(sessionId));
+  // 渲染时就更换代次，关闭会话切换到 Effect 清理之间的旧闭包窗口。
+  const sessionOwner = inFlightTurn.visit(sessionId);
+  const activeTurn = useRef<{ owner: TurnOwner; controller: AbortController; kind: TurnKind } | null>(null);
   const autoStarted = useRef<string | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [pendingAt, setPendingAt] = useState<string | null>(null);
@@ -121,7 +122,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
 
   const stopGeneration = useCallback(() => {
     const current = activeTurn.current;
-    if (!current || current.controller.signal.aborted) return;
+    if (!current || !inFlightTurn.ownsTurn(current.owner) || current.controller.signal.aborted) return;
     setStopping(true);
     current.controller.abort();
     setPendingText(null);
@@ -131,9 +132,10 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     setLivePhase(null);
     setRunStartedAt(null);
     if (current.kind === "interpret") setInterpretationStopped(true);
-  }, []);
+  }, [inFlightTurn]);
 
   useEffect(() => {
+    inFlightTurn.activate(sessionOwner);
     autoStarted.current = null;
     setInterpretationStopped(false);
     setError("");
@@ -146,42 +148,43 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     setLivePhase(null);
     setRunStartedAt(null);
     return () => {
-      activeTurn.current?.controller.abort();
-      activeTurn.current = null;
-      inFlightTurn.current = null;
+      if (activeTurn.current?.owner.generation === sessionOwner.generation) {
+        activeTurn.current.controller.abort();
+        activeTurn.current = null;
+      }
+      inFlightTurn.deactivate(sessionOwner);
     };
-  }, [sessionId]);
+  }, [inFlightTurn, sessionOwner]);
 
-  const load = useCallback(async (): Promise<Snapshot | null> => {
-    const requestSessionId = sessionId;
+  const load = useCallback(async (turn?: TurnOwner): Promise<Snapshot | null> => {
+    const owner = turn ?? sessionOwner;
     try {
-      const next = await fetchSnapshot(requestSessionId);
-      if (currentSessionId.current !== requestSessionId) return null;
-      setSnapshot(next);
-      if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
-      setLoadState("ready");
-      return next;
+      return await inFlightTurn.readCurrent(owner, () => fetchSnapshot(owner.sessionId), (next) => {
+        setSnapshot(next);
+        if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
+        setLoadState("ready");
+      });
     } catch (caught) {
-      if (currentSessionId.current === requestSessionId) setLoadState(stateOf(caught));
+      if (inFlightTurn.isCurrent(owner)) setLoadState(stateOf(caught));
       return null;
     }
-  }, [sessionId]);
+  }, [inFlightTurn, sessionOwner]);
 
   useEffect(() => {
     let cancelled = false;
     fetchSnapshot(sessionId)
       .then((next) => {
-        if (cancelled || currentSessionId.current !== sessionId) return;
+        if (cancelled || !inFlightTurn.ownsSession(sessionOwner)) return;
         setSnapshot(next);
         setLoadState("ready");
       })
       .catch((caught: unknown) => {
-        if (!cancelled && currentSessionId.current === sessionId) setLoadState(stateOf(caught));
+        if (!cancelled && inFlightTurn.ownsSession(sessionOwner)) setLoadState(stateOf(caught));
       });
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [inFlightTurn, sessionId, sessionOwner]);
 
   useEffect(() => {
     const onUpdate = (event: Event) => {
@@ -200,15 +203,15 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   }, [messageCount, busy, liveTrace.length, liveReply.text, loadState]);
 
   const send = async (body: TurnBody): Promise<Snapshot | null> => {
-    if (!snapshot || snapshot.session.id !== sessionId || busy || inFlightTurn.current) return null;
+    if (!inFlightTurn.ownsSession(sessionOwner) || !snapshot || snapshot.session.id !== sessionId || busy) return null;
     const streams = WAITING_KINDS.includes(body.type);
     const requestSessionId = sessionId;
-    const token = Symbol("turn");
-    inFlightTurn.current = token;
     const controller = streams ? new AbortController() : null;
-    if (controller) activeTurn.current = { token, controller, kind: body.type };
-    const ownsUi = () => inFlightTurn.current === token && currentSessionId.current === requestSessionId;
-    const isCurrent = () => ownsUi() && !controller?.signal.aborted;
+    const turn = inFlightTurn.begin(sessionOwner, controller?.signal);
+    if (!turn) return null;
+    if (controller) activeTurn.current = { owner: turn, controller, kind: body.type };
+    const ownsUi = () => inFlightTurn.ownsTurn(turn);
+    const isCurrent = () => inFlightTurn.isCurrent(turn);
     setBusy(body.type);
     setError("");
     if (body.type === "text") {
@@ -252,14 +255,13 @@ export function Conversation({ sessionId }: { sessionId: string }) {
         return null;
       }
       if (ownsUi()) {
-        if (caught instanceof ApiError && caught.status === 409) return await load();
+        if (caught instanceof ApiError && caught.status === 409) return await load(turn);
         setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
       }
       return null;
     } finally {
-      if (inFlightTurn.current === token) {
-        inFlightTurn.current = null;
-        if (activeTurn.current?.token === token) activeTurn.current = null;
+      if (inFlightTurn.finish(turn)) {
+        if (activeTurn.current?.owner.token === turn.token) activeTurn.current = null;
         setStopping(false);
         setBusy(null);
         setPendingText(null);
@@ -283,6 +285,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     !snapshot.messages.some((message) => message.role === "assistant"),
   );
   const retryInterpretation = () => {
+    if (!inFlightTurn.ownsSession(sessionOwner)) return;
     autoStarted.current = null;
     setInterpretationStopped(false);
   };
@@ -480,13 +483,13 @@ export function Conversation({ sessionId }: { sessionId: string }) {
             onStop={stopGeneration}
             placeholder={placeholder}
             onSubmit={() => {
+              if (!inFlightTurn.ownsSession(sessionOwner)) return;
               const text = input.trim().slice(0, 1000);
               if (!text) return;
-              const submittedSessionId = sessionId;
               setInput("");
               void send({ type: "text", text }).then((next) => {
                 const alreadyCommitted = next ? latestUserText(next) === text : false;
-                if (!alreadyCommitted && currentSessionId.current === submittedSessionId) {
+                if (!alreadyCommitted && inFlightTurn.ownsSession(sessionOwner)) {
                   setInput((current) => current.length ? current : text);
                 }
               });
