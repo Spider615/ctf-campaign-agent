@@ -10,7 +10,7 @@ type TurnStreamEvent =
   | { type: "text_delta"; delta: string }
   | { type: "text_reset" }
   | { type: "snapshot"; snapshot: Snapshot }
-  | { type: "error"; error: string };
+  | { type: "error"; error: string; status: number };
 
 export type TurnStreamHandlers = {
   onTrace?: (event: AgentTraceEvent) => void;
@@ -45,7 +45,12 @@ function parseTurnStreamLine(line: string): TurnStreamEvent {
   }
   if (value.type === "text_reset") return { type: "text_reset" };
   if (value.type === "snapshot") return { type: "snapshot", snapshot: parseSnapshot(value.snapshot) };
-  if (value.type === "error" && typeof value.error === "string" && value.error.trim()) return { type: "error", error: value.error.trim() };
+  if (value.type === "error" && typeof value.error === "string" && value.error.trim()) {
+    // 旧服务未发送状态码时按普通服务错误处理，不能猜测为版本冲突。
+    const status = value.status ?? 503;
+    if (typeof status !== "number" || !Number.isInteger(status) || status < 400 || status > 599) throw new Error("服务返回了无效的错误状态码");
+    return { type: "error", error: value.error.trim(), status };
+  }
   throw new Error("服务返回了未知的流事件");
 }
 
@@ -81,7 +86,7 @@ export async function consumeTurnStream(response: Response, handlers: TurnStream
     if (event.type === "text_delta") handlers.onTextDelta?.(event.delta);
     if (event.type === "text_reset") handlers.onTextReset?.();
     if (event.type === "snapshot") snapshot = event.snapshot;
-    if (event.type === "error") throw new ApiError(503, event.error);
+    if (event.type === "error") throw new ApiError(event.status, event.error);
   };
 
   try {

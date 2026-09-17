@@ -162,3 +162,21 @@ test("browser decoder treats errors as terminal", async () => {
     /Agent 超时了/,
   );
 });
+
+test("流式冲突保留 409，旧错误帧和服务故障不会被当作冲突", async () => {
+  for (const [status, expected] of [[409, 409], [400, 400], [503, 503], [undefined, 503]]) {
+    await assert.rejects(
+      consumeTurnStream(responseFrom([JSON.stringify({ type: "error", error: "页面已更新，请重试", status }) + "\n"]), {}),
+      (error: unknown) => error instanceof ApiError && error.status === expected,
+    );
+  }
+});
+
+test("流式错误拒绝非法状态码", async () => {
+  for (const status of ["409", 200, 600, 409.5]) {
+    await assert.rejects(
+      consumeTurnStream(responseFrom([JSON.stringify({ type: "error", error: "错误", status }) + "\n"]), {}),
+      /状态码/,
+    );
+  }
+});

@@ -123,7 +123,7 @@ export function errorResponse(error: unknown, fallback: string): Response {
   return Response.json({ error: fallback }, { status: 503 });
 }
 
-export function publicTurnError(error: unknown): string {
-  if (error instanceof TurnError) return error.message;
-  return "没保存成功，可以重试";
+export function publicTurnError(error: unknown): { status: number; error: string } {
+  if (error instanceof TurnError) return { status: error.status, error: error.message };
+  return { status: 503, error: "没保存成功，可以重试" };
 }

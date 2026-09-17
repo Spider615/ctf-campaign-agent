@@ -9,22 +9,30 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (request.headers.get("accept")?.includes("application/x-ndjson")) {
       const encoder = new TextEncoder();
       let active = true;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
       const turnController = new AbortController();
       const stopRelaying = relayAbort(request.signal, turnController);
       const abortTurn = () => {
         active = false;
+        clearInterval(heartbeat);
         if (!turnController.signal.aborted) turnController.abort();
       };
+      turnController.signal.addEventListener("abort", abortTurn, { once: true });
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          const emit = (event: unknown) => {
+          const write = (line: string) => {
             if (!active) return;
             try {
-              controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+              controller.enqueue(encoder.encode(line));
             } catch {
               abortTurn();
             }
           };
+          const emit = (event: unknown) => write(`${JSON.stringify(event)}\n`);
+          // 静默等待模型时也让代理持续写响应，及时检测浏览器断连。
+          // 空行不是业务事件；仅保活，不限制回合总时长。
+          write("\n");
+          heartbeat = setInterval(() => write("\n"), 250);
           void runTurn(
             id,
             body,
@@ -37,10 +45,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             .then((snapshot) => emit({ type: "snapshot", snapshot }))
             .catch((error) => {
               if (isTurnCancelled(error) || turnController.signal.aborted) return;
-              emit({ type: "error", error: publicTurnError(error) });
+              emit({ type: "error", ...publicTurnError(error) });
             })
             .finally(() => {
               stopRelaying();
+              clearInterval(heartbeat);
+              turnController.signal.removeEventListener("abort", abortTurn);
               if (!active) return;
               active = false;
               controller.close();
