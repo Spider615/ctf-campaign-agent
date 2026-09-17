@@ -131,6 +131,7 @@ test("按知识请求保守选择基线 Skill，并保持基线顺序", () => {
     ["浮动折扣模式和固定折扣模式有什么区别", ["field-explainer"]],
     ["这个活动该选浮动还是固定，1811 怎么录", ["offer-entry-guide"]],
     ["先解释浮动和固定的区别，再告诉我这个活动怎么录", ["offer-entry-guide", "field-explainer"]],
+    ["先解释区别，再告诉我这个活动怎么录", ["offer-entry-guide", "field-explainer"]],
     ["满减是什么意思", ["offer-entry-guide"]],
   ];
 
@@ -174,6 +175,8 @@ test("普通活动事实不因领域名词本身加载 Skill", () => {
 
 test("路由只归一化空白和大小写，首轮消息也使用同一规则", () => {
   assert.deepEqual(requiredSkills("  OUTLET   如何录  "), ["offer-entry-guide"]);
+  assert.deepEqual(requiredSkills("浮动 和 固定有什么区别"), ["field-explainer"]);
+  assert.deepEqual(requiredSkills("黄金以旧换新怎么\n录"), ["offer-entry-guide"]);
   assert.deepEqual(
     skillModule.requiredSkillsForTurn({
       trigger: { kind: "first_message", text: "计折上折是什么意思" },

@@ -28,7 +28,7 @@ const EXPLAIN_THEN_ENTER = /(?:(?:解释|说明).*(?:区别|差别).*(?:怎么|�
 export function requiredSkillsForTurn(
   request: Pick<AgentRequest, "trigger">,
 ): BaselineSkillName[] {
-  const text = request.trigger.text.replace(/\s+/g, " ").trim().toLowerCase();
+  const text = request.trigger.text.replace(/\s+/g, "").toLowerCase();
   const required = new Set<BaselineSkillName>();
   const fieldTopic = FIELD_TOPIC.test(text);
   const explanation = EXPLAIN_INTENT.test(text);
@@ -36,7 +36,7 @@ export function requiredSkillsForTurn(
   const entry = ENTRY_INTENT.test(text);
   const explainThenEnter = EXPLAIN_THEN_ENTER.test(text);
 
-  if (fieldTopic && explanation) required.add("field-explainer");
+  if ((fieldTopic && explanation) || explainThenEnter) required.add("field-explainer");
   if (
     explainThenEnter
     || (entry && (offerTopic || fieldTopic))
