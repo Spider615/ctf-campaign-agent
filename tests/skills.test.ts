@@ -1234,6 +1234,15 @@ test("promo-copy-guide 定义多渠道传播方案而不越过事实和上线门
   assert.match(text, /工具[^\n]*为准/);
 });
 
+test("field-explainer 要求计折上折解释先澄清提成口径与优惠叠加的区别", () => {
+  const path = join(repoRoot, "agent", "plugin", "skills", "field-explainer", "SKILL.md");
+  const text = readFileSync(path, "utf8");
+
+  assert.match(text, /直接询问[^\n]*计折上折[^\n]*第一句必须/);
+  assert.match(text, /销售提成计算口径[^\n]*不是[^\n]*(?:顾客)?(?:优惠|促销)[^\n]*(?:叠加|能否叠加)/);
+  assert.match(text, /不能只给公式/);
+});
+
 test("campaign-sop 只承载有出处的 1811 子流程合同", () => {
   const path = join(repoRoot, "agent", "plugin", "skills", "campaign-sop", "SKILL.md");
   const text = readFileSync(path, "utf8");
