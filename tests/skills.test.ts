@@ -297,10 +297,14 @@ test("description 遵守 YAML 安全未加引号字符串子集", () => {
   const invalidDescriptions = [
     "解释 ICS-1811: 字段和业务名词。",
     "内容 # 注释",
+    "# 解释字段和业务名词。",
     "\"带引号的描述\"",
     "'带引号的描述'",
     "true",
     "123",
+    "1.",
+    ".inf",
+    ".NaN",
     "2026-09-17",
   ];
   for (const description of invalidDescriptions) {
@@ -313,13 +317,11 @@ test("description 遵守 YAML 安全未加引号字符串子集", () => {
     );
   }
 
-  const valid = createPlugin();
-  replaceSkill(
-    valid,
-    "field-explainer",
-    skillMarkdown("field-explainer", { description: "Explain ICS-1811 fields and business terms." }),
-  );
-  assert.equal(skillModule.loadSkillCatalog(valid)[0]?.description, "Explain ICS-1811 fields and business terms.");
+  for (const description of ["解释字段 \"计折上折\"", "1811 活动字段说明"]) {
+    const valid = createPlugin();
+    replaceSkill(valid, "field-explainer", skillMarkdown("field-explainer", { description }));
+    assert.equal(skillModule.loadSkillCatalog(valid).find((skill) => skill.name === "field-explainer")?.description, description);
+  }
 });
 
 test("Skill 名称格式错误或与目录不一致时拒绝", () => {
