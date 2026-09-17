@@ -50,12 +50,14 @@ export async function postTurnStream(
   id: string,
   body: TurnBody & { expectedSeq: number },
   handlers: TurnStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<Snapshot> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/turns`, {
     ...json(body),
     headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+    signal,
   });
-  return consumeTurnStream(response, handlers);
+  return consumeTurnStream(response, handlers, signal);
 }
 
 export function notifySessionsChanged() {

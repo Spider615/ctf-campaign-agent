@@ -13,6 +13,36 @@ import {
 const emptyStateSource = readFileSync(new URL("../app/components/chat/empty-state.tsx", import.meta.url), "utf8");
 const composerSource = readFileSync(new URL("../app/components/chat/composer.tsx", import.meta.url), "utf8");
 const layoutSource = readFileSync(new URL("../app/layout.tsx", import.meta.url), "utf8");
+const conversationSource = readFileSync(new URL("../app/components/chat/conversation.tsx", import.meta.url), "utf8");
+const thinkingSource = readFileSync(new URL("../app/components/chat/thinking-indicator.tsx", import.meta.url), "utf8");
+const globalsSource = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+
+test("streaming turns expose a real stop control and keep the wave below tool traces", () => {
+  assert.match(composerSource, /Square/);
+  assert.match(composerSource, /停止生成/);
+  assert.match(conversationSource, /new AbortController\(\)/);
+  assert.match(conversationSource, /onStop=/);
+  assert.match(conversationSource, /继续理解/);
+  assert.match(conversationSource, /inFlightTurn/);
+  assert.match(conversationSource, /setInput\(\(current\)/);
+  assert.match(conversationSource, /caught instanceof ApiError && caught\.status === 409/);
+  assert.match(conversationSource, /latestUserText\(next\) === text/);
+  assert.match(conversationSource, /trim\(\)\.slice\(0, 1000\)/);
+  assert.match(composerSource, /maxLength=\{1000\}/);
+  assert.match(conversationSource, /!stopping && !liveReply\.text && waiting/);
+  assert.doesNotMatch(conversationSource, /!liveTrace\.length\s*&&\s*!liveReply\.text\s*&&\s*waiting/);
+  assert.match(thinkingSource, /thinking-wave-dot/);
+  assert.match(globalsSource, /@keyframes thinking-wave/);
+});
+
+test("成功回合与 409 对账会清掉首次理解的停止状态", () => {
+  const loadSource = conversationSource.slice(conversationSource.indexOf("const load ="), conversationSource.indexOf("  useEffect(() => {\n    let cancelled"));
+  const sendSource = conversationSource.slice(conversationSource.indexOf("const send ="), conversationSource.indexOf("const sendRef ="));
+  const clearsStoppedInterpretation = /setSnapshot\(next\);\s+if \(next\.flow\.pendingInterpretation === false\) setInterpretationStopped\(false\);/;
+  assert.match(loadSource, clearsStoppedInterpretation, "409 对账后的已完成结果应清除停止状态");
+  assert.match(sendSource, clearsStoppedInterpretation, "补充内容成功后应清除停止状态");
+  assert.match(sendSource, /caught instanceof ApiError && caught\.status === 409\) return await load\(\)/);
+});
 
 test("home starts a general marketing conversation without an activity-description length gate", () => {
   assert.match(emptyStateSource, /周大福营销活动 Agent/);

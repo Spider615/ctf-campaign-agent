@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ApiError } from "../app/lib/client/api.ts";
+import { ApiError, postTurnStream } from "../app/lib/client/api.ts";
 import { consumeTurnStream } from "../app/lib/client/stream.ts";
 import type { Snapshot } from "../app/lib/server/turns.ts";
 import type { AgentTraceEvent } from "../app/lib/tool-trace.ts";
@@ -17,6 +17,78 @@ const completedEvent: AgentTraceEvent = {
   summary: "识别并核验 8 项信息",
 };
 const snapshot = { session: { id: "session-1" } } as unknown as Snapshot;
+
+test("postTurnStream forwards the AbortSignal to fetch", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let received: AbortSignal | null = null;
+  globalThis.fetch = async (_input, init) => {
+    received = init?.signal as AbortSignal;
+    assert.equal(received, controller.signal);
+    return await new Promise<Response>((_resolve, reject) => {
+      received?.addEventListener("abort", () => reject(new DOMException("已停止", "AbortError")), { once: true });
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const pending = postTurnStream("session-1", { type: "interpret", expectedSeq: 1 }, {}, controller.signal);
+  controller.abort();
+
+  await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
+  assert.equal(received, controller.signal);
+});
+
+test("browser decoder cancels its reader and ignores buffered events after abort", async () => {
+  const controller = new AbortController();
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(stream) {
+      stream.enqueue(new TextEncoder().encode([
+        JSON.stringify({ type: "trace", event: completedEvent }),
+        JSON.stringify({ type: "text_delta", delta: "迟到正文" }),
+        JSON.stringify({ type: "snapshot", snapshot }),
+      ].join("\n") + "\n"));
+    },
+    cancel() { cancelled = true; },
+  });
+  const seen: string[] = [];
+
+  await assert.rejects(
+    () => consumeTurnStream(new Response(body), {
+      onTrace: () => {
+        seen.push("trace");
+        controller.abort();
+      },
+      onTextDelta: () => {
+        seen.push("late-delta");
+        assert.fail("取消后不能派发缓冲正文");
+      },
+    }, controller.signal),
+    (error: unknown) => error instanceof Error && error.name === "AbortError",
+  );
+
+  assert.deepEqual(seen, ["trace"]);
+  assert.equal(cancelled, true);
+  assert.equal(body.locked, false);
+});
+
+test("browser decoder releases its reader after success and malformed data", async () => {
+  const response = responseFrom([JSON.stringify({ type: "snapshot", snapshot })]);
+  await consumeTurnStream(response, {});
+  assert.equal(response.body?.locked, false);
+  const malformed = responseFrom(["不是 JSON\n"]);
+  await assert.rejects(consumeTurnStream(malformed, {}), /无法识别/);
+  assert.equal(malformed.body?.locked, false);
+});
+
+test("browser decoder observes an already aborted signal before HTTP parsing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    consumeTurnStream(new Response("{}", { status: 409 }), {}, controller.signal),
+    (error: unknown) => error instanceof Error && error.name === "AbortError",
+  );
+});
 
 const responseFrom = (chunks: string[], init: ResponseInit = {}) => new Response(new ReadableStream<Uint8Array>({
   start(controller) {

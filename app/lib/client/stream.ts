@@ -2,6 +2,7 @@ import type { Snapshot } from "../server/turns.ts";
 import type { AgentPublicPhase } from "../agent/stream.ts";
 import { parseAgentTraceEvent, type AgentTraceEvent } from "../tool-trace.ts";
 import { ApiError } from "./api.ts";
+import { TurnCancelledError, throwIfTurnCancelled } from "../cancellation.ts";
 
 type TurnStreamEvent =
   | { type: "trace"; event: AgentTraceEvent }
@@ -53,16 +54,25 @@ async function httpError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, typeof body.error === "string" && body.error ? body.error : "请求失败，请重试");
 }
 
-export async function consumeTurnStream(response: Response, handlers: TurnStreamHandlers): Promise<Snapshot> {
-  if (!response.ok) throw await httpError(response);
+export async function consumeTurnStream(response: Response, handlers: TurnStreamHandlers, signal?: AbortSignal): Promise<Snapshot> {
+  throwIfTurnCancelled(signal);
+  if (!response.ok) {
+    const error = await httpError(response);
+    throwIfTurnCancelled(signal);
+    throw error;
+  }
   if (!response.body) throw new Error("服务没有返回数据流");
 
   const reader = response.body.getReader();
+  const cancelReader = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", cancelReader, { once: true });
+  if (signal?.aborted) cancelReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let snapshot: Snapshot | null = null;
 
   const consumeLine = (line: string) => {
+    throwIfTurnCancelled(signal);
     if (!line.trim()) return;
     if (snapshot) throw new Error("最终结果之后还有多余的流事件");
     const event = parseTurnStreamLine(line);
@@ -74,19 +84,30 @@ export async function consumeTurnStream(response: Response, handlers: TurnStream
     if (event.type === "error") throw new ApiError(503, event.error);
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let newline = buffer.indexOf("\n");
-    while (newline >= 0) {
-      consumeLine(buffer.slice(0, newline));
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf("\n");
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      throwIfTurnCancelled(signal);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        consumeLine(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf("\n");
+      }
     }
+    buffer += decoder.decode();
+    if (buffer.trim()) consumeLine(buffer);
+    throwIfTurnCancelled(signal);
+    if (!snapshot) throw new Error("服务没有返回最终结果，可以重试");
+    return snapshot;
+  } catch (error) {
+    if (signal?.aborted) throw new TurnCancelledError();
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", cancelReader);
+    if (signal?.aborted) await reader.cancel(signal.reason).catch(() => undefined);
+    reader.releaseLock();
   }
-  buffer += decoder.decode();
-  if (buffer.trim()) consumeLine(buffer);
-  if (!snapshot) throw new Error("服务没有返回最终结果，可以重试");
-  return snapshot;
 }

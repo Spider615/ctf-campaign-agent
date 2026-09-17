@@ -128,6 +128,13 @@ button, summary, a { -webkit-tap-highlight-color: transparent; }
 
 .trace-pulse { animation: trace-pulse 1.8s ease-in-out infinite; }
 
+@keyframes thinking-wave {
+  0%, 60%, 100% { opacity: 0.42; transform: translateY(2px) scale(0.9); }
+  30% { opacity: 1; transform: translateY(-3px) scale(1); }
+}
+
+.thinking-wave-dot { animation: thinking-wave 1.05s ease-in-out infinite; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;
@@ -136,4 +143,5 @@ button, summary, a { -webkit-tap-highlight-color: transparent; }
     transition-duration: 0.01ms !important;
   }
   .soft-in, .trace-pulse { animation: none; }
+  .thinking-wave-dot { animation: none; opacity: 0.75; transform: none; }
 }

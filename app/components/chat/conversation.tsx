@@ -11,6 +11,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import type { RetryInput } from "../../lib/campaign/ics1811/messages";
 import { QUESTION_EXAMPLE } from "../../lib/campaign/ics1811/questions";
 import { thinkingLabel } from "../../lib/campaign/ics1811/thinking";
+import { isTurnCancelled } from "../../lib/cancellation";
 import {
   ApiError,
   fetchSnapshot,
@@ -53,6 +54,14 @@ function collectingPlaceholder(flow: Snapshot["flow"]): string {
 // 只有这两种回合会调模型、需要等待；其余由代码直接处理，不显示等待文案。
 const WAITING_KINDS: readonly TurnKind[] = ["interpret", "text"];
 
+function latestUserText(snapshot: Snapshot): string | null {
+  for (let index = snapshot.messages.length - 1; index >= 0; index--) {
+    const message = snapshot.messages[index];
+    if (message.content.kind === "user_text") return message.content.text;
+  }
+  return null;
+}
+
 const XL = "(min-width: 1280px)";
 const SHEET_PANEL_ID = "sheet";
 const LAYOUT_KEY = "ics1811-panel-layout";
@@ -84,6 +93,13 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "legacy" | "error">("loading");
   const [busy, setBusy] = useState<TurnKind | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [interpretationStopped, setInterpretationStopped] = useState(false);
+  const inFlightTurn = useRef<symbol | null>(null);
+  const activeTurn = useRef<{ token: symbol; controller: AbortController; kind: TurnKind } | null>(null);
+  const currentSessionId = useRef(sessionId);
+  currentSessionId.current = sessionId;
+  const autoStarted = useRef<string | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
   const [pendingAt, setPendingAt] = useState<string | null>(null);
   const [liveTrace, setLiveTrace] = useState<AgentTraceEvent[]>([]);
@@ -103,12 +119,51 @@ export function Conversation({ sessionId }: { sessionId: string }) {
 
   const stateOf = (caught: unknown) => (caught instanceof ApiError && caught.status === 404 ? "missing" : caught instanceof ApiError && caught.status === 410 ? "legacy" : "error");
 
-  const load = useCallback(async () => {
+  const stopGeneration = useCallback(() => {
+    const current = activeTurn.current;
+    if (!current || current.controller.signal.aborted) return;
+    setStopping(true);
+    current.controller.abort();
+    setPendingText(null);
+    setPendingAt(null);
+    setLiveTrace([]);
+    setLiveReply(emptyLiveReply());
+    setLivePhase(null);
+    setRunStartedAt(null);
+    if (current.kind === "interpret") setInterpretationStopped(true);
+  }, []);
+
+  useEffect(() => {
+    autoStarted.current = null;
+    setInterpretationStopped(false);
+    setError("");
+    setStopping(false);
+    setBusy(null);
+    setPendingText(null);
+    setPendingAt(null);
+    setLiveTrace([]);
+    setLiveReply(emptyLiveReply());
+    setLivePhase(null);
+    setRunStartedAt(null);
+    return () => {
+      activeTurn.current?.controller.abort();
+      activeTurn.current = null;
+      inFlightTurn.current = null;
+    };
+  }, [sessionId]);
+
+  const load = useCallback(async (): Promise<Snapshot | null> => {
+    const requestSessionId = sessionId;
     try {
-      setSnapshot(await fetchSnapshot(sessionId));
+      const next = await fetchSnapshot(requestSessionId);
+      if (currentSessionId.current !== requestSessionId) return null;
+      setSnapshot(next);
+      if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
       setLoadState("ready");
+      return next;
     } catch (caught) {
-      setLoadState(stateOf(caught));
+      if (currentSessionId.current === requestSessionId) setLoadState(stateOf(caught));
+      return null;
     }
   }, [sessionId]);
 
@@ -116,12 +171,12 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     let cancelled = false;
     fetchSnapshot(sessionId)
       .then((next) => {
-        if (cancelled) return;
+        if (cancelled || currentSessionId.current !== sessionId) return;
         setSnapshot(next);
         setLoadState("ready");
       })
       .catch((caught: unknown) => {
-        if (!cancelled) setLoadState(stateOf(caught));
+        if (!cancelled && currentSessionId.current === sessionId) setLoadState(stateOf(caught));
       });
     return () => {
       cancelled = true;
@@ -145,14 +200,21 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   }, [messageCount, busy, liveTrace.length, liveReply.text, loadState]);
 
   const send = async (body: TurnBody): Promise<Snapshot | null> => {
-    if (!snapshot || busy) return null;
+    if (!snapshot || snapshot.session.id !== sessionId || busy || inFlightTurn.current) return null;
+    const streams = WAITING_KINDS.includes(body.type);
+    const requestSessionId = sessionId;
+    const token = Symbol("turn");
+    inFlightTurn.current = token;
+    const controller = streams ? new AbortController() : null;
+    if (controller) activeTurn.current = { token, controller, kind: body.type };
+    const ownsUi = () => inFlightTurn.current === token && currentSessionId.current === requestSessionId;
+    const isCurrent = () => ownsUi() && !controller?.signal.aborted;
     setBusy(body.type);
     setError("");
     if (body.type === "text") {
       setPendingText(body.text);
       setPendingAt(new Date().toISOString());
     }
-    const streams = WAITING_KINDS.includes(body.type);
     if (streams) {
       setLiveTrace([]);
       setLiveReply(emptyLiveReply());
@@ -162,31 +224,51 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     try {
       const payload = { ...body, expectedSeq: snapshot.latest.seq };
       const next = streams
-        ? await postTurnStream(sessionId, payload, {
-            onTrace: (event) => setLiveTrace((current) => mergeTraceEvent(current, event)),
-            onPhase: setLivePhase,
+        ? await postTurnStream(requestSessionId, payload, {
+            onTrace: (event) => {
+              if (isCurrent()) setLiveTrace((current) => mergeTraceEvent(current, event));
+            },
+            onPhase: (phase) => {
+              if (isCurrent()) setLivePhase(phase);
+            },
             onTextDelta: (delta) => {
+              if (!isCurrent()) return;
               const arrivedAt = new Date().toISOString();
               setLiveReply((current) => appendLiveReply(current, delta, arrivedAt));
             },
-            onTextReset: () => setLiveReply(emptyLiveReply()),
-          })
-        : await postTurn(sessionId, payload);
+            onTextReset: () => {
+              if (isCurrent()) setLiveReply(emptyLiveReply());
+            },
+          }, controller?.signal)
+        : await postTurn(requestSessionId, payload);
+      if (!isCurrent()) return null;
       setSnapshot(next);
+      if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
       notifySessionsChanged();
       return next;
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 409) await load();
-      setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
+      if (isTurnCancelled(caught) || controller?.signal.aborted) {
+        if (ownsUi() && body.type === "interpret") setInterpretationStopped(true);
+        return null;
+      }
+      if (ownsUi()) {
+        if (caught instanceof ApiError && caught.status === 409) return await load();
+        setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
+      }
       return null;
     } finally {
-      setBusy(null);
-      setPendingText(null);
-      setPendingAt(null);
-      setLiveTrace([]);
-      setLiveReply(emptyLiveReply());
-      setLivePhase(null);
-      setRunStartedAt(null);
+      if (inFlightTurn.current === token) {
+        inFlightTurn.current = null;
+        if (activeTurn.current?.token === token) activeTurn.current = null;
+        setStopping(false);
+        setBusy(null);
+        setPendingText(null);
+        setPendingAt(null);
+        setLiveTrace([]);
+        setLiveReply(emptyLiveReply());
+        setLivePhase(null);
+        setRunStartedAt(null);
+      }
     }
   };
 
@@ -196,8 +278,14 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   });
 
   // 刚建好的会话只有用户那句话：进入对话页后自动开始理解，期间显示思考动画。
-  const needsInterpretation = Boolean(snapshot?.flow.pendingInterpretation && !snapshot.messages.some((message) => message.role === "assistant"));
-  const autoStarted = useRef<string | null>(null);
+  const needsInterpretation = Boolean(
+    !interpretationStopped && snapshot?.session.id === sessionId && snapshot.flow.pendingInterpretation &&
+    !snapshot.messages.some((message) => message.role === "assistant"),
+  );
+  const retryInterpretation = () => {
+    autoStarted.current = null;
+    setInterpretationStopped(false);
+  };
   useEffect(() => {
     if (!needsInterpretation) return;
     const timer = window.setTimeout(() => {
@@ -255,7 +343,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     else sheetPanel.current?.collapse();
   };
 
-  if (loadState === "loading") {
+  if (loadState === "loading" || (loadState === "ready" && snapshot && snapshot.session.id !== sessionId)) {
     return (
       <div className="grid h-[calc(100dvh-4rem)] place-items-center text-sm text-[#6d829d] md:h-screen">
         <span className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />正在打开活动…</span>
@@ -280,9 +368,11 @@ export function Conversation({ sessionId }: { sessionId: string }) {
 
   const { flow } = snapshot;
   const pendingInterpretation = flow.pendingInterpretation;
-  const placeholder = pendingInterpretation && !needsInterpretation && busy !== "interpret"
-    ? "没理解成功，点上面的「重试」"
-    : flow.phase === "collecting" ? collectingPlaceholder(flow) : PLACEHOLDER[flow.phase];
+  const placeholder = interpretationStopped
+    ? "已停止理解，可以继续补充，或点「继续理解」"
+    : pendingInterpretation && !needsInterpretation && busy !== "interpret"
+      ? "没理解成功，点上面的「重试」"
+      : flow.phase === "collecting" ? collectingPlaceholder(flow) : PLACEHOLDER[flow.phase];
 
   // 等待时说清系统拿这句话要做什么，别只说「正在思考」。
   const waitingKind = busy && WAITING_KINDS.includes(busy) ? busy : needsInterpretation ? "interpret" : null;
@@ -354,19 +444,19 @@ export function Conversation({ sessionId }: { sessionId: string }) {
               {pendingAt ? <div className="mt-1 flex min-h-7 items-center justify-end"><MessageTimestamp iso={pendingAt} /></div> : null}
             </div>
           ) : null}
-          {liveTrace.length ? (
+          {!stopping && liveTrace.length ? (
             <AgentRow>
               <ToolRunCard trace={liveTrace} live startedAt={runStartedAt} />
             </AgentRow>
           ) : null}
-          {liveReply.text ? (
+          {!stopping && liveReply.text ? (
             <AgentRow continued={liveTrace.length > 0}>
               <div aria-live="polite"><MarkdownText text={liveReply.text} /></div>
               {liveReply.startedAt ? <MessageTimestamp iso={liveReply.startedAt} /> : null}
             </AgentRow>
           ) : null}
-          {!liveTrace.length && !liveReply.text && waiting ? (
-            <ThinkingIndicator label={livePhase === "writing" ? "正在组织回复…" : waiting} />
+          {!stopping && !liveReply.text && waiting ? (
+            <ThinkingIndicator continued={liveTrace.length > 0} label={livePhase === "writing" ? "正在组织回复…" : waiting} />
           ) : null}
           <div ref={endRef} />
         </div>
@@ -375,17 +465,30 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       <div className="shrink-0 border-t border-[#dce9f6] bg-[linear-gradient(180deg,rgba(238,246,255,.55),rgba(244,249,255,.96))] px-4 py-3 backdrop-blur-xl md:px-8">
         <div className="mx-auto max-w-[780px]">
           {error ? <p role="alert" className="mb-2 rounded-xl border border-[#f2c8c3] bg-[#fff4f2] px-3 py-2 text-[13px] text-[#a43f37]">{error}</p> : null}
+          {interpretationStopped ? (
+            <div role="status" className="mb-2 flex items-center justify-between gap-2 px-3 text-[13px] text-[#59718d]">
+              <span>已停止理解，你可以继续补充，或继续理解</span>
+              <Button variant="ghost" size="sm" disabled={busy !== null} onClick={retryInterpretation}>继续理解</Button>
+            </div>
+          ) : null}
           <Composer
             value={input}
             onChange={setInput}
-            busy={busy !== null || pendingInterpretation}
+            busy={busy !== null || (pendingInterpretation && !interpretationStopped)}
+            stoppable={Boolean(busy && WAITING_KINDS.includes(busy))}
+            stopping={stopping}
+            onStop={stopGeneration}
             placeholder={placeholder}
             onSubmit={() => {
-              const text = input.trim();
+              const text = input.trim().slice(0, 1000);
               if (!text) return;
+              const submittedSessionId = sessionId;
               setInput("");
               void send({ type: "text", text }).then((next) => {
-                if (!next) setInput(text);
+                const alreadyCommitted = next ? latestUserText(next) === text : false;
+                if (!alreadyCommitted && currentSessionId.current === submittedSessionId) {
+                  setInput((current) => current.length ? current : text);
+                }
               });
             }}
           />
