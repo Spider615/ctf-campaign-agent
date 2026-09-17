@@ -14,7 +14,9 @@ export type CampaignToolName = (typeof CAMPAIGN_TOOL_NAMES)[number];
 
 // 早先有「复述 → 确认」时的工具，只为读得出旧会话里存下的执行记录。
 const LEGACY_TOOL_NAMES = ["build_campaign_readback", "confirm_campaign_readback"] as const;
-export type TraceToolName = CampaignToolName | (typeof LEGACY_TOOL_NAMES)[number];
+// 不是活动工具、但要记进执行记录的步骤：模型通过 SDK 的 Skill 工具加载业务规则技能。
+export const SKILL_TRACE_TOOL = "load_campaign_skill";
+export type TraceToolName = CampaignToolName | (typeof LEGACY_TOOL_NAMES)[number] | typeof SKILL_TRACE_TOOL;
 export type ToolTraceStatus = "started" | "completed" | "warning" | "failed";
 export type ToolInitiator = "model" | "orchestrator";
 
@@ -37,7 +39,7 @@ export type ToolTrace = {
 
 type StartTraceInput = {
   id: string;
-  tool: CampaignToolName;
+  tool: TraceToolName;
   title: string;
   initiatedBy: ToolInitiator;
   at: number;
@@ -49,7 +51,7 @@ type FinishTraceInput = {
   at: number;
 };
 
-const TOOL_NAME_SET = new Set<string>([...CAMPAIGN_TOOL_NAMES, ...LEGACY_TOOL_NAMES]);
+const TOOL_NAME_SET = new Set<string>([...CAMPAIGN_TOOL_NAMES, ...LEGACY_TOOL_NAMES, SKILL_TRACE_TOOL]);
 const FINISHED_STATUS_SET = new Set<string>(["completed", "warning", "failed"]);
 const TRACE_STATUS_SET = new Set<string>(["started", ...FINISHED_STATUS_SET]);
 const INITIATOR_SET = new Set<string>(["model", "orchestrator"]);

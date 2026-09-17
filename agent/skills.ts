@@ -2,6 +2,12 @@ import { existsSync, realpathSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { AgentRequest } from "../app/lib/agent/protocol.ts";
+import {
+  SKILL_TRACE_TOOL,
+  finishTraceEvent,
+  startTraceEvent,
+  type AgentTraceEvent,
+} from "../app/lib/tool-trace.ts";
 
 export const PLUGIN_NAME = "ics1811";
 
@@ -95,6 +101,12 @@ export type SkillInfo = {
   description: string;
   relativePath: string;
   sources: readonly SkillSource[];
+};
+
+export type SkillLoadState = {
+  pending: Map<string, { skill: SkillInfo | null; started: AgentTraceEvent }>;
+  loadedSkills: Set<string>;
+  skillLoadFailed: boolean;
 };
 
 export class SkillCatalogError extends Error {
@@ -524,6 +536,100 @@ export function skillOf(catalog: readonly SkillInfo[], requested: unknown): Skil
   return catalog.find(
     (skill) => requested === skill.name || requested === skill.qualifiedName,
   ) ?? null;
+}
+
+export function createSkillLoadState(): SkillLoadState {
+  return {
+    pending: new Map(),
+    loadedSkills: new Set(),
+    skillLoadFailed: false,
+  };
+}
+
+export function beginSkillLoad(
+  catalog: readonly SkillInfo[],
+  state: SkillLoadState,
+  input: { id: string; requested: unknown; at: number },
+): AgentTraceEvent {
+  if (state.pending.has(input.id)) {
+    state.skillLoadFailed = true;
+    throw new Error(`业务规则工具调用编号重复：${input.id}`);
+  }
+
+  const skill = skillOf(catalog, input.requested);
+  if (!skill) state.skillLoadFailed = true;
+  const started = startTraceEvent({
+    id: input.id,
+    tool: SKILL_TRACE_TOOL,
+    title: `加载业务规则：${skill?.title ?? "未知规则"}`,
+    initiatedBy: "model",
+    at: input.at,
+  });
+  state.pending.set(input.id, { skill, started });
+  return started;
+}
+
+export function finishSkillLoad(
+  state: SkillLoadState,
+  input: { toolUseId: string; isError: boolean; at: number },
+): AgentTraceEvent | null {
+  const pending = state.pending.get(input.toolUseId);
+  if (!pending) return null;
+
+  state.pending.delete(input.toolUseId);
+  const skill = pending.skill;
+  const failed = input.isError || skill === null;
+  if (failed) {
+    state.skillLoadFailed = true;
+  } else {
+    state.loadedSkills.add(skill.name);
+  }
+  return finishTraceEvent(pending.started, {
+    status: failed ? "warning" : "completed",
+    summary: failed ? "规则没有加载成功" : "已读取这份规则",
+    at: input.at,
+  });
+}
+
+export function finishPendingSkillLoads(
+  state: SkillLoadState,
+  at: number,
+): AgentTraceEvent[] {
+  const events = [...state.pending.values()].map((pending) => finishTraceEvent(
+    pending.started,
+    {
+      status: "warning",
+      summary: "规则没有加载成功",
+      at,
+    },
+  ));
+  if (events.length) state.skillLoadFailed = true;
+  state.pending.clear();
+  return events;
+}
+
+export function assertSkillTurnContract(
+  required: readonly BaselineSkillName[],
+  state: SkillLoadState,
+): void {
+  if (state.pending.size || state.skillLoadFailed) {
+    throw new Error("业务规则没有加载成功，请重试");
+  }
+  const missing = required.filter((name) => !state.loadedSkills.has(name));
+  if (missing.length) {
+    throw new Error(
+      `本回合缺少必需的业务规则：${missing.map((name) => `${PLUGIN_NAME}:${name}`).join("、")}`,
+    );
+  }
+}
+
+export function finishSkillCheckedTurn<T>(
+  required: readonly BaselineSkillName[],
+  state: SkillLoadState,
+  finish: () => T,
+): T {
+  assertSkillTurnContract(required, state);
+  return finish();
 }
 
 // 临时兼容当前服务入口；后续接入完成后移除。

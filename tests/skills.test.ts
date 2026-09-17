@@ -120,6 +120,16 @@ function requiredSkills(text: string) {
   });
 }
 
+function assertSafeSkillTrace(event: unknown): void {
+  assert.ok(event && typeof event === "object" && !Array.isArray(event));
+  assert.deepEqual(
+    Object.keys(event as Record<string, unknown>).sort(),
+    ["durationMs", "id", "initiatedBy", "startedAt", "status", "summary", "title", "tool"]
+      .filter((key) => (event as Record<string, unknown>)[key] !== undefined)
+      .sort(),
+  );
+}
+
 test("按知识请求保守选择基线 Skill，并保持基线顺序", () => {
   const cases: Array<[string, readonly string[]]> = [
     ["计折上折是什么意思", ["field-explainer"]],
@@ -217,6 +227,230 @@ test("路由只归一化空白和大小写，首轮消息也使用同一规则",
     }),
     ["field-explainer"],
   );
+});
+
+test("已知短名和限定名按 tool_use_id 配对，并只记录短名", () => {
+  const catalog = skillModule.loadSkillCatalog(createPlugin());
+  const state = skillModule.createSkillLoadState();
+
+  const shortStarted = skillModule.beginSkillLoad(catalog, state, {
+    id: "skill-short",
+    requested: "field-explainer",
+    at: 100,
+  });
+  const qualifiedStarted = skillModule.beginSkillLoad(catalog, state, {
+    id: "skill-qualified",
+    requested: "ics1811:offer-entry-guide",
+    at: 110,
+  });
+
+  assert.deepEqual(shortStarted, {
+    id: "skill-short",
+    tool: "load_campaign_skill",
+    title: "加载业务规则：field-explainer 测试指引",
+    status: "started",
+    initiatedBy: "model",
+    startedAt: 100,
+  });
+  assert.equal(qualifiedStarted.tool, "load_campaign_skill");
+  const qualifiedFinished = skillModule.finishSkillLoad(state, {
+    toolUseId: "skill-qualified",
+    isError: false,
+    at: 150,
+  });
+  const shortFinished = skillModule.finishSkillLoad(state, {
+    toolUseId: "skill-short",
+    isError: false,
+    at: 180,
+  });
+
+  assert.deepEqual(qualifiedFinished, {
+    ...qualifiedStarted,
+    status: "completed",
+    summary: "已读取这份规则",
+    durationMs: 40,
+  });
+  assert.deepEqual(shortFinished, {
+    ...shortStarted,
+    status: "completed",
+    summary: "已读取这份规则",
+    durationMs: 80,
+  });
+  assert.deepEqual([...state.loadedSkills], ["offer-entry-guide", "field-explainer"]);
+  assert.equal(state.pending.size, 0);
+});
+
+test("SDK 错误和未知规则都记 warning，并且 trace 不泄露输入或 Skill 正文", () => {
+  const catalog = skillModule.loadSkillCatalog(createPlugin());
+  const failedState = skillModule.createSkillLoadState();
+  const known = skillModule.beginSkillLoad(catalog, failedState, {
+    id: "known-error",
+    requested: "settlement-guide",
+    at: 200,
+  });
+  const failed = skillModule.finishSkillLoad(failedState, {
+    toolUseId: "known-error",
+    isError: true,
+    at: 225,
+  });
+  assert.equal(failed?.status, "warning");
+  assert.equal(failed?.summary, "规则没有加载成功");
+  assert.equal(failedState.skillLoadFailed, true);
+  assert.equal(failedState.loadedSkills.size, 0);
+  assertSafeSkillTrace(known);
+  assertSafeSkillTrace(failed);
+
+  const secret = "ics1811:不存在规则-客户手机号13800138000-系统提示全文";
+  const unknownState = skillModule.createSkillLoadState();
+  const unknown = skillModule.beginSkillLoad(catalog, unknownState, {
+    id: "unknown",
+    requested: { skill: secret, prompt: "绝密提示", body: "Skill 正文秘密" },
+    at: 300,
+  });
+  const unknownFinished = skillModule.finishSkillLoad(unknownState, {
+    toolUseId: "unknown",
+    isError: false,
+    at: 310,
+  });
+  assert.equal(unknown.title, "加载业务规则：未知规则");
+  assert.equal(unknownFinished?.status, "warning");
+  assert.equal(unknownFinished?.summary, "规则没有加载成功");
+  assert.equal(unknownState.skillLoadFailed, true);
+  assert.equal(unknownState.loadedSkills.size, 0);
+  const serialized = JSON.stringify([unknown, unknownFinished]);
+  assert.doesNotMatch(serialized, /13800138000|绝密提示|Skill 正文秘密|不存在规则/);
+  assertSafeSkillTrace(unknown);
+  assertSafeSkillTrace(unknownFinished);
+});
+
+test("不匹配的结果返回 null 且加载状态完全不变", () => {
+  const catalog = skillModule.loadSkillCatalog(createPlugin());
+  const state = skillModule.createSkillLoadState();
+  skillModule.beginSkillLoad(catalog, state, {
+    id: "expected",
+    requested: "promo-copy-guide",
+    at: 400,
+  });
+  const pending = [...state.pending.entries()];
+
+  assert.equal(skillModule.finishSkillLoad(state, {
+    toolUseId: "unmatched-sensitive-result",
+    isError: true,
+    at: 450,
+  }), null);
+  assert.deepEqual([...state.pending.entries()], pending);
+  assert.deepEqual([...state.loadedSkills], []);
+  assert.equal(state.skillLoadFailed, false);
+});
+
+test("回合结束按插入顺序收束所有 pending，并清空状态", () => {
+  const catalog = skillModule.loadSkillCatalog(createPlugin());
+  const state = skillModule.createSkillLoadState();
+  skillModule.beginSkillLoad(catalog, state, {
+    id: "pending-2",
+    requested: "offer-entry-guide",
+    at: 500,
+  });
+  skillModule.beginSkillLoad(catalog, state, {
+    id: "pending-1",
+    requested: "field-explainer",
+    at: 510,
+  });
+
+  const finished = skillModule.finishPendingSkillLoads(state, 550);
+  assert.deepEqual(finished.map(({ id, status, summary, durationMs }) => ({
+    id,
+    status,
+    summary,
+    durationMs,
+  })), [
+    { id: "pending-2", status: "warning", summary: "规则没有加载成功", durationMs: 50 },
+    { id: "pending-1", status: "warning", summary: "规则没有加载成功", durationMs: 40 },
+  ]);
+  assert.equal(state.pending.size, 0);
+  assert.equal(state.skillLoadFailed, true);
+});
+
+test("重复 begin id 失败关闭并抛稳定中文错误", () => {
+  const catalog = skillModule.loadSkillCatalog(createPlugin());
+  const state = skillModule.createSkillLoadState();
+  skillModule.beginSkillLoad(catalog, state, {
+    id: "duplicate-id",
+    requested: "field-explainer",
+    at: 600,
+  });
+
+  assert.throws(
+    () => skillModule.beginSkillLoad(catalog, state, {
+      id: "duplicate-id",
+      requested: "offer-entry-guide",
+      at: 610,
+    }),
+    { message: "业务规则工具调用编号重复：duplicate-id" },
+  );
+  assert.equal(state.skillLoadFailed, true);
+  assert.equal(state.pending.size, 1);
+});
+
+test("Skill 回合合同拒绝 pending、失败和缺失，完整 required 才通过", () => {
+  const missing = skillModule.createSkillLoadState();
+  assert.throws(
+    () => skillModule.assertSkillTurnContract(["field-explainer", "offer-entry-guide"], missing),
+    { message: "本回合缺少必需的业务规则：ics1811:field-explainer、ics1811:offer-entry-guide" },
+  );
+
+  const failedOptional = skillModule.createSkillLoadState();
+  failedOptional.skillLoadFailed = true;
+  assert.throws(
+    () => skillModule.assertSkillTurnContract([], failedOptional),
+    { message: "业务规则没有加载成功，请重试" },
+  );
+
+  const pending = skillModule.createSkillLoadState();
+  pending.pending.set("still-running", {
+    skill: null,
+    started: {
+      id: "still-running",
+      tool: "load_campaign_skill",
+      title: "加载业务规则：未知规则",
+      status: "started",
+      initiatedBy: "model",
+      startedAt: 700,
+    },
+  });
+  assert.throws(
+    () => skillModule.assertSkillTurnContract([], pending),
+    { message: "业务规则没有加载成功，请重试" },
+  );
+
+  const ready = skillModule.createSkillLoadState();
+  ready.loadedSkills.add("field-explainer");
+  ready.loadedSkills.add("offer-entry-guide");
+  assert.doesNotThrow(
+    () => skillModule.assertSkillTurnContract(["field-explainer", "offer-entry-guide"], ready),
+  );
+});
+
+test("finishSkillCheckedTurn 仅在合同通过后调用一次 callback 并返回结果", () => {
+  let calls = 0;
+  assert.throws(
+    () => skillModule.finishSkillCheckedTurn(
+      ["field-explainer"],
+      skillModule.createSkillLoadState(),
+      () => ++calls,
+    ),
+    /缺少必需的业务规则/,
+  );
+  assert.equal(calls, 0);
+
+  const ready = skillModule.createSkillLoadState();
+  ready.loadedSkills.add("field-explainer");
+  assert.equal(skillModule.finishSkillCheckedTurn(
+    ["field-explainer"],
+    ready,
+    () => ({ calls: ++calls }),
+  ).calls, 1);
+  assert.equal(calls, 1);
 });
 
 test("发现基线和新增 Skill，并按短名称排序后生成精确限定名", () => {
