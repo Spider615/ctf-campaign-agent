@@ -16,7 +16,6 @@ import {
   createAgentState,
   FACT_KEYS,
   finishAgentTurn,
-  runAgentTool,
   safeToolSummary,
   type AgentToolName,
 } from "../app/lib/agent/tools.ts";
@@ -34,6 +33,7 @@ import {
   requiredSkillsForTurn,
   skillOf,
 } from "./skills.ts";
+import { runCampaignToolWithSkillGate } from "./tool-gate.ts";
 
 export type AgentRuntimeConfig = {
   model: string;
@@ -87,7 +87,12 @@ export function createAgentRunner(
       });
       state.trace = mergeTraceEvent(state.trace, started);
       onTrace?.(started);
-      const outcome = runAgentTool(state, name, args, { loadedSkills: skillLoads.loadedSkills });
+      const outcome = runCampaignToolWithSkillGate(
+        state,
+        name,
+        args,
+        skillLoads.loadedSkills,
+      );
       const finished = finishTraceEvent(started, {
         status: outcome.isError ? "warning" : "completed",
         summary: safeToolSummary(name, outcome, state),
