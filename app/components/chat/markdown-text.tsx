@@ -17,7 +17,7 @@ function inlineNodes(nodes: InlineNode[]) {
 export function MarkdownText({ text }: { text: string }) {
   const blocks = parseChatMarkdown(text);
   return (
-    <div className="space-y-2 pt-1 text-[15px] leading-7 text-[#25364e]">
+    <div className="cursor-text select-text space-y-2 pt-1 text-[15px] leading-7 text-[#25364e]">
       {blocks.map((block, index) => {
         if (block.kind === "para") {
           // 段内换行仍然保留：模型有时会在一段里自己折行。

@@ -47,3 +47,13 @@ test("removing a session that is not there is not an error", async () => {
   await store.remove("a");
   assert.equal((await store.list()).length, 0);
 });
+
+test("message occurrence time is stored independently from commit time", async () => {
+  const store = createMemoryStore();
+  const write = newSession("timed", "带时间的活动");
+  write.messages[0].createdAt = "2026-09-16T07:59:57.000Z";
+
+  await store.commit(write);
+
+  assert.equal((await store.load("timed"))?.messages[0].createdAt, "2026-09-16T07:59:57.000Z");
+});

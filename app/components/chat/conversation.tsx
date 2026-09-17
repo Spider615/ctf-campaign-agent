@@ -20,11 +20,14 @@ import {
   SESSION_UPDATED,
   type TurnBody,
 } from "../../lib/client/api";
+import { appendLiveReply, emptyLiveReply } from "../../lib/client/live-reply";
+import { PROMO_GENERATION_PROMPT, promoWasGenerated } from "../../lib/client/promo-cta";
 import type { Snapshot } from "../../lib/server/turns";
 import { mergeTraceEvent, type AgentTraceEvent } from "../../lib/tool-trace";
 import { DraftPanel, PHASE_LABEL, type PanelEdit } from "../draft/draft-panel";
 import { Composer } from "./composer";
-import { AgentRow, MessageList, UserBubble } from "./message-view";
+import { AgentRow, MessageList, MessageTimestamp, UserBubble } from "./message-view";
+import { MarkdownText } from "./markdown-text";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolRunCard } from "./tool-run-card";
 
@@ -81,7 +84,10 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "legacy" | "error">("loading");
   const [busy, setBusy] = useState<TurnKind | null>(null);
   const [pendingText, setPendingText] = useState<string | null>(null);
+  const [pendingAt, setPendingAt] = useState<string | null>(null);
   const [liveTrace, setLiveTrace] = useState<AgentTraceEvent[]>([]);
+  const [liveReply, setLiveReply] = useState(emptyLiveReply);
+  const [livePhase, setLivePhase] = useState<"analyzing" | "writing" | null>(null);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
@@ -135,34 +141,50 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     // 等卡片完成布局再滚到底，否则首次打开时最后一张卡会被截在视口外。
     const frame = requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end" }));
     return () => cancelAnimationFrame(frame);
-  }, [messageCount, busy, liveTrace.length, loadState]);
+  }, [messageCount, busy, liveTrace.length, liveReply.text, loadState]);
 
-  const send = async (body: TurnBody): Promise<boolean> => {
-    if (!snapshot || busy) return false;
+  const send = async (body: TurnBody): Promise<Snapshot | null> => {
+    if (!snapshot || busy) return null;
     setBusy(body.type);
     setError("");
-    if (body.type === "text") setPendingText(body.text);
+    if (body.type === "text") {
+      setPendingText(body.text);
+      setPendingAt(new Date().toISOString());
+    }
     const streams = WAITING_KINDS.includes(body.type);
     if (streams) {
       setLiveTrace([]);
+      setLiveReply(emptyLiveReply());
+      setLivePhase("analyzing");
       setRunStartedAt(Date.now());
     }
     try {
       const payload = { ...body, expectedSeq: snapshot.latest.seq };
       const next = streams
-        ? await postTurnStream(sessionId, payload, (event) => setLiveTrace((current) => mergeTraceEvent(current, event)))
+        ? await postTurnStream(sessionId, payload, {
+            onTrace: (event) => setLiveTrace((current) => mergeTraceEvent(current, event)),
+            onPhase: setLivePhase,
+            onTextDelta: (delta) => {
+              const arrivedAt = new Date().toISOString();
+              setLiveReply((current) => appendLiveReply(current, delta, arrivedAt));
+            },
+            onTextReset: () => setLiveReply(emptyLiveReply()),
+          })
         : await postTurn(sessionId, payload);
       setSnapshot(next);
       notifySessionsChanged();
-      return true;
+      return next;
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 409) await load();
       setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
-      return false;
+      return null;
     } finally {
       setBusy(null);
       setPendingText(null);
+      setPendingAt(null);
       setLiveTrace([]);
+      setLiveReply(emptyLiveReply());
+      setLivePhase(null);
       setRunStartedAt(null);
     }
   };
@@ -264,12 +286,14 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   // 等待时说清系统拿这句话要做什么，别只说「正在思考」。
   const waitingKind = busy && WAITING_KINDS.includes(busy) ? busy : needsInterpretation ? "interpret" : null;
   const waiting = waitingKind
-    ? thinkingLabel({
-        turnKind: waitingKind as "interpret" | "text",
-        phase: flow.phase,
-        asking: flow.asking.map((gap) => gap.id),
-        hasProposals: flow.proposals.length > 0,
-      })
+    ? pendingText === PROMO_GENERATION_PROMPT
+      ? "正在加载宣传规则并起草对外文案…"
+      : thinkingLabel({
+          turnKind: waitingKind as "interpret" | "text",
+          phase: flow.phase,
+          asking: flow.asking.map((gap) => gap.id),
+          hasProposals: flow.proposals.length > 0,
+        })
     : undefined;
 
   const actions = {
@@ -277,6 +301,11 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     onUndo: (versionSeq: number) => void send({ type: "undo", versionSeq }),
     onRetry: (retry: RetryInput) => void send(retry.type === "text" ? { type: "text", text: retry.text } : { type: "interpret" }),
     onOpenPanel: openPanel,
+    onGeneratePromo: () => {
+      void send({ type: "text", text: PROMO_GENERATION_PROMPT }).then((next) => {
+        if (promoWasGenerated(next)) openPanel("promo");
+      });
+    },
   };
 
   const panel = (
@@ -285,7 +314,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       busy={busy !== null}
       tab={panelTab}
       onTabChange={setPanelTab}
-      onEdit={(edit: PanelEdit) => send({ type: "edit", origin: "panel", ...edit })}
+      onEdit={async (edit: PanelEdit) => Boolean(await send({ type: "edit", origin: "panel", ...edit }))}
       onDismiss={(noteId) => void send({ type: "dismiss", noteId })}
       onRollback={(seq) => void send({ type: "rollback", seq })}
       onShowSource={showSource}
@@ -312,12 +341,26 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-7 md:px-8">
         <div className="mx-auto flex max-w-[780px] flex-col gap-5">
           <MessageList snapshot={snapshot} actions={actions} />
-          {pendingText ? <UserBubble text={pendingText} /> : null}
+          {pendingText ? (
+            <div className="cursor-text select-text">
+              <UserBubble text={pendingText} />
+              {pendingAt ? <div className="mt-1 flex min-h-7 items-center justify-end"><MessageTimestamp iso={pendingAt} /></div> : null}
+            </div>
+          ) : null}
           {liveTrace.length ? (
             <AgentRow>
               <ToolRunCard trace={liveTrace} live startedAt={runStartedAt} />
             </AgentRow>
-          ) : waiting ? <ThinkingIndicator label={waiting} /> : null}
+          ) : null}
+          {liveReply.text ? (
+            <AgentRow continued={liveTrace.length > 0}>
+              <div aria-live="polite"><MarkdownText text={liveReply.text} /></div>
+              {liveReply.startedAt ? <MessageTimestamp iso={liveReply.startedAt} /> : null}
+            </AgentRow>
+          ) : null}
+          {!liveTrace.length && !liveReply.text && waiting ? (
+            <ThinkingIndicator label={livePhase === "writing" ? "正在组织回复…" : waiting} />
+          ) : null}
           <div ref={endRef} />
         </div>
       </div>
@@ -334,8 +377,8 @@ export function Conversation({ sessionId }: { sessionId: string }) {
               const text = input.trim();
               if (!text) return;
               setInput("");
-              void send({ type: "text", text }).then((ok) => {
-                if (!ok) setInput(text);
+              void send({ type: "text", text }).then((next) => {
+                if (!next) setInput(text);
               });
             }}
           />

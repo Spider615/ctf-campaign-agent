@@ -2,10 +2,10 @@ import { env } from "cloudflare:workers";
 
 import { getDbBinding } from "../../../db/index.ts";
 import { parseAgentResult, type AgentRequest, type AgentResult } from "../agent/protocol.ts";
-import { decodeAgentStreamLine } from "../agent/stream.ts";
-import type { AgentTraceEvent } from "../tool-trace.ts";
+import { advanceAgentStreamLifecycle, decodeAgentStreamLine, type AgentStreamLifecycle } from "../agent/stream.ts";
+import type { AgentTraceEvent, ToolTraceTiming } from "../tool-trace.ts";
 import { createD1Store } from "./session-store.ts";
-import { TurnError, type TurnDeps } from "./turns.ts";
+import { TurnError, type AgentTransientEvent, type TurnDeps } from "./turns.ts";
 
 const DEFAULT_AGENT_URL = "http://127.0.0.1:8788";
 
@@ -40,7 +40,11 @@ async function runAgentJson(base: string, request: AgentRequest): Promise<AgentR
 }
 
 // Agent 服务（agent/server.ts）跑 Claude Agent SDK；Workers 转发真实工具事件，最终仍只接受受校验的 AgentResult。
-async function runAgentRemote(request: AgentRequest, onTrace?: (event: AgentTraceEvent) => void): Promise<AgentResult> {
+async function runAgentRemote(
+  request: AgentRequest,
+  onTrace?: (event: AgentTraceEvent) => void,
+  onProgress?: (event: AgentTransientEvent) => void,
+): Promise<AgentResult> {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
   const response = await agentFetch(`${base}/turn/stream`, request, "application/x-ndjson");
   if (response.status === 404) return runAgentJson(base, request);
@@ -51,15 +55,17 @@ async function runAgentRemote(request: AgentRequest, onTrace?: (event: AgentTrac
   const decoder = new TextDecoder();
   let buffer = "";
   let result: AgentResult | null = null;
+  let lifecycle: AgentStreamLifecycle = "open";
   const consumeLine = (line: string) => {
     if (!line.trim()) return;
     const event = decodeAgentStreamLine(line);
+    lifecycle = advanceAgentStreamLifecycle(lifecycle, event);
     if (event.type === "trace") onTrace?.(event.event);
+    if (event.type === "phase" || event.type === "text_delta" || event.type === "text_reset") onProgress?.(event);
     if (event.type === "result") {
-      if (result) throw new Error("Agent 服务返回了多个结果");
       result = event.result;
     }
-    if (event.type === "error") throw new Error(event.error);
+    if (event.type === "error") throw new AgentRemoteError(event.error, event.timing);
   };
 
   while (true) {
@@ -79,16 +85,30 @@ async function runAgentRemote(request: AgentRequest, onTrace?: (event: AgentTrac
   return result;
 }
 
+class AgentRemoteError extends Error {
+  timing?: ToolTraceTiming;
+
+  constructor(message: string, timing?: ToolTraceTiming) {
+    super(message);
+    this.name = "AgentRemoteError";
+    this.timing = timing;
+  }
+}
+
 export function todayInShanghai(date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
 
-export function runtimeDeps(emitTrace?: (event: AgentTraceEvent) => void): TurnDeps {
+export function runtimeDeps(
+  emitTrace?: (event: AgentTraceEvent) => void,
+  emitProgress?: (event: AgentTransientEvent) => void,
+): TurnDeps {
   return {
     store: createD1Store(getDbBinding()),
     runAgent: runAgentRemote,
     today: todayInShanghai(),
     emitTrace,
+    emitProgress,
   };
 }
 

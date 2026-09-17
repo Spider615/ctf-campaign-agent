@@ -31,10 +31,22 @@ export type AgentTraceEvent = {
   durationMs?: number;
 };
 
+export type ToolTraceTiming = {
+  totalMs: number;
+  analysisWaitingMs: number;
+  skillsToolsMs: number;
+};
+
 export type ToolTrace = {
   status: Exclude<ToolTraceStatus, "started">;
   durationMs: number;
+  timing?: ToolTraceTiming;
   steps: AgentTraceEvent[];
+};
+
+export type RelativeTimingInterval = {
+  offsetMs: number;
+  durationMs: number;
 };
 
 type StartTraceInput = {
@@ -58,6 +70,47 @@ const INITIATOR_SET = new Set<string>(["model", "orchestrator"]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const isNonNegativeNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+export function formatDuration(durationMs: number): string {
+  if (durationMs < 1) return "<1ms";
+  if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
+  return `${(durationMs / 1_000).toFixed(1)}s`;
+}
+
+export function intervalUnionDurationMs(intervals: readonly RelativeTimingInterval[]): number {
+  const sorted = intervals
+    .filter((interval) => isNonNegativeNumber(interval.offsetMs) && isNonNegativeNumber(interval.durationMs) && interval.durationMs > 0)
+    .map((interval) => ({ start: interval.offsetMs, end: interval.offsetMs + interval.durationMs }))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  if (!sorted.length) return 0;
+
+  let total = 0;
+  let start = sorted[0].start;
+  let end = sorted[0].end;
+  for (const interval of sorted.slice(1)) {
+    if (interval.start <= end) {
+      end = Math.max(end, interval.end);
+      continue;
+    }
+    total += end - start;
+    start = interval.start;
+    end = interval.end;
+  }
+  return total + end - start;
+}
+
+export function harnessTimingSummary(
+  totalMs: number,
+  intervals: readonly RelativeTimingInterval[],
+): ToolTraceTiming {
+  const safeTotalMs = Math.max(0, totalMs);
+  const skillsToolsMs = Math.min(safeTotalMs, intervalUnionDurationMs(intervals));
+  return {
+    totalMs: safeTotalMs,
+    analysisWaitingMs: Math.max(0, safeTotalMs - skillsToolsMs),
+    skillsToolsMs,
+  };
+}
 
 export function startTraceEvent(input: StartTraceInput): AgentTraceEvent {
   return {
@@ -102,8 +155,18 @@ export function isAgentTraceEvent(value: unknown): value is AgentTraceEvent {
 export function isToolTrace(value: unknown): value is ToolTrace {
   if (!isRecord(value)) return false;
   if (typeof value.status !== "string" || !FINISHED_STATUS_SET.has(value.status)) return false;
-  if (!isNonNegativeNumber(value.durationMs) || !Array.isArray(value.steps) || value.steps.length === 0) return false;
+  if (!isNonNegativeNumber(value.durationMs) || !Array.isArray(value.steps)) return false;
+  if (value.timing !== undefined && !isToolTraceTiming(value.timing)) return false;
+  // 首个 Skill/工具之前失败时仍要保存整轮耗时；只有这种失败轨迹允许没有步骤。
+  if (value.steps.length === 0 && (value.status !== "failed" || !isToolTraceTiming(value.timing))) return false;
   return value.steps.every((step) => isAgentTraceEvent(step) && step.status !== "started");
+}
+
+export function isToolTraceTiming(value: unknown): value is ToolTraceTiming {
+  return isRecord(value)
+    && isNonNegativeNumber(value.totalMs)
+    && isNonNegativeNumber(value.analysisWaitingMs)
+    && isNonNegativeNumber(value.skillsToolsMs);
 }
 
 export function parseAgentTraceEvent(value: unknown): AgentTraceEvent {
@@ -117,14 +180,23 @@ export function parseToolTrace(value: unknown): ToolTrace {
 }
 
 export function traceSummary(trace: ToolTrace): string {
-  const seconds = (trace.durationMs / 1000).toFixed(1);
-  return `AI 完成 ${trace.steps.length} 个工具步骤 · ${seconds} 秒`;
+  if (trace.status === "failed") return `AI 执行失败 · 已完成 ${trace.steps.filter((step) => step.status === "completed").length} 步 · ${timingLabel(trace)}`;
+  return `AI 完成 ${trace.steps.length} 个工具步骤 · ${timingLabel(trace)}`;
+}
+
+function timingLabel(trace: ToolTrace): string {
+  if (!trace.timing) return `步骤跨度 ${formatDuration(trace.durationMs)}`;
+  return [
+    `总用时 ${formatDuration(trace.timing.totalMs)}`,
+    `分析与等待 ${formatDuration(trace.timing.analysisWaitingMs)}`,
+    `Skill/工具 ${formatDuration(trace.timing.skillsToolsMs)}`,
+  ].join(" · ");
 }
 
 export function traceCardSummary(trace: ToolTrace): { tone: "success" | "warning" | "failed"; label: string } {
   const completed = trace.steps.filter((step) => step.status === "completed").length;
-  if (trace.status === "failed") return { tone: "failed", label: `执行失败 · 已完成 ${completed} 步` };
+  if (trace.status === "failed") return { tone: "failed", label: `执行失败 · 已完成 ${completed} 步 · ${timingLabel(trace)}` };
   const warnings = trace.steps.filter((step) => step.status === "warning").length;
-  if (trace.status === "warning") return { tone: "warning", label: `完成 ${trace.steps.length} 步 · ${warnings} 项需注意` };
-  return { tone: "success", label: `完成 ${trace.steps.length} 个工具步骤 · ${(trace.durationMs / 1000).toFixed(1)} 秒` };
+  if (trace.status === "warning") return { tone: "warning", label: `完成 ${trace.steps.length} 步 · ${warnings} 项需注意 · ${timingLabel(trace)}` };
+  return { tone: "success", label: `完成 ${trace.steps.length} 个工具步骤 · ${timingLabel(trace)}` };
 }

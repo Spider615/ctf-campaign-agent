@@ -18,7 +18,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
               active = false;
             }
           };
-          void runTurn(id, body, runtimeDeps((event) => emit({ type: "trace", event })))
+          void runTurn(
+            id,
+            body,
+            runtimeDeps(
+              (event) => emit({ type: "trace", event }),
+              (event) => emit(event),
+            ),
+          )
             .then((snapshot) => emit({ type: "snapshot", snapshot }))
             .catch((error) => emit({ type: "error", error: publicTurnError(error) }))
             .finally(() => {

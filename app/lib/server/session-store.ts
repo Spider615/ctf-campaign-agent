@@ -48,7 +48,7 @@ export type TurnWrite = {
   now: string;
   session: SessionRecord;
   version: (Omit<VersionRecord, "createdAt"> & { patch: { id: string; ops: unknown; source: "ai" | "human"; reason: string } | null }) | null;
-  messages: Array<{ id: string; role: "user" | "assistant"; content: StoredMessage; producedVersionId: string | null }>;
+  messages: Array<{ id: string; role: "user" | "assistant"; content: StoredMessage; producedVersionId: string | null; createdAt?: string }>;
 };
 
 export interface SessionStore {
@@ -136,7 +136,7 @@ export function createD1Store(db: D1Database): SessionStore {
       }
       for (const message of write.messages) {
         statements.push(db.prepare("INSERT INTO message (id, session_id, role, content, created_at, produced_version_id) VALUES (?, ?, ?, ?, ?, ?)")
-          .bind(message.id, session.id, message.role, encodeMessage(message.content), now, message.producedVersionId));
+          .bind(message.id, session.id, message.role, encodeMessage(message.content), message.createdAt ?? now, message.producedVersionId));
       }
       try {
         await db.batch(statements);
@@ -184,7 +184,7 @@ export function createMemoryStore(): SessionStore {
         bundle.versions.push(structuredClone({ ...version, createdAt: write.now }));
       }
       for (const message of write.messages) {
-        bundle.messages.push(structuredClone({ ...message, createdAt: write.now }));
+        bundle.messages.push(structuredClone({ ...message, createdAt: message.createdAt ?? write.now }));
       }
       sessions.set(write.session.id, bundle);
     },

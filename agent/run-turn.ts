@@ -10,6 +10,8 @@ import { z } from "zod";
 
 import { buildAgentSystemPrompt, buildAgentUserPrompt } from "../app/lib/agent/prompt.ts";
 import type { AgentRequest, AgentResult } from "../app/lib/agent/protocol.ts";
+import { createReplyStreamState, reduceReplyStream } from "../app/lib/agent/reply-stream.ts";
+import type { AgentProgressEvent } from "../app/lib/agent/stream.ts";
 import {
   AGENT_TOOL_META,
   AGENT_TOOL_NAMES,
@@ -21,7 +23,7 @@ import {
 } from "../app/lib/agent/tools.ts";
 import { QUESTION_IDS } from "../app/lib/campaign/ics1811/questions.ts";
 import type { FactKey, QuestionId } from "../app/lib/campaign/ics1811/types.ts";
-import { finishTraceEvent, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
+import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
 import {
   beginSkillLoad,
   createSkillLoadState,
@@ -48,6 +50,7 @@ export type AgentRuntimeConfig = {
 export type AgentTurnRunner = (
   request: AgentRequest,
   onTrace?: (event: AgentTraceEvent) => void,
+  onProgress?: (event: Exclude<AgentProgressEvent, { type: "trace" }>) => void,
 ) => Promise<AgentResult>;
 
 export type AgentQuery = (
@@ -67,17 +70,28 @@ export function createAgentRunner(
   config: AgentRuntimeConfig,
   dependencies: AgentRuntimeDependencies = DEFAULT_AGENT_RUNTIME_DEPENDENCIES,
 ): AgentTurnRunner {
-  return async (request, onTrace) => {
+  return async (request, onTrace, onProgress) => {
+    const turnStartedAt = Date.now();
+    const turnStartedMonotonic = performance.now();
     const catalog = loadSkillCatalog(config.pluginDir);
     const requiredSkills = requiredSkillsForTurn(request);
     const skillLoads = createSkillLoadState();
     const state = createAgentState(request);
+    let replyStream = createReplyStreamState();
+    let publicPhase: "analyzing" | "writing" | null = null;
+    const setPublicPhase = (phase: "analyzing" | "writing") => {
+      if (phase === publicPhase) return;
+      publicPhase = phase;
+      onProgress?.({ type: "phase", phase, at: Date.now() });
+    };
+    setPublicPhase("analyzing");
     const recordSkill = (event: AgentTraceEvent) => {
       state.trace = mergeTraceEvent(state.trace, event);
       onTrace?.(event);
     };
 
     const handle = (name: AgentToolName) => async (args: Record<string, unknown>) => {
+      setPublicPhase("analyzing");
       const started = startTraceEvent({
         id: crypto.randomUUID(),
         tool: name,
@@ -171,6 +185,7 @@ export function createAgentRunner(
           settingSources: [],
           persistSession: false,
           maxTurns: 12,
+          includePartialMessages: true,
           cwd: config.runtimeDir,
           abortController,
           stderr: (data) => stderr.push(data),
@@ -184,6 +199,18 @@ export function createAgentRunner(
           },
         },
       })) {
+        if (message.type === "stream_event") {
+          const reduced = reduceReplyStream(replyStream, {
+            parentToolUseId: message.parent_tool_use_id,
+            event: message.event,
+          });
+          replyStream = reduced.state;
+          for (const action of reduced.actions) {
+            if (action.type === "text_delta") setPublicPhase("writing");
+            if (action.type === "text_reset") setPublicPhase("analyzing");
+            onProgress?.(action);
+          }
+        }
         if (message.type === "assistant") {
           for (const block of message.message.content) {
             if (block.type !== "tool_use" || block.name !== "Skill") continue;
@@ -231,10 +258,20 @@ export function createAgentRunner(
       clearTimeout(timer);
     }
 
-    return finishSkillCheckedTurn(
+    const result = finishSkillCheckedTurn(
       requiredSkills,
       skillLoads,
       () => finishAgentTurn(state, reply),
     );
+    if (result.trace) {
+      result.trace.timing = harnessTimingSummary(
+        Math.max(0, performance.now() - turnStartedMonotonic),
+        result.trace.steps.map((step) => ({
+          offsetMs: Math.max(0, step.startedAt - turnStartedAt),
+          durationMs: step.durationMs ?? 0,
+        })),
+      );
+    }
+    return result;
   };
 }

@@ -3,7 +3,8 @@
 import { ChevronDown, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { traceCardSummary, type AgentTraceEvent, type ToolTrace } from "../../lib/tool-trace";
+import { hasMeaningfulTextSelection } from "../../lib/client/text-selection";
+import { formatDuration, traceCardSummary, type AgentTraceEvent, type ToolTrace } from "../../lib/tool-trace";
 import { ToolStep } from "./tool-step";
 
 type ToolRunCardProps = {
@@ -11,10 +12,6 @@ type ToolRunCardProps = {
   live: boolean;
   startedAt?: number | null;
 };
-
-function elapsedLabel(durationMs: number): string {
-  return durationMs < 1_000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`;
-}
 
 export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
   const steps = Array.isArray(trace) ? trace : trace.steps;
@@ -26,12 +23,12 @@ export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
   }, [live]);
 
   const durationMs = Array.isArray(trace)
-    ? Math.max(0, now - (startedAt ?? steps[0]?.startedAt ?? now))
+    ? Math.max(0, now - (startedAt ?? now))
     : trace.durationMs;
   const storedSummary = !Array.isArray(trace) ? traceCardSummary(trace) : null;
   const modelTools = useMemo(() => new Set(steps.filter((step) => step.initiatedBy === "model").map((step) => step.tool)), [steps]);
   const rows = (
-    <ol className="space-y-2 px-3 pb-3 pt-1 sm:px-4 sm:pb-4">
+    <ol className="cursor-text select-text space-y-2 px-3 pb-3 pt-1 sm:px-4 sm:pb-4">
       {steps.map((event) => (
         <ToolStep
           key={event.id}
@@ -52,7 +49,7 @@ export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] font-semibold text-[#20314d]">{live ? "AI 正在搭建活动" : "AI 工具执行记录"}</p>
         <p className={`truncate text-[11px] ${storedSummary?.tone === "failed" ? "text-[#c2413b]" : storedSummary?.tone === "warning" ? "text-[#a86510]" : "text-[#6c82a0]"}`}>
-          {live ? `${steps.filter((step) => step.status !== "started").length} 步已完成 · ${elapsedLabel(durationMs)}` : storedSummary?.label}
+          {live ? `${steps.filter((step) => step.status !== "started").length} 步已完成 · 总用时 ${formatDuration(durationMs)}` : storedSummary?.label}
         </p>
       </div>
       {!live ? <ChevronDown className="size-4 shrink-0 text-[#7590af] transition-transform group-open:rotate-180" aria-hidden="true" /> : null}
@@ -70,7 +67,12 @@ export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
   }
   return (
     <details className={`group ${className}`}>
-      <summary className="flex cursor-pointer list-none items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#247cff] focus-visible:ring-inset [&::-webkit-details-marker]:hidden">
+      <summary
+        className="flex cursor-text select-text list-none items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#247cff] focus-visible:ring-inset [&::-webkit-details-marker]:hidden"
+        onClick={(event) => {
+          if (hasMeaningfulTextSelection(window.getSelection())) event.preventDefault();
+        }}
+      >
         {header}
       </summary>
       {rows}

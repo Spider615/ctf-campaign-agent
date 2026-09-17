@@ -51,7 +51,7 @@ test("stored tool traces copy as a short history line", () => {
     ],
   };
 
-  assert.equal(messageToText({ v: 2, kind: "agent_tool_trace", trace }), "AI 完成 1 个工具步骤 · 0.1 秒");
+  assert.equal(messageToText({ v: 2, kind: "agent_tool_trace", trace }), "AI 完成 1 个工具步骤 · 步骤跨度 80ms");
 });
 
 test("malformed stored tool traces fall back to a safe legacy message", () => {

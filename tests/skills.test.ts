@@ -15,6 +15,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import * as skillModule from "../agent/skills.ts";
+import { PROMO_GENERATION_PROMPT } from "../app/lib/client/promo-cta.ts";
 
 const fixtureRoot = mkdtempSync(join(tmpdir(), "ics1811-skills-"));
 test.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
@@ -202,6 +203,14 @@ test("普通活动事实每轮只要求基础 campaign-sop", () => {
 test("每个模型回合都重新要求 campaign-sop", () => {
   assert.deepEqual(requiredSkills("10月1日到7日，7590店，钻石95折"), ["campaign-sop"]);
   assert.deepEqual(requiredSkills("让扣点2%，回款率98%"), ["campaign-sop"]);
+});
+
+test("生成宣传内容 CTA 的固定提示语确定性加载宣传文案 Skill", () => {
+  assert.equal(PROMO_GENERATION_PROMPT, "请基于当前活动生成一份对外营销宣传内容");
+  assert.deepEqual(
+    requiredSkills(PROMO_GENERATION_PROMPT),
+    ["campaign-sop", "promo-copy-guide"],
+  );
 });
 
 test("混合意图扫描对不完整的长输入保持线性", () => {

@@ -13,7 +13,7 @@ import { checkProposal } from "../app/lib/campaign/ics1811/proposals.ts";
 import { buildReadback } from "../app/lib/campaign/ics1811/readback.ts";
 import type { Ics1811Draft, Proposal } from "../app/lib/campaign/ics1811/types.ts";
 import { createMemoryStore } from "../app/lib/server/session-store.ts";
-import { createSession, parseTurnInput, runTurn, type Snapshot, type TurnDeps } from "../app/lib/server/turns.ts";
+import { createSession, parseTurnInput, runTurn, type AgentTransientEvent, type Snapshot, type TurnDeps } from "../app/lib/server/turns.ts";
 import { finishTraceEvent, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
 
 const TODAY = "2026-09-16";
@@ -538,8 +538,13 @@ test("real tool events stream once and persist before the related Agent output",
   const d = deps([record(example("T2").firstWrites)]);
   const runAgent = d.runAgent;
   const seen: AgentTraceEvent[] = [];
+  const progress: AgentTransientEvent[] = [];
   d.emitTrace = (event) => seen.push(event);
-  d.runAgent = async (request, onTrace) => {
+  d.emitProgress = (event) => progress.push(event);
+  d.runAgent = async (request, onTrace, onProgress) => {
+    onProgress?.({ type: "phase", phase: "analyzing", at: 90 });
+    onProgress?.({ type: "text_delta", delta: "正在核对。" });
+    onProgress?.({ type: "text_reset" });
     const started = startTraceEvent({
       id: "trace-persist",
       tool: "extract_campaign_facts",
@@ -561,10 +566,18 @@ test("real tool events stream once and persist before the related Agent output",
     ["analyze_campaign_state", "started", "orchestrator"],
     ["analyze_campaign_state", "completed", "orchestrator"],
   ]);
+  assert.deepEqual(progress, [
+    { type: "phase", phase: "analyzing", at: 90 },
+    { type: "text_delta", delta: "正在核对。" },
+    { type: "text_reset" },
+  ]);
   const traceIndex = kinds(snapshot).indexOf("agent_tool_trace");
   assert.ok(traceIndex >= 0);
   assert.ok(traceIndex < kinds(snapshot).indexOf("agent_text"), "工具记录要排在相关 Agent 输出之前");
   assert.equal(countOf(snapshot, "agent_tool_trace"), 1);
+  const timing = lastOfKind(snapshot, "agent_tool_trace")?.trace.timing;
+  assert.ok(timing, "新轨迹要保存整轮耗时分解");
+  assert.equal(timing.analysisWaitingMs + timing.skillsToolsMs, timing.totalMs);
 });
 
 test("a failed streamed tool trace stays retryable", async () => {
@@ -583,8 +596,71 @@ test("a failed streamed tool trace stays retryable", async () => {
   const snapshot = await interpret(await startNew(d, "T2"), d);
   const trace = lastOfKind(snapshot, "agent_tool_trace");
   assert.equal(trace?.trace.status, "failed");
+  assert.ok(trace?.trace.timing, "失败轨迹也要保存已发生的整轮耗时");
   assert.equal(snapshot.flow.pendingInterpretation, true);
   assert.deepEqual(lastAgent(snapshot).kind, "agent_error");
+});
+
+test("a failure after completed tools marks the whole trace failed", async () => {
+  const d = deps();
+  d.runAgent = async (_request, onTrace) => {
+    const started = startTraceEvent({
+      id: "trace-completed-before-failure",
+      tool: "analyze_campaign_state",
+      title: "运行 1811 规则分析",
+      initiatedBy: "model",
+      at: 100,
+    });
+    onTrace?.(started);
+    onTrace?.(finishTraceEvent(started, {
+      status: "completed",
+      summary: "完成规则分析",
+      at: 140,
+    }));
+    throw Object.assign(new Error("Agent 后续执行中断"), {
+      timing: { totalMs: 900, analysisWaitingMs: 860, skillsToolsMs: 40 },
+    });
+  };
+
+  const snapshot = await interpret(await startNew(d, "T2"), d);
+  const trace = lastOfKind(snapshot, "agent_tool_trace")?.trace;
+  assert.equal(trace?.status, "failed");
+  assert.deepEqual(trace?.timing, {
+    totalMs: 900,
+    analysisWaitingMs: 860,
+    skillsToolsMs: 40,
+  });
+});
+
+test("a failure before the first tool still stores a failed timing trace", async () => {
+  const d = deps();
+  d.runAgent = async () => {
+    throw Object.assign(new Error("Agent 认证失败"), {
+      timing: { totalMs: 750, analysisWaitingMs: 750, skillsToolsMs: 0 },
+    });
+  };
+
+  const snapshot = await interpret(await startNew(d, "T2"), d);
+  const trace = lastOfKind(snapshot, "agent_tool_trace")?.trace;
+  assert.equal(trace?.status, "failed");
+  assert.deepEqual(trace?.steps, []);
+  assert.deepEqual(trace?.timing, {
+    totalMs: 750,
+    analysisWaitingMs: 750,
+    skillsToolsMs: 0,
+  });
+});
+
+test("messages created in one turn keep their own occurrence timestamps", async () => {
+  const d = deps([record(example("T2").firstWrites)]);
+  const snapshot = await interpret(await startNew(d, "T2"), d);
+  const messages = snapshot.messages;
+  const trace = messages.find((message) => message.content.kind === "agent_tool_trace");
+  const reply = messages.findLast((message) => message.content.kind === "agent_text");
+
+  assert.ok(trace && reply);
+  assert.notEqual(trace.createdAt, reply.createdAt);
+  assert.ok(trace.createdAt < reply.createdAt, "工具记录发生在最终回复之前");
 });
 
 test("a failed Skill load keeps the user input and warning trace without changing the activity", async () => {
@@ -625,7 +701,7 @@ test("a failed Skill load keeps the user input and warning trace without changin
 
   const trace = lastOfKind(snapshot, "agent_tool_trace");
   assert.ok(trace);
-  assert.equal(trace.trace.status, "warning");
+  assert.equal(trace.trace.status, "failed", "专项 Skill 加载失败会让整轮失败");
   assert.deepEqual(trace.trace.steps, [{
     id: "skill-load-warning",
     tool: "load_campaign_skill",

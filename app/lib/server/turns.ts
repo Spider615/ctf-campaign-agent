@@ -1,4 +1,5 @@
 import type { AgentPhase, AgentRequest, AgentResult, AgentTrigger } from "../agent/protocol.ts";
+import type { AgentProgressEvent } from "../agent/stream.ts";
 import { AGENT_TOOL_META } from "../agent/tools.ts";
 import { applyCardAnswers } from "../campaign/ics1811/card.ts";
 import { checkDraft } from "../campaign/ics1811/checks.ts";
@@ -13,12 +14,17 @@ import { acceptProposals, liveProposals, withoutEitherOr } from "../campaign/ics
 import { byPriority, planNext } from "../campaign/ics1811/questions.ts";
 import { buildReadback } from "../campaign/ics1811/readback.ts";
 import type { Check, FactKey, FillModel, FlowPhase, Gap, Ics1811Draft, Plan, Proposal, QuestionId } from "../campaign/ics1811/types.ts";
-import { finishTraceEvent, mergeTraceEvent, startTraceEvent, type AgentTraceEvent, type CampaignToolName, type ToolTrace } from "../tool-trace.ts";
+import { finishTraceEvent, intervalUnionDurationMs, isToolTraceTiming, mergeTraceEvent, startTraceEvent, type AgentTraceEvent, type CampaignToolName, type ToolTrace, type ToolTraceTiming } from "../tool-trace.ts";
 import { ConflictError, type SessionBundle, type SessionStatus, type SessionStore, type TurnWrite } from "./session-store.ts";
 
 // 需要模型的回合（理解首句、用户打字）交给 Agent 服务：问什么、怎么说归模型。
 // 缺什么、齐没齐、生不生成填写值、落库都由这里的代码按事实层重算决定（设计文档 4.3 节）。
-export type AgentRunner = (request: AgentRequest, onTrace?: (event: AgentTraceEvent) => void) => Promise<AgentResult>;
+export type AgentTransientEvent = Exclude<AgentProgressEvent, { type: "trace" }>;
+export type AgentRunner = (
+  request: AgentRequest,
+  onTrace?: (event: AgentTraceEvent) => void,
+  onProgress?: (event: AgentTransientEvent) => void,
+) => Promise<AgentResult>;
 
 export type TurnDeps = {
   store: SessionStore;
@@ -27,6 +33,7 @@ export type TurnDeps = {
   now?: () => string;
   newId?: () => string;
   emitTrace?: (event: AgentTraceEvent) => void;
+  emitProgress?: (event: AgentTransientEvent) => void;
 };
 
 export class TurnError extends Error {
@@ -75,16 +82,60 @@ const integer = (value: unknown): value is number => typeof value === "number" &
 const errorText = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 const agentText = (text: string): StoredMessage => ({ v: 2, kind: "agent_text", text });
 
-function toolTraceOf(events: readonly AgentTraceEvent[]): ToolTrace | null {
-  const steps = events.filter((event) => event.status !== "started");
-  if (!steps.length) return null;
-  const startedAt = Math.min(...steps.map((event) => event.startedAt));
-  const endedAt = Math.max(...steps.map((event) => event.startedAt + (event.durationMs ?? 0)));
+function localToolDurationMs(events: readonly AgentTraceEvent[]): number {
+  if (!events.length) return 0;
+  const origin = Math.min(...events.map((event) => event.startedAt));
+  return intervalUnionDurationMs(events.map((event) => ({
+    offsetMs: Math.max(0, event.startedAt - origin),
+    durationMs: event.durationMs ?? 0,
+  })));
+}
+
+function combinedTraceTiming(
+  events: readonly AgentTraceEvent[],
+  turnStartedAt: number,
+  workerTotalMs: number,
+  agentTiming?: ToolTraceTiming,
+): ToolTraceTiming {
+  // Agent 和 Workers 可能在不同机器上，绝不能拿两边的 startedAt 直接相减。
+  // 模型步骤使用 Agent 自己的 monotonic 汇总；编排器步骤只在 Workers 本机做区间并集。
+  const orchestrator = events.filter((event) => event.initiatedBy === "orchestrator");
+  const orchestratorMs = intervalUnionDurationMs(orchestrator.map((event) => ({
+    offsetMs: Math.max(0, event.startedAt - turnStartedAt),
+    durationMs: event.durationMs ?? 0,
+  })));
+  const model = events.filter((event) => event.initiatedBy === "model");
+  const modelMs = agentTiming?.skillsToolsMs ?? localToolDurationMs(model);
+  const totalMs = Math.max(0, workerTotalMs, agentTiming?.totalMs ?? 0);
+  const skillsToolsMs = Math.min(totalMs, modelMs + orchestratorMs);
   return {
-    status: steps.some((event) => event.status === "failed") ? "failed" : steps.some((event) => event.status === "warning") ? "warning" : "completed",
-    durationMs: Math.max(0, endedAt - startedAt),
+    totalMs,
+    analysisWaitingMs: Math.max(0, totalMs - skillsToolsMs),
+    skillsToolsMs,
+  };
+}
+
+function toolTraceOf(
+  events: readonly AgentTraceEvent[],
+  turnStartedAt: number,
+  workerTotalMs: number,
+  options: { status?: "failed"; agentTiming?: ToolTraceTiming } = {},
+): ToolTrace | null {
+  const steps = events.filter((event) => event.status !== "started");
+  if (!steps.length && options.status !== "failed") return null;
+  const timing = combinedTraceTiming(steps, turnStartedAt, workerTotalMs, options.agentTiming);
+  return {
+    status: options.status ?? (steps.some((event) => event.status === "failed") ? "failed" : steps.some((event) => event.status === "warning") ? "warning" : "completed"),
+    durationMs: timing.skillsToolsMs,
+    timing,
     steps,
   };
+}
+
+function timingFromAgentError(error: unknown): ToolTraceTiming | undefined {
+  if (!error || typeof error !== "object" || !("timing" in error)) return undefined;
+  const timing = (error as { timing?: unknown }).timing;
+  return isToolTraceTiming(timing) ? timing : undefined;
 }
 
 export function parseTurnInput(body: unknown): TurnInput {
@@ -242,7 +293,8 @@ const editSaidLabel = (before: Ics1811Draft, after: Ics1811Draft) => {
 
 export async function createSession(body: unknown, deps: TurnDeps): Promise<Snapshot> {
   const newId = deps.newId ?? (() => crypto.randomUUID());
-  const now = (deps.now ?? (() => new Date().toISOString()))();
+  const timestamp = deps.now ?? (() => new Date().toISOString());
+  const createdAt = timestamp();
   const input = isRecord(body) ? body : {};
   const entryMode = input.entryMode === "example" ? "example" : input.entryMode === "new" ? "new" : null;
   if (!entryMode) throw new TurnError(400, "不支持的新建方式");
@@ -256,10 +308,10 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
     const draft = createEmptyDraft(newId(), text);
     return commitAndLoad(deps, {
       isNew: true,
-      now,
-      session: { id: sessionId, title: text.slice(0, 28), entryMode, status: "collecting", createdAt: now, updatedAt: now },
+      now: createdAt,
+      session: { id: sessionId, title: text.slice(0, 28), entryMode, status: "collecting", createdAt, updatedAt: createdAt },
       version: { id: versionId, seq: 1, draft, sheet: null, createdBy: "human", patch: null },
-      messages: [{ id: newId(), role: "user", content: { v: 2, kind: "user_text", text }, producedVersionId: versionId }],
+      messages: [{ id: newId(), role: "user", content: { v: 2, kind: "user_text", text }, producedVersionId: versionId, createdAt }],
     });
   }
 
@@ -269,23 +321,29 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
   const { fill, checks, plan } = evaluate(draft, [], deps.today);
   const sheet = renderFillSheet(fill, checks);
   const ready = plan.action === "ready";
+  const assistantAt = timestamp();
+  const sheetAt = ready ? timestamp() : null;
+  const updatedAt = sheetAt ?? assistantAt;
   return commitAndLoad(deps, {
     isNew: true,
-    now,
-    session: { id: sessionId, title: fill.info.name.value, entryMode, status: ready ? "confirmed" : "collecting", createdAt: now, updatedAt: now },
+    now: updatedAt,
+    session: { id: sessionId, title: fill.info.name.value, entryMode, status: ready ? "confirmed" : "collecting", createdAt, updatedAt },
     version: { id: versionId, seq: 1, draft, sheet, createdBy: "human", patch: null },
     messages: [
-      { id: newId(), role: "user", content: { v: 2, kind: "user_text", text: example.first }, producedVersionId: versionId },
-      { id: newId(), role: "assistant", content: { v: 2, kind: "agent_text", text: "一句话都说全了，不用再问，活动直接建好了。1811 填写值在右边，哪里不对直接跟我说，改完会同步更新。", asking: [], proposals: [] }, producedVersionId: null },
-      ...(ready ? [{ id: newId(), role: "assistant" as const, content: sheetMessage(draft, fill, checks, 1, sheet), producedVersionId: null }] : []),
+      { id: newId(), role: "user", content: { v: 2, kind: "user_text", text: example.first }, producedVersionId: versionId, createdAt },
+      { id: newId(), role: "assistant", content: { v: 2, kind: "agent_text", text: "一句话都说全了，不用再问，活动直接建好了。1811 填写值在右边，哪里不对直接跟我说，改完会同步更新。", asking: [], proposals: [] }, producedVersionId: null, createdAt: assistantAt },
+      ...(ready ? [{ id: newId(), role: "assistant" as const, content: sheetMessage(draft, fill, checks, 1, sheet), producedVersionId: null, createdAt: sheetAt! }] : []),
     ],
   });
 }
 
 export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps): Promise<Snapshot> {
+  const turnStartedAt = Date.now();
+  const turnStartedMonotonic = performance.now();
   const input = parseTurnInput(body);
   const newId = deps.newId ?? (() => crypto.randomUUID());
-  const now = (deps.now ?? (() => new Date().toISOString()))();
+  const timestamp = deps.now ?? (() => new Date().toISOString());
+  const userOccurredAt = timestamp();
   const bundle = await deps.store.load(sessionId);
   if (!bundle) throw new TurnError(404, "找不到这个活动");
   if (bundle.legacy) throw new TurnError(410, "这个活动是旧版本创建的，请新建活动");
@@ -294,13 +352,19 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   if (input.expectedSeq !== latest.seq) throw new TurnError(409, "页面已更新，请重试");
 
   let traceEvents: AgentTraceEvent[] = [];
+  let agentTiming: ToolTraceTiming | undefined;
   const recordTrace = (event: AgentTraceEvent) => {
     const previous = traceEvents.find((item) => item.id === event.id);
     traceEvents = mergeTraceEvent(traceEvents, event);
     if (!previous || JSON.stringify(previous) !== JSON.stringify(event)) deps.emitTrace?.(event);
   };
-  const traceContent = (): StoredMessage | null => {
-    const trace = toolTraceOf(traceEvents);
+  const traceContent = (status?: "failed"): StoredMessage | null => {
+    const trace = toolTraceOf(
+      traceEvents,
+      turnStartedAt,
+      Math.max(0, performance.now() - turnStartedMonotonic),
+      { status, agentTiming },
+    );
     return trace ? { v: 2, kind: "agent_tool_trace", trace } : null;
   };
   const runOrchestratorTool = <T>(name: CampaignToolName, action: () => T, summary: (value: T) => string): T => {
@@ -330,16 +394,20 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     return structuredClone(target.draft);
   };
 
-  const commitMessagesOnly = (userContent: StoredMessage | null, messages: StoredMessage[]) => commitAndLoad(deps, {
-    isNew: false,
-    now,
-    session: { ...bundle.session, updatedAt: now },
-    version: null,
-    messages: [
-      ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: null }] : []),
-      ...messages.map((content) => ({ id: newId(), role: "assistant" as const, content, producedVersionId: null })),
-    ],
-  });
+  const commitMessagesOnly = (userContent: StoredMessage | null, messages: StoredMessage[]) => {
+    const records = [
+      ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: null, createdAt: userOccurredAt }] : []),
+      ...messages.map((content) => ({ id: newId(), role: "assistant" as const, content, producedVersionId: null, createdAt: timestamp() })),
+    ];
+    const committedAt = timestamp();
+    return commitAndLoad(deps, {
+      isNew: false,
+      now: committedAt,
+      session: { ...bundle.session, updatedAt: committedAt },
+      version: null,
+      messages: records,
+    });
+  };
 
   let next: Ics1811Draft = prev;
   let userContent: StoredMessage | null = null;
@@ -425,9 +493,11 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
         proposals: acceptedByOrchestrator ? [] : before.proposals,
         ...(acceptedTexts.length ? { accepted: acceptedTexts } : {}),
         canUndo: latest.seq > 1,
-      }, recordTrace);
+      }, recordTrace, deps.emitProgress);
     } catch (error) {
-      for (const event of traceEvents.filter((item) => item.status === "started")) {
+      // 远端 Agent 的步骤只能由 Agent 进程自己的时钟收尾；网络中断时宁可不持久化
+      // 那条未完成步骤，也不能用 Workers 墙钟编一个耗时。编排器步骤则都在本进程。
+      for (const event of traceEvents.filter((item) => item.status === "started" && item.initiatedBy === "orchestrator")) {
         recordTrace(finishTraceEvent(event, { status: "failed", summary: "执行中断，可以重试", at: Date.now() }));
       }
       // 预采纳的事实跟着这一轮一起作废（版本不落库），轨迹不能还写着「已记下」。
@@ -435,10 +505,12 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
         recordTrace({ ...event, status: "failed", summary: "没保存，重试时会重新记下" });
       }
       const reason = errorText(error, "Agent 服务暂时不可用");
-      const trace = traceContent();
+      agentTiming = timingFromAgentError(error);
+      const trace = traceContent("failed");
       if (input.type === "interpret") return commitMessagesOnly(null, [...(trace ? [trace] : []), { v: 2, kind: "agent_error", text: `没理解成功：${reason}`, retry: { type: "interpret" } }]);
       return commitMessagesOnly(userContent, [...(trace ? [trace] : []), { v: 2, kind: "agent_error", text: `这句没处理成功：${reason}`, retry: { type: "text", text: input.type === "text" ? input.text : "" } }]);
     }
+    agentTiming = result.trace?.timing;
     for (const event of result.trace?.steps ?? []) recordTrace(event);
     for (const toolName of result.tools) agentTools.add(toolName);
     if (result.undo) {
@@ -512,18 +584,26 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   if (trace) agentMessages.unshift(trace);
 
   const title = next.facts.offer ? after.fill.info.name.value : bundle.session.title;
+  const messageRecords = [
+    ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: versionId, createdAt: userOccurredAt }] : []),
+    // 没有用户消息的回合（理解需求），由第一条 Agent 消息标记它产生的版本。
+    ...agentMessages.map((content, index) => ({
+      id: newId(),
+      role: "assistant" as const,
+      content,
+      producedVersionId: !userContent && index === 0 ? versionId : null,
+      createdAt: timestamp(),
+    })),
+  ];
+  const committedAt = timestamp();
   return commitAndLoad(deps, {
     isNew: false,
-    now,
-    session: { ...bundle.session, title, status, updatedAt: now },
+    now: committedAt,
+    session: { ...bundle.session, title, status, updatedAt: committedAt },
     version: versionId
       ? { id: versionId, seq: versionSeq, draft: next, sheet: renderFillSheet(after.fill, after.checks), createdBy, patch: patch ? { id: newId(), ...patch } : null }
       : null,
-    messages: [
-      ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: versionId }] : []),
-      // 没有用户消息的回合（理解需求），由第一条 Agent 消息标记它产生的版本。
-      ...agentMessages.map((content, index) => ({ id: newId(), role: "assistant" as const, content, producedVersionId: !userContent && index === 0 ? versionId : null })),
-    ],
+    messages: messageRecords,
   });
 }
 

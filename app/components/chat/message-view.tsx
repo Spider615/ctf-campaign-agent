@@ -1,11 +1,13 @@
 "use client";
 
-import { ChevronDown, ChevronUp, FileSpreadsheet, RotateCcw } from "lucide-react";
+import { ChevronDown, ChevronUp, FileSpreadsheet, Megaphone, RotateCcw } from "lucide-react";
 import { useState } from "react";
 
 import { messageToText, type ChatMessage, type RetryInput, type StoredMessage } from "../../lib/campaign/ics1811/messages";
+import { formatMessageTime, messageTimeTitle } from "../../lib/client/message-time";
 import { plainText } from "../../lib/markdown";
 import type { Snapshot } from "../../lib/server/turns";
+import { promoCtaMessageId } from "../../lib/client/promo-cta";
 import { CopyButton } from "./copy-button";
 import { MarkdownText } from "./markdown-text";
 import { AgentAvatar } from "./agent-avatar";
@@ -16,14 +18,21 @@ export type MessageActions = {
   onUndo: (versionSeq: number) => void;
   onRetry: (retry: RetryInput) => void;
   onOpenPanel: (tab: string) => void;
+  onGeneratePromo: () => void;
 };
 
 export function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-[linear-gradient(135deg,#247cff,#397fdf)] px-4 py-2.5 text-[15px] leading-6 text-white shadow-[0_8px_20px_rgba(36,124,255,0.18)]">{text}</div>
+      <div className="max-w-[85%] cursor-text select-text whitespace-pre-wrap rounded-2xl rounded-br-md bg-[linear-gradient(135deg,#247cff,#397fdf)] px-4 py-2.5 text-[15px] leading-6 text-white shadow-[0_8px_20px_rgba(36,124,255,0.18)]">{text}</div>
     </div>
   );
+}
+
+export function MessageTimestamp({ iso }: { iso: string }) {
+  const label = formatMessageTime(iso);
+  if (!label) return null;
+  return <time dateTime={iso} title={messageTimeTitle(iso)} className="select-none text-[11px] text-[#8ca0b7]">{label}</time>;
 }
 
 // 连着几条 Agent 消息只在第一条显示头像，读起来像一段话。
@@ -35,7 +44,7 @@ export function AgentRow({ children, continued = false }: { children: React.Reac
       ) : (
         <AgentAvatar />
       )}
-      <div className="min-w-0 flex-1 space-y-2">{children}</div>
+      <div className="min-w-0 flex-1 cursor-text select-text space-y-2">{children}</div>
     </div>
   );
 }
@@ -43,7 +52,7 @@ export function AgentRow({ children, continued = false }: { children: React.Reac
 function EventLine({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex justify-center">
-      <span className="max-w-[90%] rounded-full border border-[#dae8f6] bg-white/55 px-3 py-1 text-center text-[12px] text-[#71869f]">{children}</span>
+      <span className="max-w-[90%] cursor-text select-text rounded-full border border-[#dae8f6] bg-white/55 px-3 py-1 text-center text-[12px] text-[#71869f]">{children}</span>
     </div>
   );
 }
@@ -65,7 +74,7 @@ function InlineAction({ disabled, onClick, children }: { disabled?: boolean; onC
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="inline-flex min-h-11 items-center gap-1 rounded-md px-1 text-[13px] text-[#2470cc] underline-offset-4 hover:bg-[#edf5ff] hover:underline disabled:opacity-50 md:min-h-8"
+      className="inline-flex min-h-11 select-none items-center gap-1 rounded-md px-1 text-[13px] text-[#2470cc] underline-offset-4 hover:bg-[#edf5ff] hover:underline disabled:opacity-50 md:min-h-8"
     >
       {children}
     </button>
@@ -120,11 +129,14 @@ function ChangeNote({ content, canUndo, busy, onUndo, onOpenPanel }: {
 
 // 活动建好（或建好后又改了）时的那一条。它不是要用户确认的卡片：活动已经建好了，
 // 这里只说清建了什么、去哪看；要改直接在对话里说。hooks 不能写在 switch 分支里，所以单独成组件。
-function SheetNote({ content, first, latestSeq, onOpenPanel }: {
+function SheetNote({ content, first, latestSeq, offerPromo, busy, onOpenPanel, onGeneratePromo }: {
   content: Extract<StoredMessage, { kind: "agent_fill_sheet" }>;
   first: boolean;
   latestSeq: number;
+  offerPromo: boolean;
+  busy: boolean;
   onOpenPanel: (tab: string) => void;
+  onGeneratePromo: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const lines = content.lines ?? [];
@@ -155,6 +167,20 @@ function SheetNote({ content, first, latestSeq, onOpenPanel }: {
         </>
       ) : null}
       {outdated ? <p className="mt-1 text-[12px] text-[#8ca0b7]">之后又改过，以右边最新的为准</p> : null}
+      {offerPromo ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#cfe0f2] bg-[#f4f9ff] px-3 py-2.5">
+          <p className="text-[13px] leading-5 text-[#536b87]">填写值准备好了。还可以基于已确认的活动信息，生成一版对外营销宣传内容。</p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onGeneratePromo}
+            className="inline-flex min-h-9 select-none items-center gap-1.5 rounded-lg bg-[#247cff] px-3 text-[13px] font-medium text-white shadow-sm hover:bg-[#176bea] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Megaphone className="size-3.5" />
+            生成宣传内容
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -244,9 +270,22 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
       );
     case "agent_fill_sheet": {
       const firstSheet = snapshot.messages.find((item) => item.content.kind === "agent_fill_sheet");
+      const promoMessageId = promoCtaMessageId({
+        messages: snapshot.messages,
+        phase: snapshot.flow.phase,
+        promo: snapshot.latest.promo,
+      });
       return (
         <AgentRow continued={continued}>
-          <SheetNote content={content} first={firstSheet?.id === message.id} latestSeq={snapshot.latest.seq} onOpenPanel={actions.onOpenPanel} />
+          <SheetNote
+            content={content}
+            first={firstSheet?.id === message.id}
+            latestSeq={snapshot.latest.seq}
+            offerPromo={promoMessageId === message.id}
+            busy={actions.busy}
+            onOpenPanel={actions.onOpenPanel}
+            onGeneratePromo={actions.onGeneratePromo}
+          />
         </AgentRow>
       );
     }
@@ -264,7 +303,7 @@ export function MessageList({ snapshot, actions }: { snapshot: Snapshot; actions
         const isEvent = message.content.kind === "user_event" || message.content.kind === "user_edit";
         return (
           // scroll-mt 留出头部的高度，跳回来时不会被压在上面看不见。
-          <div key={message.id} id={`msg-${message.id}`} className="group/message scroll-mt-24">
+          <div key={message.id} id={`msg-${message.id}`} className="group/message cursor-text select-text scroll-mt-24">
             <MessageItem
               message={message}
               snapshot={snapshot}
@@ -272,11 +311,14 @@ export function MessageList({ snapshot, actions }: { snapshot: Snapshot; actions
               isLastAgent={index === lastAgentIndex}
               continued={message.role === "assistant" && messages[index - 1]?.role === "assistant"}
             />
-            {isEvent ? null : (
-              <div className={`mt-1 flex opacity-0 transition-opacity focus-within:opacity-100 group-hover/message:opacity-100 max-md:opacity-100 ${message.role === "user" ? "justify-end" : "pl-11"}`}>
-                <CopyButton text={plainText(messageToText(message.content))} />
-              </div>
-            )}
+            <div className={`mt-1 flex min-h-7 items-center gap-1 ${isEvent ? "justify-center" : message.role === "user" ? "justify-end" : "pl-11"}`}>
+              <MessageTimestamp iso={message.createdAt} />
+              {isEvent ? null : (
+                <span className="select-none opacity-0 transition-opacity focus-within:opacity-100 group-hover/message:opacity-100 max-md:opacity-100">
+                  <CopyButton text={plainText(messageToText(message.content))} />
+                </span>
+              )}
+            </div>
           </div>
         );
       })}

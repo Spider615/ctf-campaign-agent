@@ -6,6 +6,7 @@ import { useState } from "react";
 
 import { EXAMPLES } from "../../lib/campaign/ics1811/examples";
 import { createSessionRequest, notifySessionsChanged } from "../../lib/client/api";
+import { CAMPAIGN_TOOL_NAMES } from "../../lib/tool-trace";
 import { Composer } from "./composer";
 
 // 从模板起步：点一下把这句话填进输入框，用户可以改完再发。
@@ -70,7 +71,7 @@ export function EmptyState() {
         </div>
         <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-full border border-[#d8e8f8] bg-white/60 px-3.5 py-1.5 text-[12px] font-medium text-[#607791] backdrop-blur">
           <CircleCheck className="size-3.5 shrink-0 text-[#20a674]" />
-          <span>8 个工具已连接 · ICS 规则库 · 代码表 · 版本记录</span>
+          <span>{CAMPAIGN_TOOL_NAMES.length} 个工具已连接 · ICS 规则库 · 代码表 · 版本记录</span>
         </div>
         {error ? (
           <p role="alert" className="mx-auto mt-3 max-w-[760px] rounded-xl border border-[#f2c8c3] bg-[#fff4f2] px-4 py-3 text-left text-sm text-[#a43f37]">

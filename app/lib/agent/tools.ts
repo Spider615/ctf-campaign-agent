@@ -11,6 +11,7 @@ import type { FactKey, Ics1811Draft, Proposal, QuestionId } from "../campaign/ic
 import { plainText } from "../markdown.ts";
 import { CAMPAIGN_TOOL_NAMES, type AgentTraceEvent, type CampaignToolName, type ToolTrace } from "../tool-trace.ts";
 import type { AgentRequest, AgentResult } from "./protocol.ts";
+import { sanitizeAgentReply } from "./reply-stream.ts";
 
 export const AGENT_TOOL_NAMES = CAMPAIGN_TOOL_NAMES;
 export type AgentToolName = CampaignToolName;
@@ -419,44 +420,9 @@ export function safeToolSummary(name: CampaignToolName, outcome: ToolOutcome, st
   }
 }
 
-const UPLIFT_CLAIM = /[^。！？\n]*(提升|增长|增加)[^。，,]{0,6}\d+(?:\.\d+)?\s*%[^。！？\n]*[。！？]?/g;
-
-// 这个上限是防失控（模型抽风输出几千字），不是限制表达。
-// 160 是旧工具集时代（只管提取事实，实测回复 12-100 字）定的；放开后实测它回答
-// 「这个力度够不够吸引人」「签到抽奖怎么设计」自然就是 420-440 字，卡在 450 等于
-// 又把天花板压在它头顶上，稍长一点就被砍半句。留足余量。
-// 截断逻辑本身保留：宁可少一句，不留半句。
-const MAX_REPLY = 800;
-
-// 回复要像一两句话；超长时在句末截断，不留半句。
-// 按行处理。原来是把整段切成句子再拼回去，而切句的正则把 \n 排除在外，
-// 于是换行在重新拼接时被静默删光：模型分点写的「1. …\n2. …」糊成一行，
-// 界面解析不出列表，长回复也全成了一大坨。换行是模型表达结构的方式，得留着。
-function trimReply(text: string): string {
-  const kept: string[] = [];
-  let total = 0;
-  for (const line of text.split("\n")) {
-    if (total >= MAX_REPLY) break;
-    if (!line.trim()) {
-      if (kept.length) kept.push("");
-      continue;
-    }
-    let out = "";
-    for (const sentence of line.match(/[^。！!；;]+[。！!；;]?/g) ?? [line]) {
-      if ((total || out) && total + out.length + sentence.length > MAX_REPLY) break;
-      out += sentence;
-    }
-    if (!out) break;
-    kept.push(out);
-    total += out.length;
-  }
-  while (kept.length && !kept[kept.length - 1]) kept.pop();
-  return kept.join("\n");
-}
-
 export function finishAgentTurn(state: AgentState, reply: string | null): AgentResult {
   // 问什么由模型决定，问句不再删。编造的效果预估（提升 X%）任何时候都删，那是事实问题。
-  const cleaned = trimReply((reply ?? "").replace(UPLIFT_CLAIM, "").trim());
+  const cleaned = sanitizeAgentReply(reply);
   const steps = state.trace.filter((event) => event.status !== "started");
   const trace: ToolTrace | null = steps.length
     ? {

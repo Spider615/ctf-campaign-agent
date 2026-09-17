@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { isAgentRequest } from "../app/lib/agent/protocol.ts";
 import { encodeAgentStreamEvent } from "../app/lib/agent/stream.ts";
+import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
 import { createAgentRunner } from "./run-turn.ts";
 
 const envFile = fileURLToPath(new URL("../.dev.vars", import.meta.url));
@@ -65,19 +66,44 @@ const server = createServer(async (request, response) => {
   if (!isAgentRequest(body)) return send(response, 400, { error: "请求内容不完整" });
 
   const started = Date.now();
+  const startedMonotonic = performance.now();
   if (isStream) {
     response.writeHead(200, {
       "content-type": "application/x-ndjson; charset=utf-8",
       "cache-control": "no-store",
     });
+    let traceEvents: AgentTraceEvent[] = [];
+    const emitTrace = (event: AgentTraceEvent) => {
+      traceEvents = mergeTraceEvent(traceEvents, event);
+      response.write(encodeAgentStreamEvent({ type: "trace", event }));
+    };
     try {
-      const result = await runAgentTurn(body, (event) => response.write(encodeAgentStreamEvent({ type: "trace", event })));
+      const result = await runAgentTurn(
+        body,
+        emitTrace,
+        (event) => response.write(encodeAgentStreamEvent(event)),
+      );
       console.log(`[agent] ${body.trigger.kind} ${Date.now() - started}ms 工具：${result.tools.join(" → ") || "无"}${result.dropped.length ? ` 丢弃 ${result.dropped.length} 项` : ""}`);
       response.end(encodeAgentStreamEvent({ type: "result", result }));
     } catch (error) {
+      // 在 Agent 进程内结束仍在执行的步骤，避免 Workers 用另一台机器的墙钟相减。
+      for (const event of traceEvents.filter((item) => item.status === "started")) {
+        emitTrace(finishTraceEvent(event, {
+          status: "failed",
+          summary: "执行中断，可以重试",
+          at: Date.now(),
+        }));
+      }
       const message = error instanceof Error && error.message ? error.message : "Agent 执行失败";
       console.error(`[agent] ${body.trigger.kind} 失败（${Date.now() - started}ms）：${message}`);
-      response.end(encodeAgentStreamEvent({ type: "error", error: message }));
+      const totalMs = Math.max(0, performance.now() - startedMonotonic);
+      const timing = harnessTimingSummary(totalMs, traceEvents
+        .filter((event) => event.status !== "started")
+        .map((event) => ({
+          offsetMs: Math.max(0, event.startedAt - started),
+          durationMs: event.durationMs ?? 0,
+        })));
+      response.end(encodeAgentStreamEvent({ type: "error", error: message, timing }));
     }
     return;
   }

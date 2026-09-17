@@ -112,7 +112,7 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss
   const toggle = (key: string) => setEditing(editing === key ? null : key);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full cursor-text select-text flex-col">
       <div className="border-b border-[#dce9f6] bg-white/55 p-5">
         <div className="flex items-center justify-between gap-2">
           <p className="text-[12px] font-semibold tracking-[0.08em] text-[#2470cc]">ICS-1811 实时草稿</p>
