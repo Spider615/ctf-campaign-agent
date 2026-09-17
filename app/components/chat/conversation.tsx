@@ -137,16 +137,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     inFlightTurn.activate(sessionOwner);
     autoStarted.current = null;
-    setInterpretationStopped(false);
-    setError("");
-    setStopping(false);
-    setBusy(null);
-    setPendingText(null);
-    setPendingAt(null);
-    setLiveTrace([]);
-    setLiveReply(emptyLiveReply());
-    setLivePhase(null);
-    setRunStartedAt(null);
+    // 路由用 key={id} 隔离会话，界面状态由新实例的 useState 初始值重置。
     return () => {
       if (activeTurn.current?.owner.generation === sessionOwner.generation) {
         activeTurn.current.controller.abort();
