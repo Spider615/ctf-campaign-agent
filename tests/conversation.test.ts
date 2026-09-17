@@ -702,6 +702,21 @@ test("prompts carry today, what the agent asked and proposed, and the recorded f
   assert.match(system, /每次 extract_campaign_facts 或 accept_campaign_proposals 后都必须调用 analyze_campaign_state/);
   assert.match(system, /ask_campaign_questions/);
   assert.doesNotMatch(system, /\bupdate_fields\b|confirm_campaign_readback|build_campaign_readback/);
+  for (const skill of [
+    "ics1811:offer-entry-guide",
+    "ics1811:field-explainer",
+    "ics1811:settlement-guide",
+    "ics1811:promo-copy-guide",
+  ]) {
+    assert.match(system, new RegExp(skill));
+  }
+  assert.match(system, /解释性问题且不需要读取或修改活动数据时，不需要调用活动工具；需要业务知识时仍必须先用 Skill/);
+  assert.match(system, /活动工具和确定性代码结果优先于 Skill/);
+  assert.match(system, /Skill 只负责解释和指导，不能声称已经保存、已经齐全或已经通过校验/);
+  assert.match(system, /每一轮都是新的/);
+  assert.match(system, /起草前必须先成功加载 ics1811:promo-copy-guide/);
+  assert.doesNotMatch(system, /没加载成功，按已有规则继续/);
+  assert.doesNotMatch(system, /计折上折：销售提成口径|结算说明函按指引|浮动折扣模式：/);
   // 模型曾承诺「帮你按区域拆成 3 张单」，没有工具能拆单，它就一直空转到 120s 超时。
   // 这两句是那次的修复，删掉会让同样的超时重新出现，所以在这里盯住。
   assert.match(system, /不能拆单/);
