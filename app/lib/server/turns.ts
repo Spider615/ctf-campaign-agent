@@ -225,7 +225,8 @@ function phaseOf(state: ReturnType<typeof evaluate>, pendingInterpretation: bool
   const { plan } = state;
   if (!plan) {
     if (state.workspace.stage === "blocked") return "blocked";
-    return state.workspace.brief.status === "ready" ? "ready" : "collecting";
+    // ready 是 1811 叶子流程的专用阶段；没有子单的 Campaign 仍在父层编排中。
+    return "collecting";
   }
   if (plan.action === "out_of_scope") return "out_of_scope";
   if (plan.action === "ready") return "ready";

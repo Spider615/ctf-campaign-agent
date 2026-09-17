@@ -118,6 +118,300 @@ test("campaign brief drops invented quotes and unsupported channel claims", () =
   assert.match(unsupported.dropped[0]?.reason ?? "", /支持的渠道/);
 });
 
+test("channel updates distinguish adding another channel from replacing the channel plan", () => {
+  const initial = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "channels", quote: "先在微信公众号发布" },
+  ], { text: "先在微信公众号发布" });
+
+  const added = applyCampaignBriefWrites(initial.brief, [
+    { key: "channels", quote: "再加小红书" },
+  ], { text: "再加小红书" });
+  assert.deepEqual(added.brief.channels?.value, ["wechat", "social"]);
+
+  const replaced = applyCampaignBriefWrites(added.brief, [
+    { key: "channels", quote: "改成只做门店" },
+  ], { text: "改成只做门店" });
+  assert.deepEqual(replaced.brief.channels?.value, ["store"]);
+
+  const naturalReplacement = applyCampaignBriefWrites(initial.brief, [
+    { key: "channels", quote: "把微信公众号改成小红书" },
+  ], { text: "把微信公众号改成小红书" });
+  assert.deepEqual(naturalReplacement.brief.channels?.value, ["social"]);
+
+  for (const text of ["别用微信了，改用小红书", "微信改小红书"]) {
+    const correction = applyCampaignBriefWrites(initial.brief, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(correction.brief.channels?.value, ["social"], text);
+  }
+
+  const removeThenAdd = applyCampaignBriefWrites(initial.brief, [
+    { key: "channels", quote: "取消微信，增加小红书" },
+  ], { text: "取消微信，增加小红书" });
+  assert.deepEqual(removeThenAdd.brief.channels?.value, ["social"]);
+
+  const negatedAddition = applyCampaignBriefWrites(initial.brief, [
+    { key: "channels", quote: "小红书" },
+  ], { text: "不再加小红书" });
+  assert.deepEqual(negatedAddition.brief.channels?.value, ["wechat"]);
+  assert.deepEqual(negatedAddition.applied, []);
+  assert.match(negatedAddition.dropped[0]?.reason ?? "", /没有变化/);
+
+  const storeAndWechat = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "channels", quote: "门店和微信" },
+  ], { text: "门店和微信" }).brief;
+  const contentEditAndAddition = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "小红书也发" },
+  ], { text: "修改一下微信文案，小红书也发" });
+  assert.deepEqual(contentEditAndAddition.brief.channels?.value, ["store", "wechat", "social"]);
+
+  for (const [text, quote] of [
+    ["微信文案改一下，小红书也发", "小红书也发"],
+    ["微信文案只要简洁，小红书也发", "小红书也发"],
+    ["改一下活动主题，小红书也发", "小红书也发"],
+    ["微信不用改，小红书也发", "小红书也发"],
+    ["不要只发微信，也发小红书", "也发小红书"],
+    ["修改一下微信发布文案，小红书也发", "小红书也发"],
+  ]) {
+    const contentOnlyEditAndAddition = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote },
+    ], { text });
+    assert.deepEqual(contentOnlyEditAndAddition.brief.channels?.value, ["store", "wechat", "social"], text);
+
+    const broadContentEditAndAddition = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(broadContentEditAndAddition.brief.channels?.value, ["store", "wechat", "social"], `${text}（宽原话）`);
+  }
+
+  for (const text of [
+    "取消微信增加小红书",
+    "去掉微信加上小红书",
+    "增加小红书取消微信",
+    "再加小红书去掉微信",
+    "别用微信改用小红书",
+  ]) {
+    const compactRemoveAndAdd = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(compactRemoveAndAdd.brief.channels?.value, ["store", "social"], text);
+  }
+
+  const negativeThenPositive = applyCampaignBriefWrites(initial.brief, [
+    { key: "channels", quote: "不要增加小红书但增加门店" },
+  ], { text: "不要增加小红书但增加门店" });
+  assert.deepEqual(negativeThenPositive.brief.channels?.value, ["wechat", "store"]);
+
+  const replaceOneOfMany = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "把微信改成小红书" },
+  ], { text: "把微信改成小红书，其他渠道不变" });
+  assert.deepEqual(replaceOneOfMany.brief.channels?.value, ["store", "social"]);
+
+  const broadQuote = "通过微信发布，活动范围是深圳7590门店";
+  const channelNotScope = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "channels", quote: broadQuote },
+  ], { text: broadQuote });
+  assert.deepEqual(channelNotScope.brief.channels?.value, ["wechat"]);
+
+  const coverageQuote = "通过微信发布，覆盖深圳7590家门店";
+  const coverageNotChannel = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "channels", quote: coverageQuote },
+  ], { text: coverageQuote });
+  assert.deepEqual(coverageNotChannel.brief.channels?.value, ["wechat"]);
+
+  const allChannels = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "再加小红书" },
+  ], { text: "再加小红书" }).brief;
+  const keepAfterRemoval = applyCampaignBriefWrites(allChannels, [
+    { key: "channels", quote: "取消微信，小红书不变" },
+  ], { text: "取消微信，小红书不变" });
+  assert.deepEqual(keepAfterRemoval.brief.channels?.value, ["store", "social"]);
+
+  const keepAfterReplacement = applyCampaignBriefWrites(allChannels, [
+    { key: "channels", quote: "改用小红书，微信保留" },
+  ], { text: "改用小红书，微信保留" });
+  assert.deepEqual(keepAfterReplacement.brief.channels?.value, ["social", "wechat"]);
+
+  const absoluteReplacement = applyCampaignBriefWrites(allChannels, [
+    { key: "channels", quote: "取消微信，改成只做门店" },
+  ], { text: "取消微信，改成只做门店" });
+  assert.deepEqual(absoluteReplacement.brief.channels?.value, ["store"]);
+
+  for (const text of ["只保留微信", "仅保留微信"]) {
+    const keepOnlyWechat = applyCampaignBriefWrites(allChannels, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(keepOnlyWechat.brief.channels?.value, ["wechat"], text);
+  }
+
+  const removeInsteadOfKeep = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "不保留微信，增加小红书" },
+  ], { text: "不保留微信，增加小红书" });
+  assert.deepEqual(removeInsteadOfKeep.brief.channels?.value, ["store", "social"]);
+
+  for (const text of ["通过微信发布覆盖深圳7590家门店", "通过微信发布，适用于深圳7590门店"]) {
+    const storeCoverageNotChannel = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(storeCoverageNotChannel.brief.channels?.value, ["wechat"], text);
+  }
+
+  const explicitContentPlacement = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "内容只投小红书" },
+  ], { text: "内容只投小红书" });
+  assert.deepEqual(explicitContentPlacement.brief.channels?.value, ["social"]);
+
+  const channelDeliverables = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "channels", quote: "渠道做门店海报和微信文案" },
+  ], { text: "渠道做门店海报和微信文案" });
+  assert.deepEqual(channelDeliverables.brief.channels?.value, ["store", "wechat"]);
+
+  for (const text of ["不加小红书同时门店也发", "不加小红书而且门店也发"]) {
+    const negatedThenAdded = applyCampaignBriefWrites(initial.brief, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(negatedThenAdded.brief.channels?.value, ["wechat", "store"], text);
+  }
+
+  for (const text of ["不要取消微信", "微信不要取消", "不要再加小红书"]) {
+    const negatedMutation = applyCampaignBriefWrites(allChannels, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(negatedMutation.brief.channels?.value, ["store", "wechat", "social"], text);
+  }
+  for (const text of ["别再新增小红书", "无需再增加小红书"]) {
+    const negatedAdditionWithoutExistingChannel = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(negatedAdditionWithoutExistingChannel.brief.channels?.value, ["store", "wechat"], text);
+  }
+
+  for (const text of ["原渠道不变，只加小红书", "在原有基础上加小红书", "其他不变，加一个小红书"]) {
+    const naturalAddition = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(naturalAddition.brief.channels?.value, ["store", "wechat", "social"], text);
+  }
+
+  const bareReplacement = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "微信换小红书" },
+  ], { text: "微信换小红书" });
+  assert.deepEqual(bareReplacement.brief.channels?.value, ["store", "social"]);
+
+  const continuedChannel = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "把微信改成小红书，门店继续" },
+  ], { text: "把微信改成小红书，门店继续" });
+  assert.deepEqual(continuedChannel.brief.channels?.value, ["store", "social"]);
+
+  for (const text of ["小红书文案也发一版", "同时在小红书发一版文案"]) {
+    const contentWithChannelAction = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(contentWithChannelAction.brief.channels?.value, ["store", "wechat", "social"], text);
+  }
+
+  const adjacentScopeAndChannel = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "channels", quote: "活动范围是深圳7590门店渠道是微信" },
+  ], { text: "活动范围是深圳7590门店渠道是微信" });
+  assert.deepEqual(adjacentScopeAndChannel.brief.channels?.value, ["wechat"]);
+
+  const exceptExisting = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "除微信外，再加小红书" },
+  ], { text: "除微信外，再加小红书" });
+  assert.deepEqual(exceptExisting.brief.channels?.value, ["store", "wechat", "social"]);
+
+  for (const text of ["面向会员，通过微信发布", "面向小红书用户，通过微信发布", "目标是办新品发布会，通过微信宣传"]) {
+    const audienceAndObjectiveNotChannels = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(audienceAndObjectiveNotChannels.brief.channels?.value, ["wechat"], text);
+  }
+
+  for (const text of ["同时加小红书", "同时投小红书", "同时在小红书", "小红书也要", "再上小红书", "同步发小红书"]) {
+    const additionalChannel = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(additionalChannel.brief.channels?.value, ["store", "wechat", "social"], text);
+  }
+
+  for (const text of ["小红书不发了", "小红书删了", "小红书别发"]) {
+    const removedChannel = applyCampaignBriefWrites(allChannels, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(removedChannel.brief.channels?.value, ["store", "wechat"], text);
+  }
+
+  for (const text of ["加小红书", "新增小红书文案", "增加小红书海报"]) {
+    const bareAddition = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(bareAddition.brief.channels?.value, ["store", "wechat", "social"], text);
+  }
+
+  for (const text of ["不用加小红书", "不需要加小红书", "不用再加小红书", "不需要再加小红书"]) {
+    const colloquialNegatedAddition = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(colloquialNegatedAddition.brief.channels?.value, ["store", "wechat"], text);
+
+    const colloquialNegatedExistingAddition = applyCampaignBriefWrites(allChannels, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(colloquialNegatedExistingAddition.brief.channels?.value, ["store", "wechat", "social"], `${text}（已存在）`);
+  }
+  for (const text of ["不用取消微信", "不需要取消微信"]) {
+    const colloquialNegatedRemoval = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(colloquialNegatedRemoval.brief.channels?.value, ["store", "wechat"], text);
+  }
+
+  for (const text of [
+    "面向会员通过微信发布",
+    "面向小红书用户通过微信发布",
+    "目标是办新品发布会通过微信宣传",
+    "目标是提升门店销售通过微信发布",
+    "覆盖深圳门店通过微信发布",
+    "面向会员渠道是微信",
+  ]) {
+    const adjacentBusinessField = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(adjacentBusinessField.brief.channels?.value, ["wechat"], text);
+  }
+
+  for (const text of ["取消微信，然后加小红书", "别取消微信但加小红书"]) {
+    const commonCompoundMutation = applyCampaignBriefWrites(storeAndWechat, [
+      { key: "channels", quote: text },
+    ], { text });
+    const expected = text.startsWith("取消") ? ["store", "social"] : ["store", "wechat", "social"];
+    assert.deepEqual(commonCompoundMutation.brief.channels?.value, expected, text);
+  }
+
+  for (const text of ["保留微信，其他都取消", "除了微信其他都不要", "除微信外其他都不要"]) {
+    const keepOnlyNamed = applyCampaignBriefWrites(allChannels, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(keepOnlyNamed.brief.channels?.value, ["wechat"], text);
+  }
+  for (const text of ["保留微信，其他渠道不要改", "保留微信，其他都不要取消"]) {
+    const keepAllUnchanged = applyCampaignBriefWrites(allChannels, [
+      { key: "channels", quote: text },
+    ], { text });
+    assert.deepEqual(keepAllUnchanged.brief.channels?.value, ["store", "wechat", "social"], text);
+  }
+
+  const transition = applyCampaignBriefWrites(storeAndWechat, [
+    { key: "channels", quote: "从微信转到小红书" },
+  ], { text: "从微信转到小红书" });
+  assert.deepEqual(transition.brief.channels?.value, ["store", "social"]);
+
+  const keepUntouched = applyCampaignBriefWrites(allChannels, [
+    { key: "channels", quote: "取消微信，门店照旧" },
+  ], { text: "取消微信，门店照旧" });
+  assert.deepEqual(keepUntouched.brief.channels?.value, ["store", "social"]);
+});
+
 test("a ready 1811 child yields a sheet artifact but never makes the campaign launch-ready", () => {
   const campaign = completeBrief(normalizeCampaignDraft(readyIcs1811()));
   const workspace = buildCampaignWorkspace(campaign, EXAMPLE_TODAY);
@@ -172,6 +466,120 @@ test("brand and member routing share one communication track and keep external c
 
   assert.equal(communicationTracks.length, 1);
   assert.ok(workspace.executionTracks.some((track) => track.kind === "member_crm"));
+  const communications = workspace.readiness.gates.find((gate) => gate.id === "communications");
+  assert.equal(workspace.readiness.status, "blocked");
+  assert.equal(communications?.status, "blocked");
+  assert.match(communications?.nextAction ?? "", /传播方案/);
+  const member = workspace.readiness.gates.find((gate) => gate.id === "member_crm");
+  assert.equal(member?.status, "needs_confirmation");
+  assert.match(member?.nextAction ?? "", /CRM/);
   const external = workspace.readiness.gates.find((gate) => gate.id === "external_readiness");
-  assert.match(external?.nextAction ?? "", /^如适用，人工确认审阅\/审批、库存、物料、渠道配置和发布时间$/);
+  assert.equal(external?.status, "pending");
+  assert.match(external?.nextAction ?? "", /先完成/);
+});
+
+test("a reviewable communication plan clears the machine artifact gate but never auto-approves launch", () => {
+  const draft = completeBrief(createCampaignDraft("brand-ready", "做一场新品发布和品牌传播"));
+  draft.communication = {
+    concept: {
+      headline: "为爱添金",
+      subheadline: "让心意被看见",
+      coreMessage: "面向深圳年轻情侣讲述新品故事",
+    },
+    channelOutputs: [
+      { channel: "store", format: "门店海报", copy: "为爱添金", cta: "到店了解" },
+      { channel: "wechat", format: "微信推文", copy: "让心意被看见", cta: "查看新品" },
+    ],
+    visualDirection: "克制留白，突出珠宝细节",
+    source: "ai",
+  };
+
+  const workspace = buildCampaignWorkspace(draft, EXAMPLE_TODAY);
+  const communications = workspace.readiness.gates.find((gate) => gate.id === "communications");
+  const external = workspace.readiness.gates.find((gate) => gate.id === "external_readiness");
+
+  assert.equal(workspace.readiness.status, "needs_confirmation");
+  assert.equal(communications?.status, "needs_confirmation");
+  assert.match(communications?.nextAction ?? "", /人工审核/);
+  assert.equal(external?.status, "needs_confirmation");
+});
+
+test("a Brief change that invalidates old channel copy blocks readiness until communication is regenerated", () => {
+  const draft = completeBrief(createCampaignDraft("brand-stale", "做一场新品发布和品牌传播"));
+  draft.communication = {
+    concept: { headline: "为爱添金", subheadline: "让心意被看见", coreMessage: "讲述新品故事" },
+    channelOutputs: [
+      { channel: "store", format: "门店海报", copy: "为爱添金", cta: "到店了解" },
+      { channel: "wechat", format: "微信推文", copy: "让心意被看见", cta: "查看新品" },
+    ],
+    visualDirection: "克制留白，突出珠宝细节",
+    source: "ai",
+  };
+  const changed = applyCampaignBriefWrites(draft.brief, [
+    { key: "channels", quote: "再加小红书" },
+  ], { text: "再加小红书" });
+
+  const workspace = buildCampaignWorkspace({ ...draft, brief: changed.brief }, EXAMPLE_TODAY);
+  const communicationsGate = workspace.readiness.gates.find((gate) => gate.id === "communications");
+  const communicationsTrack = workspace.executionTracks.find((track) => track.kind === "communications");
+
+  assert.equal(workspace.artifacts.communications.status, "draft");
+  assert.equal(workspace.readiness.status, "blocked");
+  assert.equal(communicationsGate?.status, "blocked");
+  assert.match(communicationsGate?.nextAction ?? "", /重新生成/);
+  assert.equal(communicationsTrack?.status, "blocked");
+});
+
+test("an applicable store-readiness track blocks the launch gate until store scope is known", () => {
+  const draft = createCampaignDraft("brand-store", "做一场新品发布和品牌传播");
+  const text = "目标是提升新品认知，面向年轻情侣，主题是福启新章，通过门店和微信传播。";
+  const brief = applyCampaignBriefWrites(draft.brief, [
+    { key: "objective", quote: "提升新品认知" },
+    { key: "audience", quote: "年轻情侣" },
+    { key: "theme", quote: "福启新章" },
+    { key: "channels", quote: "门店和微信" },
+  ], { text }).brief;
+  const campaign: CampaignDraft = {
+    ...draft,
+    brief,
+    communication: {
+      concept: { headline: "福启新章", subheadline: "让心意被看见", coreMessage: "讲述新品故事" },
+      channelOutputs: [
+        { channel: "store", format: "门店海报", copy: "福启新章", cta: "到店了解" },
+        { channel: "wechat", format: "微信推文", copy: "让心意被看见", cta: "查看新品" },
+      ],
+      visualDirection: "克制留白，突出珠宝细节",
+      source: "ai",
+    },
+  };
+
+  const workspace = buildCampaignWorkspace(campaign, EXAMPLE_TODAY);
+  const storeTrack = workspace.executionTracks.find((track) => track.kind === "store_readiness");
+  const storeGate = workspace.readiness.gates.find((gate) => gate.id === "store_readiness");
+
+  assert.equal(storeTrack?.status, "blocked");
+  assert.equal(storeGate?.status, "blocked");
+  assert.equal(workspace.readiness.status, "blocked");
+  assert.equal(workspace.stage, "blocked");
+});
+
+test("a transaction campaign exposes the communication track once communication was explicitly generated", () => {
+  const draft = completeBrief(normalizeCampaignDraft(readyIcs1811()));
+  draft.communication = {
+    concept: { headline: "为爱添金", subheadline: "让心意被看见", coreMessage: "讲述钻石甄选故事" },
+    channelOutputs: [
+      { channel: "store", format: "门店海报", copy: "为爱添金", cta: "到店了解" },
+      { channel: "wechat", format: "微信推文", copy: "让心意被看见", cta: "查看活动" },
+    ],
+    visualDirection: "克制留白，突出珠宝细节",
+    source: "ai",
+  };
+
+  const workspace = buildCampaignWorkspace(draft, EXAMPLE_TODAY);
+  const communicationsTrack = workspace.executionTracks.find((track) => track.kind === "communications");
+  const communicationsGate = workspace.readiness.gates.find((gate) => gate.id === "communications");
+
+  assert.equal(communicationsTrack?.status, "needs_confirmation");
+  assert.equal(communicationsGate?.status, "needs_confirmation");
+  assert.equal(workspace.artifacts.communications.status, "needs_review");
 });

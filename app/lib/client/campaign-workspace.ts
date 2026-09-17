@@ -33,3 +33,20 @@ export function communicationAction(input: {
   if (!input.hasCommunication) return "generate";
   return input.activeTab === "communications" ? "continue" : "view";
 }
+
+type WorkspaceVersion = {
+  seq: number;
+  source: string;
+  createdAt: string;
+  diffCount: number;
+};
+
+type WorkspaceVersionSource = {
+  versions: readonly WorkspaceVersion[];
+};
+
+export function workspaceVersionEntries(source: WorkspaceVersionSource): Array<WorkspaceVersion & { current: boolean }> {
+  return [...source.versions]
+    .reverse()
+    .map((version, index) => ({ ...version, current: index === 0 }));
+}

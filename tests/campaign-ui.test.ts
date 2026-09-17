@@ -6,6 +6,7 @@ import {
   DEFAULT_WORKSPACE_TAB,
   communicationAction,
   sessionStatusLabel,
+  workspaceVersionEntries,
 } from "../app/lib/client/campaign-workspace.ts";
 
 test("campaign workspace uses honest parent-stage labels and opens on Brief", () => {
@@ -30,4 +31,20 @@ test("legacy session statuses map to truthful 1811 wording", () => {
   assert.equal(sessionStatusLabel("ics_ready"), "1811 已就绪");
   assert.equal(sessionStatusLabel("preparing"), "准备产物");
   assert.notEqual(sessionStatusLabel("confirmed"), "已建好");
+});
+
+test("没有 1811 子单时仍保留 Campaign 版本恢复入口", () => {
+  const snapshot = {
+    latest: { draft: null },
+    versions: [
+      { seq: 1, source: "初始需求", createdAt: "2026-09-17T01:00:00.000Z", diffCount: 0 },
+      { seq: 2, source: "完善 Brief", createdAt: "2026-09-17T01:01:00.000Z", diffCount: 2 },
+    ],
+  };
+  const entries = workspaceVersionEntries(snapshot);
+
+  assert.deepEqual(entries, [
+    { seq: 2, source: "完善 Brief", createdAt: "2026-09-17T01:01:00.000Z", diffCount: 2, current: true },
+    { seq: 1, source: "初始需求", createdAt: "2026-09-17T01:00:00.000Z", diffCount: 0, current: false },
+  ]);
 });

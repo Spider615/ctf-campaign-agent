@@ -10,7 +10,7 @@ import { factText } from "../../lib/campaign/ics1811/messages";
 import { draftCompletion } from "../../lib/campaign/ics1811/progress";
 import { QUESTION_TITLE } from "../../lib/campaign/ics1811/questions";
 import type { FactKey, Gap, QuestionId } from "../../lib/campaign/ics1811/types";
-import { CAMPAIGN_STAGE_LABEL, communicationAction } from "../../lib/client/campaign-workspace";
+import { CAMPAIGN_STAGE_LABEL, communicationAction, workspaceVersionEntries } from "../../lib/client/campaign-workspace";
 import type { Snapshot } from "../../lib/server/turns";
 import { initialRaw, QuestionControl, toAnswer, type RawAnswer } from "../chat/question-controls";
 import { BriefView } from "./brief-view";
@@ -103,11 +103,46 @@ type IcsDetailPanelProps = Omit<DraftPanelProps, "tab" | "onTabChange" | "onGene
   onTabChange: (tab: string) => void;
 };
 
+function VersionHistory({ snapshot, busy, onRollback }: Pick<IcsDetailPanelProps, "snapshot" | "busy" | "onRollback">) {
+  return (
+    <div className="space-y-2">
+      {workspaceVersionEntries(snapshot).map((version) => (
+        <div key={version.seq} className="rounded-xl border border-[#d8e6f5] bg-white p-3 shadow-[0_4px_14px_rgba(43,94,151,0.04)]">
+          <div className="flex items-center justify-between">
+            <strong className="text-sm text-[#293b54]">版本 {version.seq}</strong>
+            <span className="text-[12px] text-[#8094ab]">{version.current ? "当前" : new Date(version.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+          </div>
+          <p className="mt-1 text-[13px] text-[#617790]">{version.source}{version.diffCount ? ` · ${version.diffCount} 处变化` : ""}</p>
+          {!version.current ? (
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => onRollback(version.seq)} className="mt-1 h-11 px-1 text-[#2470cc] hover:bg-[#edf5ff]">
+              <RotateCcw />
+              恢复此版本
+            </Button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function IcsDetailPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss, onRollback, onShowSource }: IcsDetailPanelProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const { draft, fill, checks, sheet } = snapshot.latest;
   const { flow } = snapshot;
-  if (!draft || !fill || !sheet) return <Ics1811View snapshot={snapshot} onShowSource={onShowSource} />;
+  if (!draft || !fill || !sheet) {
+    return (
+      <div className="space-y-4">
+        <Ics1811View snapshot={snapshot} onShowSource={onShowSource} />
+        <section aria-labelledby="campaign-version-heading" className="space-y-2 border-t border-[#e4d8cf] pt-4">
+          <div>
+            <h3 id="campaign-version-heading" className="text-sm font-semibold text-[#431e28]">Campaign 版本</h3>
+            <p className="mt-1 text-[12px] leading-5 text-[#857370]">即使本活动不需要 1811，仍可查看和恢复父活动历史。</p>
+          </div>
+          <VersionHistory snapshot={snapshot} busy={busy} onRollback={onRollback} />
+        </section>
+      </div>
+    );
+  }
   const blockers = checks.filter((check) => check.severity === "blocker");
   const warnings = checks.filter((check) => check.severity === "warning");
   const tbc = [...new Set([...Object.values(fill.info), ...fill.details.map((detail) => detail.businessCategory)].flatMap((item) => (item.tbc ? [item.tbc] : [])))];
@@ -248,21 +283,7 @@ function IcsDetailPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss, o
           </TabsContent>
 
           <TabsContent value="versions" className="space-y-2">
-            {[...snapshot.versions].reverse().map((version, index) => (
-              <div key={version.seq} className="rounded-xl border border-[#d8e6f5] bg-white p-3 shadow-[0_4px_14px_rgba(43,94,151,0.04)]">
-                <div className="flex items-center justify-between">
-                  <strong className="text-sm text-[#293b54]">版本 {version.seq}</strong>
-                  <span className="text-[12px] text-[#8094ab]">{index === 0 ? "当前" : new Date(version.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
-                </div>
-                <p className="mt-1 text-[13px] text-[#617790]">{version.source}{version.diffCount ? ` · ${version.diffCount} 处变化` : ""}</p>
-                {index !== 0 ? (
-                  <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => onRollback(version.seq)} className="mt-1 h-11 px-1 text-[#2470cc] hover:bg-[#edf5ff]">
-                    <RotateCcw />
-                    恢复此版本
-                  </Button>
-                ) : null}
-              </div>
-            ))}
+            <VersionHistory snapshot={snapshot} busy={busy} onRollback={onRollback} />
           </TabsContent>
         </div>
       </Tabs>

@@ -65,7 +65,7 @@ export function BriefView({ workspace }: { workspace: CampaignWorkspace }) {
                 {item.quote ? (
                   <p className="mt-1.5 flex items-start gap-1.5 text-[10px] leading-4 text-[#9a8884]">
                     <Quote className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
-                    <span className="line-clamp-2">依据：{item.quote}</span>
+                    <span className="line-clamp-2">{item.key === "channels" ? "最近变更依据" : "依据"}：{item.quote}</span>
                   </p>
                 ) : null}
               </div>

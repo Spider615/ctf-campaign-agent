@@ -11,6 +11,7 @@ import type {
   CampaignTrackKind,
   CampaignWorkspace,
 } from "./types.ts";
+import { renderCommunicationPlan } from "./communication.ts";
 import { checkDraft } from "./ics1811/checks.ts";
 import { deriveFill } from "./ics1811/derive.ts";
 import { createEmptyDraft } from "./ics1811/facts.ts";
@@ -131,6 +132,7 @@ function executionTracks(
   routing: CampaignRouting,
   brief: CampaignWorkspace["brief"],
   artifact: CampaignWorkspace["artifacts"]["ics1811"],
+  communicationReady: boolean,
 ): CampaignExecutionTrack[] {
   const tracks: CampaignExecutionTrack[] = [{
     id: "strategy",
@@ -157,16 +159,27 @@ function executionTracks(
     });
   }
 
-  if (routing.tracks.includes("brand_launch") || routing.tracks.includes("member_crm")) {
+  if (routing.tracks.includes("brand_launch") || routing.tracks.includes("member_crm") || draft.communication) {
+    const staleCommunication = Boolean(draft.communication) && !communicationReady;
     tracks.push({
       id: "communications",
       kind: "communications",
       title: "内容传播",
-      status: draft.communication ? "needs_confirmation" : "not_started",
-      summary: draft.communication ? "传播方案已起草，仍需审核" : "尚未起草传播方案",
-      nextAction: draft.communication ? "审核各渠道内容和视觉方向" : "Brief 齐备后起草传播方案",
+      status: communicationReady ? "needs_confirmation" : staleCommunication ? "blocked" : "not_started",
+      summary: communicationReady
+        ? "传播方案已起草，仍需审核"
+        : staleCommunication
+          ? "传播方案与当前活动事实不一致"
+          : "尚未起草传播方案",
+      nextAction: communicationReady
+        ? "审核各渠道内容和视觉方向"
+        : staleCommunication
+          ? "按当前 Brief 和活动事实重新生成传播方案"
+          : "Brief 齐备后起草传播方案",
       ownerRole: "品牌与市场",
-      basis: routing.basis,
+      basis: routing.tracks.includes("brand_launch") || routing.tracks.includes("member_crm")
+        ? routing.basis
+        : ["已有传播方案草稿，说明本活动启用了内容传播"],
     });
   }
 
@@ -212,8 +225,15 @@ export function buildCampaignWorkspace(draft: CampaignDraft, today: string): Cam
     totalCount: REQUIRED_BRIEF_KEYS.length,
   };
   const artifact = icsArtifact(draft, today);
+  const communicationReady = renderCommunicationPlan(draft) !== null;
+  const needsCommunication = routing.tracks.includes("brand_launch") || routing.tracks.includes("member_crm") || Boolean(draft.communication);
+  const staleCommunication = Boolean(draft.communication) && !communicationReady;
+  const needsStoreReadiness = Boolean(draft.ics1811 || draft.brief.channels?.value.includes("store"));
+  const hasStoreScope = Boolean(draft.brief.scope || draft.ics1811?.facts.stores?.value.length);
   const machineReady = routing.status === "decided" && brief.status === "ready" &&
-    (!routing.tracks.includes("transaction_offer") || artifact.status === "sheet_ready");
+    (!routing.tracks.includes("transaction_offer") || artifact.status === "sheet_ready") &&
+    (!needsCommunication || communicationReady) &&
+    (!needsStoreReadiness || hasStoreScope);
   const readiness: CampaignWorkspace["readiness"] = {
     status: machineReady ? "needs_confirmation" : "blocked",
     gates: [
@@ -243,6 +263,53 @@ export function buildCampaignWorkspace(draft: CampaignDraft, today: string): Cam
         nextAction: artifact.status === "sheet_ready" || !routing.tracks.includes("transaction_offer") ? null : "继续补齐 1811 子流程",
       },
       {
+        id: "communications",
+        title: "传播方案",
+        status: !needsCommunication
+          ? "not_applicable"
+          : communicationReady
+            ? "needs_confirmation"
+            : "blocked",
+        basis: !needsCommunication
+          ? ["当前活动没有品牌传播或会员触达轨"]
+          : communicationReady
+            ? ["传播方案已生成，但系统不会代替品牌与法务审核"]
+            : staleCommunication
+              ? ["已有传播草稿不再覆盖当前确认的渠道或活动事实"]
+              : ["当前活动包含品牌传播或会员触达轨，尚未生成传播方案"],
+        nextAction: !needsCommunication
+          ? null
+          : communicationReady
+            ? "人工审核各渠道内容、视觉方向和活动事实"
+            : staleCommunication
+              ? "按当前 Brief 和活动事实重新生成传播方案"
+              : "先生成覆盖已确认渠道的传播方案",
+      },
+      {
+        id: "member_crm",
+        title: "会员配置",
+        status: routing.tracks.includes("member_crm") ? "needs_confirmation" : "not_applicable",
+        basis: routing.tracks.includes("member_crm")
+          ? ["当前活动包含会员触达轨；本系统不连接 CRM"]
+          : ["当前活动没有会员触达轨"],
+        nextAction: routing.tracks.includes("member_crm") ? "在 CRM 中人工确认会员人群、频次和发送配置" : null,
+      },
+      {
+        id: "store_readiness",
+        title: "门店准备",
+        status: !needsStoreReadiness ? "not_applicable" : hasStoreScope ? "needs_confirmation" : "blocked",
+        basis: !needsStoreReadiness
+          ? ["当前活动没有门店渠道或 1811 子流程"]
+          : hasStoreScope
+            ? [draft.brief.scope?.quote ?? draft.ics1811?.facts.stores?.quote ?? "已有可执行的门店范围"]
+            : ["活动涉及门店，但还没有可执行的门店范围"],
+        nextAction: !needsStoreReadiness
+          ? null
+          : hasStoreScope
+            ? "人工确认库存、物料、培训与人员准备"
+            : "先补充活动适用的门店范围",
+      },
+      {
         id: "external_readiness",
         title: "外部执行准备",
         status: machineReady ? "needs_confirmation" : "pending",
@@ -257,18 +324,19 @@ export function buildCampaignWorkspace(draft: CampaignDraft, today: string): Cam
   else if (brief.status === "draft") stage = "briefing";
   else if (artifact.status === "blocked") stage = "blocked";
   else if (artifact.status === "collecting") stage = "planning";
-  else if ((routing.tracks.includes("brand_launch") || routing.tracks.includes("member_crm")) && !draft.communication) stage = "preparing";
+  else if (needsStoreReadiness && !hasStoreScope) stage = "blocked";
+  else if (needsCommunication && !communicationReady) stage = "preparing";
   else stage = "needs_confirmation";
 
   return {
     routing,
     stage,
     brief,
-    executionTracks: executionTracks(draft, routing, brief, artifact),
+    executionTracks: executionTracks(draft, routing, brief, artifact, communicationReady),
     readiness,
     artifacts: {
       ics1811: artifact,
-      communications: { status: draft.communication ? "needs_review" : "not_started" },
+      communications: { status: communicationReady ? "needs_review" : draft.communication ? "draft" : "not_started" },
     },
   };
 }

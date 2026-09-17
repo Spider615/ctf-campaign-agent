@@ -54,7 +54,7 @@ test("brand-only sessions use the harness without inventing an 1811 child", asyn
   assert.equal(snapshot.latest.campaign.brief.channels?.value.join("、"), "wechat、social");
   assert.equal(snapshot.latest.draft, null);
   assert.equal(snapshot.messages.some((message) => message.content.kind === "agent_fill_sheet"), false);
-  assert.notEqual(snapshot.flow.phase, "out_of_scope");
+  assert.equal(snapshot.flow.phase, "collecting", "无 1811 子单的父活动不能进入交易优惠专用的 ready 阶段");
   assert.equal(snapshot.workspace.brief.status, "ready");
   assert.equal(snapshot.session.status, "preparing");
   const trace = [...snapshot.messages].reverse().find((message) => message.content.kind === "agent_tool_trace");
