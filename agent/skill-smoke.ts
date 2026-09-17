@@ -12,7 +12,7 @@ import { EXAMPLES } from "../app/lib/campaign/ics1811/examples.ts";
 import type { Ics1811Draft } from "../app/lib/campaign/ics1811/types.ts";
 import type { AgentTraceEvent, CampaignToolName } from "../app/lib/tool-trace.ts";
 import { createAgentRunner, type AgentQuery } from "./run-turn.ts";
-import { loadSkillCatalog, validateSkillSources } from "./skills.ts";
+import { loadSkillCatalog, SkillCatalogError, validateSkillSources } from "./skills.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const PLUGIN_DIR = fileURLToPath(new URL("./plugin/", import.meta.url));
@@ -185,7 +185,26 @@ async function main(): Promise<void> {
     const offerInput = request("黄金以旧换新在 1811 怎么录");
     await runNormalCase("offer", offerInput, ["ics1811:offer-entry-guide"], (result) => {
       const reply = replyOf(result);
-      for (const term of ["固定折扣", "1815", "19", "增值服务"]) assert.match(reply, new RegExp(term));
+      assert.match(
+        reply,
+        /(?:使用|采用|选择|选用|选|用|按).{0,8}固定折扣|固定折扣.{0,10}(?:模式|录入|开单)/,
+        "必须肯定说明黄金以旧换新使用固定折扣",
+      );
+      assert.match(
+        reply,
+        /(?:创建|建好|建完|完成|保存).{0,12}(?:后|之后).{0,10}(?:去|进|进入|到|打开|在)\s*(?:ICS-)?1815|(?:ICS-)?1815.{0,24}(?:(?:修改|调整|更改|改).{0,12}活动分组|活动分组.{0,12}(?:修改|调整|更改|改))/,
+        "必须肯定说明创建后到 1815 修改活动分组",
+      );
+      assert.match(
+        reply,
+        /活动分组.{0,16}(?:改为|调整为|设为|选择|选为|应为|定为).{0,8}19[)）]?\s*增值服务|19[)）]?\s*增值服务.{0,16}(?:活动分组|分组)/,
+        "必须肯定说明活动分组改为 19 增值服务",
+      );
+      assert.doesNotMatch(
+        reply,
+        /(?:不是|并非|不应|不该|不能|不需要|无需|不用).{0,10}固定折扣|(?:不用|无需|不需要|不必|不要|不能|不应|不该).{0,10}(?:去|进|进入|到|打开|在)?\s*(?:ICS-)?1815|(?:不是|并非|不属于|不应(?:设为|改为|调整为|选择)?|不该(?:设为|改为|调整为|选择)?).{0,10}19[)）]?\s*增值服务/,
+        "不能把固定折扣、1815 或 19 增值服务说成否定规则",
+      );
       assertDraftUnchanged(result, offerInput);
       assertNoMutatingTools(result);
     });
@@ -196,6 +215,16 @@ async function main(): Promise<void> {
       assert.match(reply, /多家|两家|多店/);
       assert.match(reply, /说明函/);
       assert.match(reply, /上传/);
+      assert.match(
+        reply,
+        /(?:要求|需(?:要)?|须|应当|应该|必须).{0,20}(?:多家|两家|多店).{0,48}(?:上传|提供)|(?:多家|两家|多店).{0,48}(?:(?:要求|需(?:要)?|须|应当|应该|必须|要).{0,20}(?:上传|提供)|(?:上传|提供).{0,20}(?:要求|需(?:要)?|须|应当|应该|必须))/,
+        "必须肯定说明多店活动需要上传说明函",
+      );
+      assert.doesNotMatch(
+        reply,
+        /(?:多家|两家|多店).{0,20}(?:不需要|无需|不用|不必).{0,16}(?:上传|提供).{0,12}(?:结算)?说明函/,
+        "不能声称两家或多家门店不需要上传说明函",
+      );
       // 现有材料没有单店和跨月命名规则，回复里出现这类补写结论就让 smoke 失败。
       assert.doesNotMatch(
         reply,
@@ -262,7 +291,12 @@ async function main(): Promise<void> {
       ...config,
       pluginDir: resolve(temporaryRoot, "missing-plugin"),
     });
-    await assert.rejects(missingPluginRunner(request("计折上折是什么意思")));
+    await assert.rejects(
+      missingPluginRunner(request("计折上折是什么意思")),
+      (error: unknown) => error instanceof SkillCatalogError
+        && error.relativePath === ".claude-plugin/plugin.json"
+        && error.detail.startsWith("读取失败："),
+    );
     console.log("PASS missing-plugin");
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
