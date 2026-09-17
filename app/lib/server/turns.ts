@@ -389,7 +389,7 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
   // 新建：只存这句话，立即返回；理解由对话页发起的 interpret 回合交给 Agent。
   if (entryMode === "new") {
     const text = typeof input.text === "string" ? input.text.trim().slice(0, 1000) : "";
-    if (text.length < 4) throw new TurnError(400, "请用一句话说明活动");
+    if (!text) throw new TurnError(400, "请输入内容");
     const draft = createCampaignDraft(newId(), text);
     return commitAndLoad(deps, {
       isNew: true,

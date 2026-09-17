@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -8,6 +9,21 @@ import {
   sessionStatusLabel,
   workspaceVersionEntries,
 } from "../app/lib/client/campaign-workspace.ts";
+
+const emptyStateSource = readFileSync(new URL("../app/components/chat/empty-state.tsx", import.meta.url), "utf8");
+const composerSource = readFileSync(new URL("../app/components/chat/composer.tsx", import.meta.url), "utf8");
+const layoutSource = readFileSync(new URL("../app/layout.tsx", import.meta.url), "utf8");
+
+test("home starts a general marketing conversation without an activity-description length gate", () => {
+  assert.match(emptyStateSource, /周大福营销活动 Agent/);
+  assert.match(emptyStateSource, /从一句[“\"]你好[”\"]开始也可以/);
+  assert.doesNotMatch(emptyStateSource, /trim\(\)\.length\s*<\s*4/);
+  assert.doesNotMatch(emptyStateSource, /请用一句话说明活动/);
+  assert.match(composerSource, /value\.trim\(\)\.length\s*>\s*0/);
+  assert.doesNotMatch(composerSource, /value\.trim\(\)\.length\s*>\s*[1-9]/);
+  assert.match(layoutSource, /title:\s*["']周大福营销活动 AI 工作台["']/);
+  assert.doesNotMatch(layoutSource, /title:\s*["'][^"']*ICS-1811/);
+});
 
 test("campaign workspace uses honest parent-stage labels and opens on Brief", () => {
   assert.equal(DEFAULT_WORKSPACE_TAB, "brief");

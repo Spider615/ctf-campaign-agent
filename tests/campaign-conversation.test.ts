@@ -34,6 +34,28 @@ function dependencies(): TurnDeps & { requests: AgentRequest[] } {
   };
 }
 
+test("new conversations accept any non-empty message instead of requiring an activity form", async () => {
+  const deps = dependencies();
+
+  for (const text of ["你好", "嗯", "1"]) {
+    let snapshot = await createSession({ entryMode: "new", text }, deps);
+    const firstMessage = snapshot.messages.find((message) => message.role === "user");
+
+    assert.equal(snapshot.session.title, text);
+    assert.equal(snapshot.latest.campaign.requestText, text);
+    assert.equal(firstMessage?.content.kind === "user_text" ? firstMessage.content.text : null, text);
+
+    snapshot = await runTurn(snapshot.session.id, { type: "interpret", expectedSeq: snapshot.latest.seq }, deps);
+    assert.deepEqual(deps.requests.at(-1)?.trigger, { kind: "first_message", text });
+    assert.equal(snapshot.messages.some((message) => message.content.kind === "agent_text"), true);
+  }
+
+  await assert.rejects(
+    () => createSession({ entryMode: "new", text: "   " }, deps),
+    /请输入内容/,
+  );
+});
+
 test("brand-only sessions use the harness without inventing an 1811 child", async () => {
   const deps = dependencies();
   const text = "为传承系列新品发布做活动，目标是吸引年轻新客，面向刚工作的年轻人，走小红书和微信";

@@ -9,17 +9,24 @@ import { createSessionRequest, notifySessionsChanged } from "../../lib/client/ap
 import { CAMPAIGN_TOOL_NAMES } from "../../lib/tool-trace";
 import { Composer } from "./composer";
 
-// 从模板起步：点一下把这句话填进输入框，用户可以改完再发。
-// 句子取自验收夹具而不是现编——夹具里的门店和货类都来自代码表，现编会造出表外的取值。
-// 但标签要另起：夹具的 title 是用例描述（「满减没说是否累加」），给运营看应该是玩法名。
+// 从模板起步：通用营销方向只提供开放式讨论入口；优惠配置示例继续取验收夹具，
+// 避免在快捷入口里编造门店、货类或其他代码表事实。
 const TEMPLATE_LABEL: Record<string, string> = { T1: "每克减", T6: "满减", T5: "打折", T2: "以旧换新" };
 
-const TEMPLATES = Object.keys(TEMPLATE_LABEL)
+const GENERAL_STARTERS = [
+  { id: "brand", label: "品牌传播", first: "想做一场新品品牌传播活动，先帮我梳理目标、人群和渠道" },
+  { id: "member", label: "会员运营", first: "想做一次会员唤醒活动，先帮我一起设计" },
+];
+
+const STARTERS = [
+  ...GENERAL_STARTERS,
+  ...Object.keys(TEMPLATE_LABEL)
   .map((id) => {
     const example = EXAMPLES.find((item) => item.id === id);
-    return example ? { id, label: TEMPLATE_LABEL[id], first: example.first } : null;
+    return example ? { id: `offer-${id}`, label: TEMPLATE_LABEL[id], first: example.first } : null;
   })
-  .filter((item): item is { id: string; label: string; first: string } => item !== null);
+  .filter((item): item is { id: string; label: string; first: string } => item !== null),
+];
 
 export function EmptyState() {
   const router = useRouter();
@@ -29,10 +36,6 @@ export function EmptyState() {
 
   // 建会话只保存这句话，不等模型；理解过程在对话页里以思考动画展示。
   const start = async (body: { entryMode: "new"; text: string } | { entryMode: "example" }) => {
-    if (body.entryMode === "new" && body.text.trim().length < 4) {
-      setError("请用一句话说明活动，例如日期、门店和优惠");
-      return;
-    }
     setBusy(true);
     setError("");
     try {
@@ -40,7 +43,7 @@ export function EmptyState() {
       notifySessionsChanged();
       router.push(`/c/${snapshot.session.id}`);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "活动暂时无法创建，请重试");
+      setError(caught instanceof Error ? caught.message : "对话暂时无法创建，请重试");
       setBusy(false);
     }
   };
@@ -52,13 +55,13 @@ export function EmptyState() {
       <div data-testid="chat" className="relative mx-auto w-full max-w-[820px] text-center">
         <span className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#cde1fb] bg-white/70 px-3 py-1.5 text-[13px] font-semibold text-[#247cff] shadow-[0_6px_20px_rgba(36,124,255,0.08)] backdrop-blur">
           <Sparkles className="size-3.5" />
-          ICS-1811 AI 活动搭建 Agent
+          周大福营销活动 Agent
         </span>
         <h1 className="text-[clamp(2.15rem,5vw,4rem)] font-bold leading-[1.07] tracking-[-0.045em] text-[#17243a]">
-          一句话，搭好你的
-          <span className="block bg-gradient-to-r from-[#247cff] via-[#2d8cff] to-[#5ea8ff] bg-clip-text text-transparent">优惠活动填写方案</span>
+          从一个想法开始
+          <span className="block bg-gradient-to-r from-[#247cff] via-[#2d8cff] to-[#5ea8ff] bg-clip-text text-transparent">一起把营销活动做完整</span>
         </h1>
-        <p className="mx-auto mt-4 max-w-[680px] text-[15px] leading-7 text-[#657a95] md:text-base">想好了就直接说日期、门店和优惠，AI 边聊边把活动搭起来：记下你说的、查表校验，缺什么接着问，齐了直接生成 ICS-1811 逐项填写值；还没想好也可以先聊——活动怎么设计、力度定多少合适、某个字段什么意思，都能问。</p>
+        <p className="mx-auto mt-4 max-w-[680px] text-[15px] leading-7 text-[#657a95] md:text-base">从一句“你好”开始也可以。品牌传播、会员运营、门店活动、优惠设计、系统配置和对外文案，都可以直接聊；Agent 会先理解你想做什么，再按需要整理 Brief、规划执行步骤和准备产物。</p>
 
         <div className="mx-auto mt-8 max-w-[760px] text-left">
           <Composer
@@ -66,12 +69,12 @@ export function EmptyState() {
             onChange={setText}
             onSubmit={() => void start({ entryMode: "new", text })}
             busy={busy}
-            placeholder="例如：5 月 1 日到 5 日，闽深区 7590 门店，一般足金类每克减 15 元；也可以先问「五一做什么活动好」"
+            placeholder="什么都可以说，例如：国庆想做一场面向年轻情侣的新品传播活动"
           />
         </div>
         <div className="mt-3 inline-flex max-w-full items-center gap-2 rounded-full border border-[#d8e8f8] bg-white/60 px-3.5 py-1.5 text-[12px] font-medium text-[#607791] backdrop-blur">
           <CircleCheck className="size-3.5 shrink-0 text-[#20a674]" />
-          <span>{CAMPAIGN_TOOL_NAMES.length} 个工具已连接 · ICS 规则库 · 代码表 · 版本记录</span>
+          <span>{CAMPAIGN_TOOL_NAMES.length} 个营销工具已连接 · 活动规则库 · 代码表 · 版本记录</span>
         </div>
         {error ? (
           <p role="alert" className="mx-auto mt-3 max-w-[760px] rounded-xl border border-[#f2c8c3] bg-[#fff4f2] px-4 py-3 text-left text-sm text-[#a43f37]">
@@ -87,14 +90,14 @@ export function EmptyState() {
             className="inline-flex h-11 items-center gap-2 rounded-full border border-[#cbdff5] bg-white/75 px-4 text-sm font-medium text-[#49627f] shadow-[0_5px_16px_rgba(47,93,143,0.05)] transition hover:-translate-y-0.5 hover:border-[#94bfff] hover:bg-white hover:text-[#247cff] disabled:opacity-60"
           >
             <Sparkles className="size-4 text-[#247cff]" />
-            看一个完整示例
+            看一个优惠配置示例
           </button>
         </div>
 
         <div className="mt-6">
-          <p className="text-[12px] text-[#8093aa]">或者从常见玩法起步，填进输入框后可以继续改</p>
+          <p className="text-[12px] text-[#8093aa]">或者从一个常见方向开始，填进输入框后可以继续改</p>
           <div className="mt-2.5 flex flex-wrap justify-center gap-2">
-            {TEMPLATES.map((template) => (
+            {STARTERS.map((template) => (
               <button
                 key={template.id}
                 type="button"
@@ -109,8 +112,8 @@ export function EmptyState() {
         </div>
 
         <p className="mx-auto mt-10 max-w-[760px] rounded-2xl border border-[#dbe9f7] bg-white/55 px-4 py-3 text-left text-[12px] leading-6 text-[#72869e] backdrop-blur">
-          <strong className="font-semibold text-[#385575]">1811 填写值</strong>
-          ：在周大福 ICS 系统「1811 优惠开单活动新增」页面上逐项要填的内容，包括活动信息和每条明细。本工具不连接 ICS，代码表为演示编造，由你照着录入。
+          <strong className="font-semibold text-[#385575]">关于 ICS-1811</strong>
+          ：它只是交易优惠活动需要时才启用的一个配置子流程；品牌、会员和传播活动不会被强行套入 1811。本工具不连接生产系统，代码表为演示数据。
         </p>
       </div>
     </div>
