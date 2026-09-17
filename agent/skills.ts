@@ -1,6 +1,8 @@
 import { existsSync, realpathSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
+import type { AgentRequest } from "../app/lib/agent/protocol.ts";
+
 export const PLUGIN_NAME = "ics1811";
 
 export const BASELINE_SKILL_NAMES = [
@@ -11,6 +13,47 @@ export const BASELINE_SKILL_NAMES = [
 ] as const;
 
 export type BaselineSkillName = typeof BASELINE_SKILL_NAMES[number];
+
+const FIELD_TOPIC = /计折上折|折上折|固定(?:折扣)?模式|浮动(?:折扣)?模式|固定(?:折扣)?(?:模式)?(?:和|与|、|还是|或)浮动(?:折扣)?(?:模式)?|浮动(?:折扣)?(?:模式)?(?:和|与|、|还是|或)固定(?:折扣)?(?:模式)?|让扣点|回款率|货品范围|货类明细|货类|售价类型|限制条件|餐牌|活动分组/;
+const EXPLAIN_INTENT = /什么意思|是什么意思|什么含义|怎么理解|如何理解|有什么区别|区别是什么|有什么差别|差别是什么|为什么(?:要|需要)?(?:问|填|确认)|解释|含义|指什么/;
+const OFFER_TOPIC = /折扣|打(?:\d+(?:\.\d+)?)?折|满减|克减|每克减|以旧换新|以小换大|换购|outlet|转餐牌|累加|抽奖|签到|优惠玩法|活动玩法|优惠开单|1811/;
+const ENTRY_INTENT = /怎么录|如何录|怎样录|怎么填|如何填|怎样填|怎么建|如何建|怎样建|怎么创建|如何创建|该选|应该选|选哪个|怎么选|如何选择|是否支持|支不支持|能不能(?:做|录|建)|可以(?:做|录|建)吗|适不适用|怎么处理|如何处理/;
+const SUPPORT_INTENT = /是否支持|支不支持|支持.{0,12}吗|能不能|能(?:做|录|建)吗|可以吗|可不可以|适不适用|是不是超出|是否超出/;
+const SETTLEMENT_TOPIC = /结算说明函|说明函|跨区域|跨区|多门店|多家(?:门店|店)|两家(?:门店|店)|单店|文件命名|上传流程/;
+const SETTLEMENT_INTENT = /要不要|是否|需不需要|需要吗|怎么|如何|怎样|什么|规则|处理|命名|上传|确认|可以|能否/;
+const PROMO_TOPIC = /宣传文案|活动文案|对外文案|推广文案|主标题|卖点|标语|宣传语/;
+const PROMO_INTENT = /帮我|请|起草|写一版|写个|改写|修改|润色|优化|评价|点评|看看|讨论|建议|怎么写|如何写|要不要|是否合适|怎么样/;
+const EXPLAIN_THEN_ENTER = /(?:(?:解释|说明).*(?:区别|差别).*(?:怎么|如何|怎样).*(?:录|填|建|创建)|(?:怎么|如何|怎样).*(?:录|填|建|创建).*(?:解释|说明).*(?:区别|差别))/;
+
+export function requiredSkillsForTurn(
+  request: Pick<AgentRequest, "trigger">,
+): BaselineSkillName[] {
+  const text = request.trigger.text.replace(/\s+/g, " ").trim().toLowerCase();
+  const required = new Set<BaselineSkillName>();
+  const fieldTopic = FIELD_TOPIC.test(text);
+  const explanation = EXPLAIN_INTENT.test(text);
+  const offerTopic = OFFER_TOPIC.test(text);
+  const entry = ENTRY_INTENT.test(text);
+  const explainThenEnter = EXPLAIN_THEN_ENTER.test(text);
+
+  if (fieldTopic && explanation) required.add("field-explainer");
+  if (
+    explainThenEnter
+    || (entry && (offerTopic || fieldTopic))
+    || (offerTopic && SUPPORT_INTENT.test(text))
+    || (offerTopic && explanation && !fieldTopic)
+  ) {
+    required.add("offer-entry-guide");
+  }
+  if (SETTLEMENT_TOPIC.test(text) && SETTLEMENT_INTENT.test(text)) {
+    required.add("settlement-guide");
+  }
+  if (PROMO_TOPIC.test(text) && PROMO_INTENT.test(text)) {
+    required.add("promo-copy-guide");
+  }
+
+  return BASELINE_SKILL_NAMES.filter((name) => required.has(name));
+}
 
 export type SkillSource = {
   id: string;

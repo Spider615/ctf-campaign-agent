@@ -113,6 +113,75 @@ function expectCatalogError(action: () => unknown, relativePath: string, reason:
   });
 }
 
+function requiredSkills(text: string) {
+  return skillModule.requiredSkillsForTurn({
+    trigger: { kind: "user_message", text },
+  });
+}
+
+test("按知识请求保守选择基线 Skill，并保持基线顺序", () => {
+  const cases: Array<[string, readonly string[]]> = [
+    ["计折上折是什么意思", ["field-explainer"]],
+    ["黄金以旧换新在 1811 怎么录", ["offer-entry-guide"]],
+    ["两家店要不要说明函", ["settlement-guide"]],
+    ["帮我写一版宣传文案", ["promo-copy-guide"]],
+    ["浮动和固定有什么区别", ["field-explainer"]],
+    ["固定折扣模式是什么意思", ["field-explainer"]],
+    ["浮动折扣和固定折扣有什么区别", ["field-explainer"]],
+    ["浮动折扣模式和固定折扣模式有什么区别", ["field-explainer"]],
+    ["这个活动该选浮动还是固定，1811 怎么录", ["offer-entry-guide"]],
+    ["先解释浮动和固定的区别，再告诉我这个活动怎么录", ["offer-entry-guide", "field-explainer"]],
+    ["满减是什么意思", ["offer-entry-guide"]],
+  ];
+
+  for (const [text, expected] of cases) {
+    assert.deepEqual(requiredSkills(text), expected, text);
+  }
+});
+
+test("识别解释、录入、结算和文案请求的常用同义表达", () => {
+  const cases: Array<[string, readonly string[]]> = [
+    ["计折上折什么意思", ["field-explainer"]],
+    ["让扣点是什么含义", ["field-explainer"]],
+    ["回款率怎么理解", ["field-explainer"]],
+    ["满减怎么填", ["offer-entry-guide"]],
+    ["以旧换新如何录", ["offer-entry-guide"]],
+    ["这个活动该选浮动还是固定", ["offer-entry-guide"]],
+    ["抽奖是否支持", ["offer-entry-guide"]],
+    ["说明函怎么上传", ["settlement-guide"]],
+    ["说明函如何命名", ["settlement-guide"]],
+    ["说明函必须上传吗", ["settlement-guide"]],
+    ["请起草宣传文案", ["promo-copy-guide"]],
+    ["修改活动文案", ["promo-copy-guide"]],
+    ["润色宣传语", ["promo-copy-guide"]],
+    ["评价这个标语", ["promo-copy-guide"]],
+  ];
+
+  for (const [text, expected] of cases) {
+    assert.deepEqual(requiredSkills(text), expected, text);
+  }
+});
+
+test("普通活动事实不因领域名词本身加载 Skill", () => {
+  for (const text of [
+    "10月1日到7日，7590店，钻石95折",
+    "多店活动，门店是7590和7601",
+    "让扣点2%，回款率98%",
+  ]) {
+    assert.deepEqual(requiredSkills(text), [], text);
+  }
+});
+
+test("路由只归一化空白和大小写，首轮消息也使用同一规则", () => {
+  assert.deepEqual(requiredSkills("  OUTLET   如何录  "), ["offer-entry-guide"]);
+  assert.deepEqual(
+    skillModule.requiredSkillsForTurn({
+      trigger: { kind: "first_message", text: "计折上折是什么意思" },
+    }),
+    ["field-explainer"],
+  );
+});
+
 test("发现基线和新增 Skill，并按短名称排序后生成精确限定名", () => {
   const pluginDir = createPlugin([...BASELINE, "additional-guide"]);
   const catalog = skillModule.loadSkillCatalog(pluginDir);
