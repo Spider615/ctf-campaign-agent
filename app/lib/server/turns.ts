@@ -1,6 +1,7 @@
 import type { AgentPhase, AgentRequest, AgentResult, AgentTrigger } from "../agent/protocol.ts";
 import type { AgentProgressEvent } from "../agent/stream.ts";
 import { AGENT_TOOL_META } from "../agent/tools.ts";
+import { isTurnCancelled, throwIfTurnCancelled, TurnCancelledError } from "../cancellation.ts";
 import { renderCommunicationPlan } from "../campaign/communication.ts";
 import type { CampaignBriefKey, CampaignDraft, CampaignWorkspace, CommunicationPlan } from "../campaign/types.ts";
 import { buildCampaignWorkspace, createCampaignDraft, ensureIcs1811Child, normalizeCampaignDraft } from "../campaign/workspace.ts";
@@ -33,6 +34,7 @@ export type TurnDeps = {
   store: SessionStore;
   runAgent: AgentRunner;
   today: string;
+  signal?: AbortSignal;
   now?: () => string;
   newId?: () => string;
   emitTrace?: (event: AgentTraceEvent) => void;
@@ -428,6 +430,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   const turnStartedAt = Date.now();
   const turnStartedMonotonic = performance.now();
   const input = parseTurnInput(body);
+  throwIfTurnCancelled(deps.signal);
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const timestamp = deps.now ?? (() => new Date().toISOString());
   const userOccurredAt = timestamp();
@@ -578,6 +581,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
           ? "collecting"
           : null;
     try {
+      throwIfTurnCancelled(deps.signal);
       result = await deps.runAgent({
         today: deps.today,
         campaign: next,
@@ -593,7 +597,10 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
         ...(acceptedTexts.length ? { accepted: acceptedTexts } : {}),
         canUndo: latest.seq > 1,
       }, recordTrace, deps.emitProgress);
+      throwIfTurnCancelled(deps.signal);
     } catch (error) {
+      if (deps.signal?.aborted) throw new TurnCancelledError();
+      if (isTurnCancelled(error)) throw error;
       // 远端 Agent 的步骤只能由 Agent 进程自己的时钟收尾；网络中断时宁可不持久化
       // 那条未完成步骤，也不能用 Workers 墙钟编一个耗时。编排器步骤则都在本进程。
       for (const event of traceEvents.filter((item) => item.status === "started" && item.initiatedBy === "orchestrator")) {
@@ -722,6 +729,8 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     })),
   ];
   const committedAt = timestamp();
+  // 取消只能在线性化边界前生效；原子提交一旦开始，就必须返回完整提交结果。
+  throwIfTurnCancelled(deps.signal);
   return commitAndLoad(deps, {
     isNew: false,
     now: committedAt,

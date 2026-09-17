@@ -524,6 +524,89 @@ test("agent failures keep the request retryable", async () => {
   assert.equal(snapshot.latest.seq, seq);
 });
 
+test("主动停止模型回合时不落用户消息、错误消息或新版本", async () => {
+  const controller = new AbortController();
+  const d = deps([]);
+  d.signal = controller.signal;
+  d.runAgent = async () => {
+    controller.abort();
+    throw new DOMException("已停止", "AbortError");
+  };
+  const initial = await createSession({ entryMode: "new", text: "你好" }, d);
+
+  await assert.rejects(
+    () => runTurn(initial.session.id, { type: "interpret", expectedSeq: initial.latest.seq }, d),
+    (error: unknown) => error instanceof Error && error.name === "AbortError",
+  );
+
+  const stored = await d.store.load(initial.session.id);
+  assert.equal(stored?.versions.length, 1);
+  assert.deepEqual(stored?.messages.map((message) => message.content.kind), ["user_text"]);
+});
+
+test("取消信号优先于同时到达的普通 Agent 错误", async () => {
+  const controller = new AbortController();
+  const d = deps([]);
+  d.signal = controller.signal;
+  d.runAgent = async () => {
+    controller.abort();
+    throw new Error("上游连接断开");
+  };
+  const initial = await createSession({ entryMode: "new", text: "你好" }, d);
+
+  await assert.rejects(
+    () => runTurn(initial.session.id, { type: "interpret", expectedSeq: initial.latest.seq }, d),
+    (error: unknown) => error instanceof Error && error.name === "AbortError",
+  );
+});
+
+test("开始前已停止的回合不会调用 Agent", async () => {
+  const d = deps([]);
+  const initial = await createSession({ entryMode: "new", text: "你好" }, d);
+  const controller = new AbortController();
+  controller.abort();
+  d.signal = controller.signal;
+
+  await assert.rejects(
+    () => runTurn(initial.session.id, { type: "interpret", expectedSeq: initial.latest.seq }, d),
+    (error: unknown) => error instanceof Error && error.name === "AbortError",
+  );
+  assert.equal(d.calls(), 0);
+});
+
+test("原子提交开始后取消不会伪装成未提交", async () => {
+  const controller = new AbortController();
+  const d = deps([record(example("T2").firstWrites)]);
+  d.signal = controller.signal;
+  const initial = await startNew(d, "T2");
+  const baseStore = d.store;
+  let markCommitStarted!: () => void;
+  let releaseCommit!: () => void;
+  const commitStarted = new Promise<void>((resolve) => { markCommitStarted = resolve; });
+  const mayCommit = new Promise<void>((resolve) => { releaseCommit = resolve; });
+  d.store = {
+    list: () => baseStore.list(),
+    load: (id) => baseStore.load(id),
+    remove: (id) => baseStore.remove(id),
+    commit: async (write) => {
+      markCommitStarted();
+      await mayCommit;
+      await baseStore.commit(write);
+    },
+  };
+
+  const pending = interpret(initial, d);
+  await commitStarted;
+  controller.abort();
+  releaseCommit();
+  const snapshot = await pending;
+
+  const stored = await baseStore.load(initial.session.id);
+  assert.equal(snapshot.latest.seq, 2);
+  assert.equal(stored?.versions.length, 2);
+  assert.equal(stored?.messages.at(-1)?.content.kind, "agent_text");
+});
+
 test("a nod that fails in the agent keeps nothing and can be retried", async () => {
   const d = deps([T2_ASK, new Error("Agent 超时了，请重试")]);
   let snapshot = await askedT2(d);
