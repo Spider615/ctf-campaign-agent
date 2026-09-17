@@ -261,8 +261,16 @@ function validateSourceDeclaration(sourcePath: string, note: string | undefined,
   if (/^[a-z][a-z\d+.-]*:/i.test(sourcePath)) {
     throw new SkillCatalogError(relativePath, "来源路径不能使用 URL 或其他协议");
   }
-  if (note !== undefined && /^[a-z][a-z\d+.-]*:(?:\/\/|(?=[^\\/]))/i.test(note)) {
-    throw new SkillCatalogError(relativePath, "来源定位说明不能使用 URL 或其他协议");
+  if (note !== undefined) {
+    const schemePattern = /(?:^|[^A-Za-z0-9+.-])([a-z][a-z\d+.-]*:)(?=\/|[^\s\\/])/gi;
+    for (const match of note.matchAll(schemePattern)) {
+      const scheme = match[1];
+      const isWindowsDrive = /^[a-z]:$/i.test(scheme)
+        && note.slice((match.index ?? 0) + match[0].length - scheme.length, (match.index ?? 0) + match[0].length + 1).match(/[\\/]/);
+      if (!isWindowsDrive) {
+        throw new SkillCatalogError(relativePath, "来源定位说明不能使用 URL 或其他协议");
+      }
+    }
   }
   if (isAbsolute(sourcePath) || sourcePath.startsWith("\\\\")) {
     throw new SkillCatalogError(relativePath, "来源路径必须是仓库相对路径，不能是绝对路径");

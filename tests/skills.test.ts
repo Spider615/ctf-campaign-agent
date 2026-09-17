@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -320,7 +321,7 @@ test("Skill name 超过 64 个 Unicode code point 时拒绝", () => {
   );
 });
 
-test("SKILL.md 不是可读取的普通文件时拒绝", () => {
+test("SKILL.md 不是普通文件时拒绝", () => {
   const pluginDir = createPlugin();
   rmSync(join(pluginDir, "skills", "field-explainer", "SKILL.md"));
   mkdirSync(join(pluginDir, "skills", "field-explainer", "SKILL.md"));
@@ -329,6 +330,21 @@ test("SKILL.md 不是可读取的普通文件时拒绝", () => {
     "skills/field-explainer/SKILL.md",
     /可读取|文件/,
   );
+});
+
+test("普通 SKILL.md 读取失败时包装为带路径的 SkillCatalogError", () => {
+  const pluginDir = createPlugin();
+  const skillPath = join(pluginDir, "skills", "field-explainer", "SKILL.md");
+  chmodSync(skillPath, 0o000);
+  try {
+    expectCatalogError(
+      () => skillModule.loadSkillCatalog(pluginDir),
+      "skills/field-explainer/SKILL.md",
+      /读取失败/,
+    );
+  } finally {
+    chmodSync(skillPath, 0o644);
+  }
 });
 
 test("声明名称重复时拒绝", () => {
@@ -582,17 +598,24 @@ test("来源定义必须使用安全的仓库相对路径和可选非空定位�
     /定位|说明|格式/,
   );
 
-  const externalLocator = createPlugin();
-  replaceSkill(
-    externalLocator,
-    "field-explainer",
-    skillMarkdown("field-explainer", { sourceLocator: "https://example.com/source" }),
-  );
-  expectCatalogError(
-    () => skillModule.loadSkillCatalog(externalLocator),
-    "skills/field-explainer/SKILL.md",
-    /URL|协议/,
-  );
+  for (const sourceLocator of [
+    "https://example.com/source",
+    "补充出处 https://example.com/source",
+    "另见 mailto:outside@example.com",
+    "https:/example.com/source",
+  ]) {
+    const externalLocator = createPlugin();
+    replaceSkill(
+      externalLocator,
+      "field-explainer",
+      skillMarkdown("field-explainer", { sourceLocator }),
+    );
+    expectCatalogError(
+      () => skillModule.loadSkillCatalog(externalLocator),
+      "skills/field-explainer/SKILL.md",
+      /URL|协议/,
+    );
+  }
 
   const mailtoLocator = createPlugin();
   replaceSkill(
