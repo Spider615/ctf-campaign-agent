@@ -72,24 +72,27 @@ const campaignBriefKey = z.enum(CAMPAIGN_BRIEF_KEYS as [CampaignBriefKey, ...Cam
 const campaignChannel = z.enum(["store", "wechat", "ecommerce", "social", "member_crm", "event"] satisfies [CampaignChannel, ...CampaignChannel[]]);
 const questionId = z.enum(QUESTION_IDS as [QuestionId, ...QuestionId[]]);
 
+async function waitForSdkOperation<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort = () => {};
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      abort = () => reject(new TurnCancelledError());
+      signal.addEventListener("abort", abort, { once: true });
+      Promise.resolve(operation()).then(resolve, reject);
+      if (signal.aborted) abort();
+    });
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 async function* cancellableMessages(messages: AsyncIterable<SDKMessage>, signal: AbortSignal) {
   const iterator = messages[Symbol.asyncIterator]();
   let done = false;
   try {
     while (!done) {
-      let abort = () => {};
-      let next: IteratorResult<SDKMessage>;
-      try {
-        next = await new Promise<IteratorResult<SDKMessage>>((resolve, reject) => {
-          abort = () => reject(new TurnCancelledError());
-          signal.addEventListener("abort", abort, { once: true });
-          // SDK 在启动或停止时可能一直挂在 next；取消不能等待它交出下一条消息。
-          Promise.resolve(iterator.next()).then(resolve, reject);
-          if (signal.aborted) abort();
-        });
-      } finally {
-        signal.removeEventListener("abort", abort);
-      }
+      // SDK 在启动或停止时可能一直挂在 next；取消不能等待它交出下一条消息。
+      const next = await waitForSdkOperation(() => iterator.next(), signal);
       throwIfTurnCancelled(signal);
       done = next.done === true;
       if (!done) yield next.value;
@@ -98,9 +101,8 @@ async function* cancellableMessages(messages: AsyncIterable<SDKMessage>, signal:
     if (!done && iterator.return) {
       try {
         const closing = iterator.return();
-        // 异步生成器的 return 也可能排在挂起的 next 后面；发出关闭请求但不阻塞取消。
-        if (signal.aborted) void Promise.resolve(closing).catch(() => {});
-        else await closing;
+        // return 可能排在挂起的 next 后面，也可能自身挂起；整个关闭等待都必须可取消。
+        await waitForSdkOperation(() => closing, signal);
       } catch (error) {
         if (!signal.aborted) throw error;
       }
@@ -137,11 +139,11 @@ export function createAgentRunner(
       onTrace?.(event);
     };
 
+    const cancelledToolResult = () => ({ content: [{ type: "text" as const, text: "已停止生成" }], isError: true });
     const handle = (name: AgentToolName) => async (args: Record<string, unknown>) => {
-      const cancelled = () => ({ content: [{ type: "text" as const, text: "已停止生成" }], isError: true });
-      if (externalSignal?.aborted) return cancelled();
+      if (externalSignal?.aborted) return cancelledToolResult();
       setPublicPhase("analyzing");
-      if (externalSignal?.aborted) return cancelled();
+      if (externalSignal?.aborted) return cancelledToolResult();
       const started = startTraceEvent({
         id: crypto.randomUUID(),
         tool: name,
@@ -151,7 +153,7 @@ export function createAgentRunner(
       });
       state.trace = mergeTraceEvent(state.trace, started);
       onTrace?.(started);
-      if (externalSignal?.aborted) return cancelled();
+      if (externalSignal?.aborted) return cancelledToolResult();
       const outcome = runCampaignToolWithSkillGate(
         state,
         name,
@@ -165,7 +167,7 @@ export function createAgentRunner(
       });
       state.trace = mergeTraceEvent(state.trace, finished);
       onTrace?.(finished);
-      if (externalSignal?.aborted) return cancelled();
+      if (externalSignal?.aborted) return cancelledToolResult();
       if (config.debug) {
         console.log(`[tool] ${name} ${JSON.stringify(args).slice(0, 800)}\n       → ${outcome.isError ? "拒绝：" : ""}${outcome.text.slice(0, 500)}`);
       }
@@ -176,10 +178,16 @@ export function createAgentRunner(
     };
 
     // SDK 只开放 Skill；活动读写仍由这些确定性工具完成。
-    const campaign = createSdkMcpServer({
-      name: "campaign",
-      version: "2.0.0",
-      tools: [
+    const campaign = createSdkMcpServer({ name: "campaign", version: "2.0.0", tools: [] });
+    const server = campaign.instance.server;
+    const setRequestHandler = server.setRequestHandler.bind(server);
+    // 在 MCP 注册 tools/call 时包住请求入口，先检查取消，再交回原有的工具 schema 校验。
+    server.setRequestHandler = (schema, handler) => setRequestHandler(schema, (request, extra) => {
+      if (request.method === "tools/call" && externalSignal?.aborted) return cancelledToolResult();
+      return handler(request, extra);
+    });
+    try {
+      const campaignTools = [
         tool("update_campaign_brief", "按用户这一轮的原话整理活动 Brief，不得猜测或补写用户没说的信息", {
           writes: z.array(z.object({
             key: campaignBriefKey,
@@ -232,8 +240,18 @@ export function createAgentRunner(
         }, handle("draft_promo_copy")),
         tool("generate_ics1811_sheet", "活动信息齐了时查看 ICS-1811 填写值摘要；齐了系统也会自动生成", {}, handle("generate_ics1811_sheet")),
         tool("undo_campaign_change", "撤销上一次修改", {}, handle("undo_campaign_change")),
-      ],
-    });
+      ];
+      for (const definition of campaignTools) {
+        campaign.instance.registerTool(definition.name, {
+          description: definition.description,
+          inputSchema: definition.inputSchema,
+          annotations: definition.annotations,
+          _meta: definition._meta,
+        }, definition.handler);
+      }
+    } finally {
+      server.setRequestHandler = setRequestHandler;
+    }
 
     mkdirSync(config.runtimeDir, { recursive: true });
     const abortController = new AbortController();

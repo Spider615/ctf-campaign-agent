@@ -162,6 +162,99 @@ test("SDK 不结束 next 时 runner 仍立即取消，并请求关闭迭代器",
   }
 });
 
+for (const lateReject of [false, true]) {
+  test(`SDK 关闭已经挂起时仍可取消，并消费迟到的${lateReject ? "拒绝" : "完成"}`, { timeout: 5000 }, async (t) => {
+    const runtimeDir = mkdtempSync(join(tmpdir(), "ctf-agent-closing-"));
+    t.after(() => rmSync(runtimeDir, { recursive: true, force: true }));
+    const closingStarted = Promise.withResolvers<void>();
+    const closing = Promise.withResolvers<IteratorResult<SDKMessage>>();
+    let returns = 0;
+    let sdkSignal: AbortSignal | undefined;
+    const runner = createAgentRunner({ model: "test", modelBaseUrl: "http://127.0.0.1", apiKey: "test", runtimeDir, pluginDir: join(process.cwd(), "agent/plugin") }, { query: ({ options }) => {
+      sdkSignal = options!.abortController!.signal;
+      return { [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: false, value: { type: "result", subtype: "error_max_turns" } as SDKMessage }),
+        return() { returns++; closingStarted.resolve(); return closing.promise; },
+      }) };
+    } });
+    const controller = new AbortController();
+    let failure: unknown;
+    let settled = false;
+    const pending = runner(request, undefined, undefined, controller.signal)
+      .catch((error: unknown) => { failure = error; })
+      .finally(() => { settled = true; });
+    await closingStarted.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "非取消时必须等待正常关闭完成");
+    controller.abort();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      assert.ok(failure instanceof Error && failure.name === "AbortError", "关闭中的取消应立即结束 runner");
+      assert.equal(returns, 1);
+      assert.deepEqual(getEventListeners(sdkSignal!, "abort"), []);
+      assert.deepEqual(getEventListeners(controller.signal, "abort"), []);
+    } finally {
+      if (lateReject) closing.reject(new Error("迟到的关闭失败"));
+      else closing.resolve({ done: true, value: undefined });
+      await pending;
+      // node:test 会把迟到的未处理拒绝作为测试失败；显式跨过事件循环让它可被观察。
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  });
+}
+
+test("取消在工具 schema 校验之前拒绝畸形参数，正常请求仍使用原 schema", { timeout: 5000 }, async (t) => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "ctf-agent-invalid-tool-"));
+  t.after(() => rmSync(runtimeDir, { recursive: true, force: true }));
+  const ready = Promise.withResolvers<Client>();
+  const release = Promise.withResolvers<void>();
+  const query: AgentQuery = async function* ({ options }) {
+    yield skillMessage;
+    yield skillResult;
+    const campaign = options!.mcpServers!.campaign;
+    assert.ok("instance" in campaign);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "参数取消测试", version: "1" });
+    await campaign.instance.connect(serverTransport);
+    await client.connect(clientTransport);
+    ready.resolve(client);
+    await release.promise;
+  };
+  const runner = createAgentRunner({ model: "test", modelBaseUrl: "http://127.0.0.1", apiKey: "test", runtimeDir, pluginDir: join(process.cwd(), "agent/plugin"), debug: true }, { query });
+  const controller = new AbortController();
+  const seen: unknown[] = [];
+  const logs: unknown[] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => { logs.push(args); });
+  t.mock.method(console, "error", (...args: unknown[]) => { logs.push(args); });
+  const before = structuredClone(request);
+  const pending = runner(request, (event) => seen.push(event), (event) => seen.push(event), controller.signal);
+  const rejected = assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
+  const client = await ready.promise;
+  try {
+    seen.length = 0;
+    logs.length = 0;
+    const invalid = { writes: "invalid" };
+    const normalResult = await client.callTool({ name: "update_campaign_brief", arguments: invalid });
+    assert.equal(normalResult.isError, true);
+    assert.match(JSON.stringify(normalResult.content), /Input validation error/);
+    assert.deepEqual(seen, []);
+    assert.deepEqual(logs, []);
+    controller.abort();
+    for (const args of [invalid, { writes: [{ key: "unknown", quote: 1 }] }]) {
+      const result = await client.callTool({ name: "update_campaign_brief", arguments: args });
+      assert.deepEqual(result, { content: [{ type: "text", text: "已停止生成" }], isError: true });
+    }
+    assert.deepEqual(request, before);
+    assert.deepEqual(seen, []);
+    assert.deepEqual(logs, []);
+  } finally {
+    controller.abort();
+    release.resolve();
+    await client.close();
+    await rejected;
+  }
+});
+
 test("取消后即使 SDK 继续调用 MCP 工具也不能执行领域写入或记录参数", { timeout: 5000 }, async (t) => {
   const runtimeDir = mkdtempSync(join(tmpdir(), "ctf-agent-tool-"));
   t.after(() => rmSync(runtimeDir, { recursive: true, force: true }));
