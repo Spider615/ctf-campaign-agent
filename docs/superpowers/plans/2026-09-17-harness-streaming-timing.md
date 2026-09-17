@@ -26,7 +26,7 @@
 - Modify: `tests/agent-tools.test.ts`
 - Modify: `app/lib/agent/tools.ts`
 
-- [ ] Add failing table tests for uplift-claim removal, question removal, sentence/line boundary trimming, and the 800-character cap through an exported pure sanitizer.
+- [ ] Add failing table tests for uplift-claim removal, legal-question preservation, sentence/line boundary trimming, and the 800-character cap through an exported pure sanitizer.
 - [ ] Run the focused test and confirm the sanitizer is not yet exported/reusable.
 - [ ] Extract the cleaning logic used by `finishAgentTurn` into a dependency-free pure function and keep final behavior byte-for-byte compatible.
 - [ ] Add a helper that releases only safe complete lines/sentences from a growing candidate while retaining an unsafe/incomplete tail.

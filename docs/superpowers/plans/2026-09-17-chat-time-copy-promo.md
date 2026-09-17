@@ -43,7 +43,7 @@
 - Create or Modify: `app/lib/client/message-time.ts`
 - Modify: `app/components/chat/message-view.tsx`
 
-- [ ] Add failing pure formatter tests for same-day `HH:mm`, prior-day `MM-DD HH:mm`, invalid ISO fallback, Asia/Shanghai timezone, full `title`, and accessible label.
+- [ ] Add failing pure formatter tests for same-day `HH:mm`, prior-day `M月D日 HH:mm`, invalid ISO fallback, Asia/Shanghai timezone, full `title`, and accessible label.
 - [ ] Add a rendering-contract test proving every message branch includes one semantic `<time>`.
 - [ ] Implement the dependency-free formatter with an injectable `now` for stable tests.
 - [ ] Render time for user bubbles, assistant text, tool traces, changes, fill sheets, and errors; never suppress repeated minute labels.
@@ -78,7 +78,7 @@
 
 - [ ] Add failing history-table tests: no fill sheet → hidden; first fill sheet without promo → shown only on that completion message; later fill-sheet refresh → not repeated; any existing promo → hidden; incomplete/blocked activity → hidden.
 - [ ] Implement a pure helper that identifies the eligible first `agent_fill_sheet` message from current Snapshot history.
-- [ ] Render a secondary action labelled `继续生成对外宣传文案` under only that message, disabled while a turn is busy.
+- [ ] Render a secondary action labelled `生成宣传内容` under only that message, disabled while a turn is busy.
 - [ ] Re-run focused tests and frontend TypeScript.
 - [ ] Commit: `feat: invite promo copy after completion`
 
@@ -90,7 +90,7 @@
 - Modify: `app/components/chat/conversation.tsx`
 - Modify: `app/components/app-shell.tsx` or the existing draft-tab controller
 
-- [ ] Add a failing interaction test proving the click sends exactly `请基于当前活动生成一份对外宣传文案` as a normal `text` turn with the current `expectedSeq`.
+- [ ] Add a failing interaction test proving the click sends exactly `请基于当前活动生成一份对外营销宣传内容` as a normal `text` turn with the current `expectedSeq`.
 - [ ] Add/retain the routing assertion for `campaign-sop` then `promo-copy-guide`, and the tool assertion for `draft_promo_copy`.
 - [ ] Add failure tests: busy disables repeat clicks; failed turn leaves the CTA available; success removes it and requests the existing `promo` tab.
 - [ ] Wire the action through the same `submitText` path as typed user input; do not introduce a special backend endpoint.

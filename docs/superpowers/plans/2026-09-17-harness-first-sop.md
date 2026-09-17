@@ -43,7 +43,7 @@
 - Modify: `tests/skills.test.ts`
 
 - [ ] Add a failing catalog test for five baseline Skills and a source-validation test for `campaign-sop`.
-- [ ] Add failing content-contract assertions for the approved six H2 sections and for workflow rules: extract explicit facts, analyze, ask only returned gaps, at most two question rounds, never default human-decided fields, refresh fill values after changes, and offer—but never auto-run—promo copy after completion.
+- [ ] Add failing content-contract assertions for the approved six H2 sections and for workflow rules: extract explicit facts, analyze, ask 1–3 current gaps on every collecting turn without a round cap, never default human-decided fields, refresh fill values after changes, and offer—but never auto-run—promo copy after completion.
 - [ ] Run `node --test --experimental-strip-types tests/skills.test.ts` and confirm failure because the Skill is absent.
 - [ ] Create the Skill with frontmatter name `campaign-sop`, a routing description that exactly matches its first `适用场景` bullet, and H2 sections `适用场景` / `回答原则` / `业务知识` / `不能做什么` / `冲突处理` / `出处`.
 - [ ] Cite only `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`, `app/lib/server/turns.ts`, and the relevant `app/lib/campaign/ics1811/*.ts` files; do not cite the new design as the origin of a business rule when an implementation source exists.
