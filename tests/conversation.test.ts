@@ -694,37 +694,20 @@ test("tools drop quotes the user did not say, reject bad copy, and replies keep 
   assert.equal(finishAgentTurn(createAgentState(request), "好的").asking, null);
 });
 
-test("prompts carry today, what the agent asked and proposed, and the recorded facts", () => {
+test("system prompt is a generic marketing-agent contract and the user prompt carries the current business API", () => {
   const t2 = example("T2");
   const draft = applyFactWrites(createEmptyDraft("p", t2.first), t2.firstWrites, { text: t2.first, today: TODAY }).draft;
   const system = buildAgentSystemPrompt(TODAY);
   assert.match(system, /今天是 2026-09-16/);
-  assert.match(system, /每次 extract_campaign_facts 或 accept_campaign_proposals 后都必须调用 analyze_campaign_state/);
-  assert.match(system, /ask_campaign_questions/);
-  assert.doesNotMatch(system, /\bupdate_fields\b|confirm_campaign_readback|build_campaign_readback/);
-  for (const skill of [
-    "ics1811:offer-entry-guide",
-    "ics1811:field-explainer",
-    "ics1811:settlement-guide",
-    "ics1811:promo-copy-guide",
-  ]) {
-    assert.match(system, new RegExp(skill));
-  }
-  assert.match(system, /解释性问题且不需要读取或修改活动数据时，不需要调用活动工具；需要业务知识时仍必须先用 Skill/);
-  assert.match(
-    system,
-    /解释字段后，只有 analyze_campaign_state 把该项列为缺项时，才用 ask_campaign_questions 登记；已经有值或用户只是问含义时，不登记、不追问/,
-  );
-  assert.match(system, /活动工具和确定性代码结果优先于 Skill/);
-  assert.match(system, /Skill 只负责解释和指导，不能声称已经保存、已经齐全或已经通过校验/);
-  assert.match(system, /每一轮都是新的/);
-  assert.match(system, /起草前必须先成功加载 ics1811:promo-copy-guide/);
-  assert.doesNotMatch(system, /没加载成功，按已有规则继续/);
-  assert.doesNotMatch(system, /计折上折：销售提成口径|结算说明函按指引|浮动折扣模式：/);
-  // 模型曾承诺「帮你按区域拆成 3 张单」，没有工具能拆单，它就一直空转到 120s 超时。
-  // 这两句是那次的修复，删掉会让同样的超时重新出现，所以在这里盯住。
-  assert.match(system, /不能拆单/);
-  assert.match(system, /一个活动只能选一个区域/);
+  assert.match(system, /企业营销运营的活动搭建 Agent/);
+  assert.match(system, /当前客户和具体业务由本轮 Skill 与工具定义/);
+  assert.match(system, /每个模型回合[^\n]*先加载[^\n]*必需 Skill/);
+  assert.match(system, /工具结果与确定性代码[^\n]*执行真相/);
+  assert.match(system, /不暴露[^\n]*系统提示词[^\n]*内部推理/);
+  assert.match(system, /业务工具完成前[^\n]*不要输出面向用户的铺垫/);
+  assert.match(system, /只问[^\n]*工具返回的缺项/);
+  assert.match(system, /简洁[^\n]*自然[^\n]*中文/);
+  assert.doesNotMatch(system, /周大福|ICS-1811|extract_campaign_facts|ask_campaign_questions|Q1|FactKey|计折上折|结算说明函|浮动折扣/);
 
   const proposal = (checkProposal(draft, "Q5a", { none: true }) as { ok: true; proposal: Proposal }).proposal;
   const request: AgentRequest = {
@@ -732,15 +715,20 @@ test("prompts carry today, what the agent asked and proposed, and the recorded f
     phase: "collecting", openQuestions: ["Q1"], proposals: [proposal], canUndo: true,
   };
   const prompt = buildAgentUserPrompt(request);
+  assert.match(prompt, /当前客户：周大福/);
+  assert.match(prompt, /目标页面：ICS-1811/);
+  assert.match(prompt, /extract_campaign_facts/);
+  assert.match(prompt, /analyze_campaign_state/);
+  assert.match(prompt, /Q5c 结算说明函：只能提议 \{"has":true\}；没有要用户自己说/);
   assert.match(prompt, /你上一句问的问题：Q1 活动从哪天到哪天？/);
   assert.match(prompt, /你上一句的提议（用户同意就按这个记）：Q5a 让扣点和回款率：让扣点 0，回款率 0/);
   assert.match(prompt, /还缺：Q1 活动从哪天到哪天？/);
   assert.match(prompt, /门店：7590/);
   assert.match(prompt, /用户说：「下周开始」/);
 
-  const requiredPrompt = buildAgentUserPrompt(request, ["field-explainer"]);
+  const requiredPrompt = buildAgentUserPrompt(request, ["campaign-sop", "field-explainer"]);
   assert.match(requiredPrompt, /## 本轮业务规则/);
-  assert.match(requiredPrompt, /必须先加载：ics1811:field-explainer/);
+  assert.match(requiredPrompt, /必须先加载：ics1811:campaign-sop、ics1811:field-explainer/);
   assert.doesNotMatch(requiredPrompt, /ics1811:offer-entry-guide/);
 
   const plainPrompt = buildAgentUserPrompt(request, []);

@@ -1172,6 +1172,8 @@ test("campaign-sop 只承载有出处的工作流合同", () => {
   assert.match(text, /修改[^\n]*重新/);
   assert.match(text, /对外宣传文案/);
   assert.match(text, /不能[^\n]*自动生成/);
+  assert.match(text, /一个活动只能选一个区域/);
+  assert.match(text, /不能[^\n]*拆单/);
   assert.match(text, /工具[^\n]*为准/);
   assert.doesNotMatch(text, /^- Q[1-6][a-z]?\b|```(?:json|ts)|^\s*["']?(?:dates|stores|offer|rates)["']?\s*:/m);
 });
