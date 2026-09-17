@@ -4,9 +4,9 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## 项目
 
-周大福「优惠开单活动」创建助手的产品 demo：运营用对话描述一个优惠活动，Agent 按《优惠开单活动创建 SOP》§9 追问人定字段（最多两轮），白话复述、确认后输出 ICS-1811「优惠开单活动新增」页面的逐项填写值。不连接任何周大福生产系统（1811/1815/1816），代码表是演示编造的。代码注释、界面文案、错误信息都用中文，新增内容保持一致。
+周大福「优惠开单活动」创建助手的产品 demo：运营用对话描述一个优惠活动，Agent 边聊边把活动搭起来——按《优惠开单活动创建 SOP》§9 的人定字段缺什么接着问（可以提议具体值，用户点头才记），齐了直接生成 ICS-1811「优惠开单活动新增」页面的逐项填写值，之后的修改同步更新。不连接任何周大福生产系统（1811/1815/1816），代码表是演示编造的。代码注释、界面文案、错误信息都用中文，新增内容保持一致。
 
-实现依据是 `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`（下称设计文档）；文中「§」指 SOP 章节，「第 X 节」指设计文档章节。
+业务实现依据是 `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`，其中追问轮次和复述确认已被 `2026-09-16-conversational-build-design.md`（决策 D5 齐了直接建好、D6 人定项提议加点头）取代；浅色工作台和工具轨迹依据是 `docs/superpowers/specs/2026-09-16-light-ai-workspace-design.md`；文中「§」指 SOP 章节，「第 X 节」指业务设计文档章节。
 
 ## 命令
 
@@ -69,24 +69,27 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 `runTurn` 的流程：
 
 1. `expectedSeq` 必须等于最新版本的 seq，否则 409，客户端会重新拉快照。D1 上 `(session_id, seq)` 的唯一索引是第二道防线。
-2. 只有 `interpret`（新建会话后由对话页自动发起）和 `text` 调模型。`card`（选项提交）、`edit`（面板、WebMCP）、`confirm`、`dismiss`、`undo`、`rollback` 由代码直接处理。示例会话（`entryMode: "example"`）用 T1 夹具，不调模型。
-3. 模型回来后代码重算 `deriveFill` → `checkDraft` → `planNext`，决定出追问、出复述，还是（确认后）出填写值。追问内容、轮次、复述、能不能确认都不由模型决定。追问开着时用户打字：问题都还在这一轮里就不出新追问；回答引出了新追问就出下一轮。
-4. 有 diff 才写新版本，并追加 `agent_change`；Agent 失败时写一条带 retry 的 `agent_error`，用户输入不丢。
+2. 只有 `interpret`（新建会话后由对话页自动发起）和 `text` 调模型。`edit`（面板、WebMCP）、`dismiss`、`undo`、`rollback` 由代码直接处理；没有 `card` 和 `confirm`。示例会话（`entryMode: "example"`）用 T1 夹具，不调模型，直接建好。
+3. 用户整句只是点头（`isPureAgreement`）且上一句有提议时，编排器在调模型前按提议记下（`accept_campaign_proposals`，initiatedBy orchestrator）。模型工具事件由 Workers 流式转发；模型漏了规则分析时编排器真实补跑并写入同一轨迹。
+4. 模型回来后代码重算 `deriveFill` → `checkDraft` → `planNext`（`collect` / `ready` / `out_of_scope`）。问什么、怎么说归模型；缺什么、齐没齐归代码。模型回复连同它登记的 `asking` / `proposals` 存成 `agent_text`（提议再经 `withoutEitherOr` 去掉二选一问法）。模型没登记时 `replyWithQuestions` 兜底：记下了东西却没问 → 按 `QUESTION_PRIORITY` 补问两项；有问句没登记 → 不算在问任何一项；只是在答疑 → 上一句的问题延续，提议不延续。
+5. `ready` 且这一轮有改动（或还没出过这个版本的填写值）时，编排器 `generate_ics1811_sheet` 并追加 `agent_fill_sheet`（带代码写的 `summary` / `lines`），不需要确认。
+6. 有 diff 才写新版本，并追加 `agent_change`；完整工具轨迹作为 `agent_tool_trace` 落库。Agent 失败时写一条带 retry 的 `agent_error`，用户输入不丢。
 
-对话状态（第几轮、追问是否还开着、最新复述、是否已确认）全部由 `ics1811/messages.ts` 的 `flowOf` 从消息记录推出，不另存，撤销和恢复不会重置轮次。
+对话状态（Agent 上一句在问什么、提议了什么、填写值生成到哪个版本）全部由 `ics1811/messages.ts` 的 `flowOf` 从消息记录推出，不另存；取用时再和当前缺项取交集。
 
 ### 领域层 `app/lib/campaign/ics1811/`（纯函数）
 
 - `types.ts`：事实层 `Ics1811Draft`（`facts` 每项带用户原话 `quote`）是唯一存储的业务数据；`FillModel` 每轮从事实层重算，不接受写入。
-- `facts.ts` 的 `applyFactWrites`：模型写入的守卫。quote 必须是用户这一轮原话的子串；数值由 `phrases.ts` 从 quote 重新换算，不用模型给的 value。`RULES` 按 FactKey 穷举。「可以」「没有」这类短回答只在对应问题正在问时（`openQuestions`）才算。
-- `phrases.ts`：中文说法 → 1811 取值（日期、折扣、满减、每克减、让扣点回款率、提成口径等），`digitize` 按上下文把中文数字转成阿拉伯数字；「不知道」「待定」一律不记。
+- `facts.ts` 的 `applyFactWrites`：模型写入的守卫。quote 必须是用户这一轮原话的子串；数值由 `phrases.ts` 从 quote 重新换算，不用模型给的 value。`RULES` 按 FactKey 穷举。「可以」「没有」这类短回答只在 Agent 上一句登记问过这一项时（`openQuestions`）才算；这一项上一句带着提议时（`proposed`）不走是/否兜底，免得「不对」把提议值记反。门店说「再加 / 不做了」按增减合并，不整体替换；让扣点、回款率已有值时可以只改一项。
+- `phrases.ts`：中文说法 → 1811 取值（日期、折扣、满减、每克减、让扣点回款率、提成口径等），`digitize` 按上下文把中文数字转成阿拉伯数字；「不知道」「待定」一律不记。`agreesToProposal` 看 quote 的第一小句是不是纯点头；`isPureAgreement` 要求整句每一小句都是纯点头；带问号、「对吧」「是嘛」这类求证都不算。
 - `offer-spec.ts`：`detectPattern` 判定玩法（顺序有意义：特殊活动 → 不支持的类型 → 通用玩法），`OFFER_TYPES` 是明细优惠类型规格（支持级别 A/B/C/D）。
 - `codebook.ts`：demo 唯一的代码表，每个取值标来源（截图 / 指引文字 / 导入模板 / 编造）。
 - `derive.ts` 的 `deriveFill`：事实层 → 活动信息、明细、活动分组、建完后待办、提示；`outOfScope` 只给抽奖这类明确不带成交优惠的活动。
-- `questions.ts`：问题目录（§9(二)，`QUESTION_TITLE`、对话里的回答示例 `QUESTION_EXAMPLE`）、`gapsOf`、`planNext`（`MAX_ROUNDS = 2`）。
+- `questions.ts`：缺项目录（§9(二)，`QUESTION_TITLE`、`QUESTION_IDS`、回答示例 `QUESTION_EXAMPLE`）、`gapsOf`、`planNext`（缺项或阻断 → `collect`，否则 `ready`；没有轮次）。
+- `proposals.ts`：Agent 提议。`PROPOSABLE` 列出能提议的题（Q5c 只能提议「有」、Q6a 只能提议不加），`checkProposal` 按 `card.ts` 的结构化回答校验、挡掉过去的日期，由代码渲染 `text` 和原值 `before`；缺项和已填项（建好后替用户换算的改动）都能提议。`liveProposals` 在原值变了时让提议作废，`withoutEitherOr` 去掉二选一问法下登记的提议，`acceptProposals` 记下（`via: "proposal"`，quote 是用户那句话）。
 - `checks.ts`：V-A / V-D / V-R 校验，分 blocker / warning。
-- `readback.ts`、`fill-sheet.ts`：白话复述；按 1811 页面顺序的填写值和自查清单。
-- `card.ts`：选项和面板提交的解析。`messages.ts`：消息结构 `StoredMessage`（v2）、`flowOf`、改动摘要。
+- `readback.ts`、`fill-sheet.ts`：白话摘要（建好时放进 `agent_fill_sheet` 的 `summary` / `lines`，不再有复述确认）；按 1811 页面顺序的填写值和自查清单。
+- `card.ts`：结构化回答（面板修改、提议）的解析和校验。`messages.ts`：消息结构 `StoredMessage`（v2，`agent_round_card` / `agent_readback` / `user_card_submit` 和 `user_event.confirm` 只为读旧会话）、`flowOf`、改动摘要。
 - `examples.ts`：验收用例 T1–T10 夹具，测试和示例会话共用。
 
 ### Agent 工具 `app/lib/agent/`
@@ -117,13 +120,14 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 
 ### 界面 `app/components/`
 
-- 以对话为主：`chat/clarify-card.tsx` 把这一轮的问题写在对话里，附一句能照抄的回答示例；`chat/question-controls.tsx` 的选项默认收起，只是快捷方式。
-- `chat/readback-card.tsx` 是复述和确认按钮；`draft/draft-panel.tsx` 是右侧填写值面板（填写值、修改、待确认、校验、版本）。
+- 以对话为主：追问就是 Agent 的回复；有提议时回复下面一行小字写明「回「行」就按这个记」的具体值（代码渲染）。活动建好时对话里出「活动建好了」和摘要，之后改动出「填写值已同步更新」。没有卡片、确认按钮和步骤条。`chat/question-controls.tsx` 只给面板修改用。
+- `chat/tool-run-card.tsx` 与 `chat/tool-step.tsx` 展示实时和已落库的真实工具轨迹；完成轨迹默认折叠，`conversation.tsx` 收到最终 Snapshot 后替换临时轨迹。
+- `draft/draft-panel.tsx` 是右侧填写值面板（填写值、对外文案、修改、待确认、校验、版本），随对话实时更新；「不限定」这类处理放在待确认页签。
 - 页面通过 `app/lib/webmcp.ts` 暴露 WebMCP 工具（在 `app-shell.tsx` 注册），只能改名称、内容和日期，走 `edit` 回合，`origin: "tool"`。
 
 ## 必须守住的约束
 
-- **人定字段不能默认**：日期、门店、优惠、货类、让扣点回款率、提成口径、结算说明函、标语只来自用户回答（打字或选项）。问题只来自 `questions.ts` 的目录，每轮把当时的全部缺项一起问，最多两轮；两轮后仍缺就在复述里列出，不能确认。
+- **人定字段不能默认**：日期、门店、优惠、货类、让扣点回款率、提成口径、结算说明函、标语只来自用户说过的话、面板修改，或用户点头同意的 Agent 提议（`proposals.ts`）。缺项只来自 `questions.ts` 的目录，模型不能加项；优惠方式和力度、标语原文、法务确认不能提议。缺项没齐或有阻断时不生成填写值。
 - **数值只认原话**：quote 不在用户这一轮的话里就丢弃。不要为了让模型更顺而放宽 `facts.ts` / `phrases.ts` 的守卫；新说法在 `phrases.ts` 补换算并加用例。「不知道」不等于「没有」，让扣点不能因此填 0。
 - **代码表只在 `codebook.ts` 编造**，并标明来源；标语只能是用户给的、法务确认过的原文，模型不写。
 - **模块边界**：`agent/server.ts` 和 `npm test` 都用 Node strip-types 直接加载 `app/lib/{campaign,agent,server}`，所以这些模块（`runtime.ts` 除外）必须：
