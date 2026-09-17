@@ -166,6 +166,12 @@ test("插件清单不是有效 JSON 或插件名错误时拒绝", () => {
   );
 });
 
+test("缺少 skills 目录时拒绝", () => {
+  const pluginDir = createPlugin();
+  rmSync(join(pluginDir, "skills"), { recursive: true, force: true });
+  expectCatalogError(() => skillModule.loadSkillCatalog(pluginDir), "skills", /目录|读取/);
+});
+
 test("skills 为空时拒绝", () => {
   const pluginDir = createPlugin([]);
   expectCatalogError(() => skillModule.loadSkillCatalog(pluginDir), "skills", /为空|基线/);
@@ -211,6 +217,28 @@ test("frontmatter 格式错误时拒绝", () => {
     () => skillModule.loadSkillCatalog(pluginDir),
     "skills/field-explainer/SKILL.md",
     /frontmatter/,
+  );
+});
+
+test("frontmatter 缺少结束分隔线或必要字段时拒绝", () => {
+  const noClosing = createPlugin();
+  replaceSkill(noClosing, "field-explainer", skillMarkdown("field-explainer").replace(/\n---\n\n#/, "\n\n#"));
+  expectCatalogError(
+    () => skillModule.loadSkillCatalog(noClosing),
+    "skills/field-explainer/SKILL.md",
+    /结束.*frontmatter|frontmatter.*结束/,
+  );
+
+  const noName = createPlugin();
+  replaceSkill(noName, "field-explainer", skillMarkdown("field-explainer").replace("name: field-explainer\n", ""));
+  expectCatalogError(() => skillModule.loadSkillCatalog(noName), "skills/field-explainer/SKILL.md", /缺少 name/);
+
+  const noDescription = createPlugin();
+  replaceSkill(noDescription, "field-explainer", skillMarkdown("field-explainer").replace(/description: .*\n/, ""));
+  expectCatalogError(
+    () => skillModule.loadSkillCatalog(noDescription),
+    "skills/field-explainer/SKILL.md",
+    /缺少 description/,
   );
 });
 
@@ -279,6 +307,27 @@ test("Skill 名称格式错误或与目录不一致时拒绝", () => {
     () => skillModule.loadSkillCatalog(mismatch),
     "skills/field-explainer/SKILL.md",
     /目录.*一致|一致.*目录/,
+  );
+});
+
+test("Skill name 超过 64 个 Unicode code point 时拒绝", () => {
+  const pluginDir = createPlugin();
+  replaceSkill(pluginDir, "field-explainer", skillMarkdown("a".repeat(65)));
+  expectCatalogError(
+    () => skillModule.loadSkillCatalog(pluginDir),
+    "skills/field-explainer/SKILL.md",
+    /name.*格式|名称.*格式/,
+  );
+});
+
+test("SKILL.md 不是可读取的普通文件时拒绝", () => {
+  const pluginDir = createPlugin();
+  rmSync(join(pluginDir, "skills", "field-explainer", "SKILL.md"));
+  mkdirSync(join(pluginDir, "skills", "field-explainer", "SKILL.md"));
+  expectCatalogError(
+    () => skillModule.loadSkillCatalog(pluginDir),
+    "skills/field-explainer/SKILL.md",
+    /可读取|文件/,
   );
 });
 
@@ -431,6 +480,23 @@ test("前五节不能是空章节", () => {
   );
 });
 
+test("正文中非行尾来源引用也必须定义", () => {
+  const pluginDir = createPlugin();
+  replaceSkill(
+    pluginDir,
+    "field-explainer",
+    skillMarkdown("field-explainer").replace(
+      "- 业务规则来自已列明的资料。[S1]",
+      "- 业务规则 [S99] 来自已列明的资料。[S1]",
+    ),
+  );
+  expectCatalogError(
+    () => skillModule.loadSkillCatalog(pluginDir),
+    "skills/field-explainer/SKILL.md",
+    /S99.*定义|定义.*S99/,
+  );
+});
+
 test("一条规则可以在末尾引用多个带空格分隔的来源标签", () => {
   const pluginDir = createPlugin();
   replaceSkill(
@@ -524,6 +590,18 @@ test("来源定义必须使用安全的仓库相对路径和可选非空定位�
   );
   expectCatalogError(
     () => skillModule.loadSkillCatalog(externalLocator),
+    "skills/field-explainer/SKILL.md",
+    /URL|协议/,
+  );
+
+  const mailtoLocator = createPlugin();
+  replaceSkill(
+    mailtoLocator,
+    "field-explainer",
+    skillMarkdown("field-explainer", { sourceLocator: "mailto:outside@example.com" }),
+  );
+  expectCatalogError(
+    () => skillModule.loadSkillCatalog(mailtoLocator),
     "skills/field-explainer/SKILL.md",
     /URL|协议/,
   );
@@ -634,6 +712,8 @@ test("skillOf 只接受精确短名称或限定名", () => {
   assert.equal(skillModule.skillOf(catalog, "field-explainer"), expected);
   assert.equal(skillModule.skillOf(catalog, "ics1811:field-explainer"), expected);
   assert.equal(skillModule.skillOf(catalog, "ics1811:unknown"), null);
+  assert.equal(skillModule.skillOf(catalog, "other-plugin:field-explainer"), null);
+  assert.equal(skillModule.skillOf(catalog, "../field-explainer"), null);
   assert.equal(skillModule.skillOf(catalog, " field-explainer"), null);
   assert.equal(skillModule.skillOf(catalog, 42), null);
   assert.equal(skillModule.skillOf(catalog, null), null);

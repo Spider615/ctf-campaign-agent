@@ -51,6 +51,7 @@ const REQUIRED_SECTIONS = [
 const SKILL_NAME_PATTERN = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SOURCE_SUFFIX = /(?:\s*\[S[1-9]\d*\])+\s*$/;
 const SOURCE_PATTERN = /^- \[(S[1-9]\d*)\] `([^`]+)`(?: — (.+))?$/;
+const SOURCE_REFERENCE_PATTERN = /\[(S\d+)\]/g;
 const PLACEHOLDER_PATTERN = /TODO|TBD|以后补/i;
 
 type ParsedFrontmatter = {
@@ -204,7 +205,7 @@ function parseBody(
         );
       }
       if (firstUsageRule === null && sectionIndex === 0) firstUsageRule = ruleText;
-      for (const tag of suffix.matchAll(/\[(S[1-9]\d*)\]/g)) usedSourceIds.add(tag[1]);
+      for (const tag of rule.matchAll(SOURCE_REFERENCE_PATTERN)) usedSourceIds.add(tag[1]);
     }
   }
 
@@ -260,7 +261,7 @@ function validateSourceDeclaration(sourcePath: string, note: string | undefined,
   if (/^[a-z][a-z\d+.-]*:/i.test(sourcePath)) {
     throw new SkillCatalogError(relativePath, "来源路径不能使用 URL 或其他协议");
   }
-  if (note !== undefined && /[a-z][a-z\d+.-]*:\/\//i.test(note)) {
+  if (note !== undefined && /^[a-z][a-z\d+.-]*:(?:\/\/|(?=[^\\/]))/i.test(note)) {
     throw new SkillCatalogError(relativePath, "来源定位说明不能使用 URL 或其他协议");
   }
   if (isAbsolute(sourcePath) || sourcePath.startsWith("\\\\")) {
