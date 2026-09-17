@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Info, PencilLine, RotateCcw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, Megaphone, PencilLine, RotateCcw, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -9,11 +9,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { factText } from "../../lib/campaign/ics1811/messages";
 import { draftCompletion } from "../../lib/campaign/ics1811/progress";
 import { QUESTION_TITLE } from "../../lib/campaign/ics1811/questions";
-import { highlightedFields, recentlyFilled } from "../../lib/campaign/ics1811/recent-fill";
 import type { FactKey, Gap, QuestionId } from "../../lib/campaign/ics1811/types";
+import { CAMPAIGN_STAGE_LABEL, communicationAction } from "../../lib/client/campaign-workspace";
 import type { Snapshot } from "../../lib/server/turns";
 import { initialRaw, QuestionControl, toAnswer, type RawAnswer } from "../chat/question-controls";
-import { FillSheetView } from "./fill-sheet-view";
+import { BriefView } from "./brief-view";
+import { CommunicationsView } from "./communications-view";
+import { ExecutionTrackView } from "./execution-track-view";
+import { Ics1811View } from "./ics1811-view";
+import { ReadinessView } from "./readiness-view";
 
 export type PanelEdit = { answers?: Record<string, unknown>; copy?: { name?: string; content?: string } };
 
@@ -28,14 +32,16 @@ type DraftPanelProps = {
   onRollback: (seq: number) => void;
   // 点填写值里的「出处」跳回对话中说这句话的那条消息。
   onShowSource: (messageId: string) => void;
+  onGenerateCommunication: () => void;
+  onContinueCommunication: () => void;
 };
 
 export const PHASE_LABEL: Record<Snapshot["flow"]["phase"], string> = {
   interpreting: "理解中",
   collecting: "收集中",
   blocked: "待处理",
-  ready: "已建好",
-  out_of_scope: "不在 1811 范围",
+  ready: "1811 已就绪",
+  out_of_scope: "1811 不适用",
 };
 
 // 面板里能直接改的人定项；优惠、货类这类会牵动明细拆分的，在对话里改。
@@ -48,7 +54,7 @@ const EDITABLE: Array<{ id: QuestionId; fact: FactKey }> = [
 ];
 
 function AnswerEditor({ gap, snapshot, busy, onSave, onCancel }: { gap: Gap; snapshot: Snapshot; busy: boolean; onSave: (answers: Record<string, unknown>) => void; onCancel: () => void }) {
-  const [raw, setRaw] = useState<RawAnswer>(() => initialRaw(gap, snapshot.latest.draft));
+  const [raw, setRaw] = useState<RawAnswer>(() => initialRaw(gap, snapshot.latest.draft!));
   const { answer, error } = toAnswer(gap, raw);
   return (
     <div className="mt-3 space-y-2 rounded-xl border border-[#d5e5f5] bg-[#f5f9ff] p-3">
@@ -92,13 +98,16 @@ function EditRow({ label, value, editing, onToggle, children }: { label: string;
   );
 }
 
-export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss, onRollback, onShowSource }: DraftPanelProps) {
+type IcsDetailPanelProps = Omit<DraftPanelProps, "tab" | "onTabChange" | "onGenerateCommunication" | "onContinueCommunication"> & {
+  tab: string;
+  onTabChange: (tab: string) => void;
+};
+
+function IcsDetailPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss, onRollback, onShowSource }: IcsDetailPanelProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const { draft, fill, checks, sheet } = snapshot.latest;
   const { flow } = snapshot;
-  // 这一轮刚填了哪些事实：活动信息行按页面字段标，明细行按事实本身标。
-  const freshKeys = recentlyFilled(snapshot.messages, snapshot.latest.seq);
-  const freshFacts = new Set<string>(freshKeys);
+  if (!draft || !fill || !sheet) return <Ics1811View snapshot={snapshot} onShowSource={onShowSource} />;
   const blockers = checks.filter((check) => check.severity === "blocker");
   const warnings = checks.filter((check) => check.severity === "warning");
   const tbc = [...new Set([...Object.values(fill.info), ...fill.details.map((detail) => detail.businessCategory)].flatMap((item) => (item.tbc ? [item.tbc] : [])))];
@@ -135,8 +144,8 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss
 
       <Tabs value={tab} onValueChange={onTabChange} className="flex min-h-0 flex-1 flex-col">
         <TabsList variant="line" className="flex w-full shrink-0 justify-start overflow-x-auto border-b border-[#dce9f6] bg-white/45 px-3">
-          <TabsTrigger value="sheet" className="flex-none px-2.5">填写值</TabsTrigger>
-          <TabsTrigger value="promo" className="flex-none px-2.5">对外文案</TabsTrigger>
+          <TabsTrigger value="sheet" className="flex-none px-2.5">概览与填写值</TabsTrigger>
+          {snapshot.latest.promo ? <TabsTrigger value="promo" className="flex-none px-2.5">旧版文案</TabsTrigger> : null}
           <TabsTrigger value="edit" className="flex-none px-2.5">修改</TabsTrigger>
           <TabsTrigger value="tbc" className="flex-none px-2.5">待确认 {attentionCount}</TabsTrigger>
           <TabsTrigger value="checks" className="flex-none px-2.5">校验 {blockers.length}</TabsTrigger>
@@ -145,13 +154,7 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <TabsContent value="sheet">
-            <FillSheetView
-              sheet={sheet}
-              ready={flow.phase === "ready"}
-              highlighted={highlightedFields(freshKeys)}
-              freshFacts={freshFacts}
-              jump={{ messages: snapshot.messages, onShowSource }}
-            />
+            <Ics1811View snapshot={snapshot} onShowSource={onShowSource} />
           </TabsContent>
 
           <TabsContent value="promo" className="space-y-3">
@@ -183,7 +186,7 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss
               </>
             ) : (
               <p className="rounded-xl bg-[#eef6ff] p-3 text-[13px] leading-6 text-[#5f7690]">
-                还没有对外宣传文案。在对话里说「给我一份对外宣传文案」，AI 会按已经记下的活动信息起草主标题和卖点；活动时间、门店和优惠力度由系统按事实填，不让模型改写。这份文案是给运营的草稿，对外发布前要走法务确认。
+                这是旧会话保留的标题/卖点文案。请到顶层「传播方案」生成或查看新版分渠道产物。
               </p>
             )}
           </TabsContent>
@@ -260,6 +263,96 @@ export function DraftPanel({ snapshot, busy, tab, onTabChange, onEdit, onDismiss
                 ) : null}
               </div>
             ))}
+          </TabsContent>
+        </div>
+      </Tabs>
+    </div>
+  );
+}
+
+export function DraftPanel(props: DraftPanelProps) {
+  const { snapshot, busy, tab, onTabChange, onGenerateCommunication, onContinueCommunication } = props;
+  const [icsTab, setIcsTab] = useState("sheet");
+  const campaign = snapshot.latest.campaign;
+  const workspace = snapshot.workspace;
+  const communication = snapshot.latest.communication;
+  const action = communicationAction({
+    briefReady: workspace.brief.status === "ready",
+    hasCommunication: communication !== null,
+    activeTab: tab,
+  });
+  const title = campaign.brief.name?.value ?? snapshot.latest.fill?.info.name.value ?? snapshot.session.title;
+
+  const runCommunicationAction = () => {
+    if (action === "view") onTabChange("communications");
+    else if (action === "generate") onGenerateCommunication();
+    else if (action === "continue") onContinueCommunication();
+  };
+
+  const actionLabel = action === "generate"
+    ? "生成传播方案"
+    : action === "view"
+      ? "查看传播方案"
+      : action === "continue"
+        ? "继续完善"
+        : "Brief 齐备后可生成";
+
+  return (
+    <div className="flex h-full cursor-text select-text flex-col bg-[#fbf8f4]">
+      <header className="relative shrink-0 overflow-hidden border-b border-[#e4d8cf] bg-[#fffdf9] px-5 py-4">
+        <span className="absolute inset-y-0 left-0 w-1 bg-[#8f1737]" aria-hidden="true" />
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold tracking-[0.22em] text-[#9a7650]">CAMPAIGN WORKSPACE</p>
+            <h2 className="mt-1.5 line-clamp-2 font-serif text-xl text-[#431e28]">{title}</h2>
+            <p className="mt-1 text-[11px] text-[#857370]">{CAMPAIGN_STAGE_LABEL[workspace.stage]} · {workspace.executionTracks.length} 条执行轨</p>
+          </div>
+          <span className="shrink-0 border border-[#ddc8cf] bg-[#fff6f8] px-2.5 py-1 text-[10px] font-medium text-[#8f4058]">
+            {CAMPAIGN_STAGE_LABEL[workspace.stage]}
+          </span>
+        </div>
+        <button
+          type="button"
+          disabled={busy || action === "disabled"}
+          onClick={runCommunicationAction}
+          className="mt-3 inline-flex min-h-9 items-center gap-1.5 border border-[#8f1737] bg-[#8f1737] px-3 text-[11px] font-medium text-white shadow-[0_6px_16px_rgba(111,19,43,0.16)] transition hover:bg-[#741027] disabled:cursor-not-allowed disabled:border-[#d8ccc5] disabled:bg-[#eee7e1] disabled:text-[#998b85] disabled:shadow-none"
+        >
+          <Megaphone className="size-3.5" />
+          {actionLabel}
+        </button>
+      </header>
+
+      <Tabs value={tab} onValueChange={onTabChange} className="flex min-h-0 flex-1 flex-col">
+        <TabsList variant="line" className="flex w-full shrink-0 justify-start overflow-x-auto border-b border-[#e4d8cf] bg-[#fffdf9] px-3">
+          <TabsTrigger value="brief" className="flex-none px-2.5">Brief</TabsTrigger>
+          <TabsTrigger value="execution" className="flex-none px-2.5">执行</TabsTrigger>
+          <TabsTrigger value="readiness" className="flex-none px-2.5">上线检查</TabsTrigger>
+          <TabsTrigger value="communications" className="flex-none px-2.5">传播方案</TabsTrigger>
+          <TabsTrigger value="1811" className="flex-none px-2.5">1811</TabsTrigger>
+        </TabsList>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <TabsContent value="brief"><BriefView workspace={workspace} /></TabsContent>
+          <TabsContent value="execution"><ExecutionTrackView workspace={workspace} /></TabsContent>
+          <TabsContent value="readiness"><ReadinessView workspace={workspace} /></TabsContent>
+          <TabsContent value="communications" className="space-y-3">
+            <CommunicationsView plan={communication} />
+            <button
+              type="button"
+              disabled={busy || action === "disabled" || action === "view"}
+              onClick={runCommunicationAction}
+              className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 border border-[#8f1737] bg-[#fffdf9] px-3 text-[12px] font-medium text-[#8f1737] transition hover:bg-[#fff4f6] disabled:cursor-not-allowed disabled:border-[#ddd2cb] disabled:text-[#a99d97]"
+            >
+              <Megaphone className="size-3.5" />
+              {actionLabel}
+            </button>
+          </TabsContent>
+          <TabsContent value="1811">
+            <IcsDetailPanel
+              {...props}
+              tab={icsTab}
+              onTabChange={setIcsTab}
+            />
           </TabsContent>
         </div>
       </Tabs>

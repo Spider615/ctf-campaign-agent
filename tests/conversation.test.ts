@@ -99,7 +99,7 @@ test("the example session is built straight away, without the agent or any confi
   assert.ok(sheet.lines?.length, "填写值消息要说清建了什么");
   assert.equal(sheet.versionSeq, 1);
   assert.equal(sheet.sheet.info.find((row) => row.label === "活动名称")?.value, "黄金每克减15");
-  assert.deepEqual([snapshot.flow.phase, snapshot.session.status, snapshot.flow.sheetSeq], ["ready", "confirmed", 1]);
+  assert.deepEqual([snapshot.flow.phase, snapshot.session.status, snapshot.flow.sheetSeq], ["ready", "ics_ready", 1]);
   assert.equal(snapshot.session.title, "黄金每克减15");
   assert.equal(d.calls(), 0);
 });
@@ -121,7 +121,7 @@ test("the agent asks in its own words and registers what it asks and proposes", 
   assert.deepEqual(snapshot.flow.proposals.map((item) => item.id), ["Q5a", "Q5b"]);
   assert.deepEqual(snapshot.flow.proposals.map((item) => item.text), ["让扣点和回款率：让扣点 0，回款率 0", "提成口径：按实际售价算提成"]);
   assert.deepEqual(snapshot.flow.missingIds, ["Q1", "Q5a", "Q5b", "Q6a"]);
-  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["collecting", "collecting"]);
+  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["collecting", "briefing"]);
   assert.deepEqual(traceSteps(snapshot).map(([tool]) => tool), ["extract_campaign_facts", "analyze_campaign_state", "ask_campaign_questions", "analyze_campaign_plan"]);
 });
 
@@ -250,7 +250,7 @@ test("the turn that fills the last gap builds the campaign right away", async ()
   assert.equal(snapshot.flow.phase, "collecting");
   snapshot = await say(snapshot, d, "2026年10月1日到10月7日，不要标语");
 
-  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["ready", "confirmed"]);
+  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["ready", "ics_ready"]);
   const sheet = lastOfKind(snapshot, "agent_fill_sheet")!;
   assert.equal(sheet.versionSeq, snapshot.latest.seq);
   assert.equal(snapshot.flow.sheetSeq, snapshot.latest.seq);
@@ -281,7 +281,7 @@ test("a nod that fills the last gaps builds the campaign in the same turn", asyn
   // phase 按这一轮开始前算：点头刚好补齐时，模型拿到的仍是 collecting，靠 accepted 知道记下了什么。
   assert.equal(d.requests[2].phase, "collecting");
   assert.equal(d.requests[2].accepted?.length, 2);
-  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["ready", "confirmed"]);
+  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["ready", "ics_ready"]);
   assert.equal(lastOfKind(snapshot, "agent_fill_sheet")?.versionSeq, snapshot.latest.seq);
   const steps = traceSteps(snapshot);
   assert.deepEqual(steps[0], ["accept_campaign_proposals", "orchestrator"]);
@@ -326,7 +326,7 @@ test("changing a built campaign updates the fill sheet; a change that opens a ne
 
   snapshot = await say(snapshot, d, "改成满5000减500");
   assert.equal(countOf(snapshot, "agent_fill_sheet"), 2, "引出新缺项时不出填写值");
-  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["collecting", "collecting"]);
+  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["collecting", "briefing"]);
   assert.ok(snapshot.flow.missingIds.includes("Q3c"));
   // 模型没登记也没问：代码按缺项补问一句。
   const reply = lastOfKind(snapshot, "agent_text")!;
@@ -340,7 +340,7 @@ test("chatting about a built campaign does not repeat the fill sheet", async () 
   snapshot = await say(snapshot, d, "这个力度够吗");
   assert.equal(countOf(snapshot, "agent_fill_sheet"), 1);
   assert.equal(snapshot.latest.seq, 1);
-  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["ready", "confirmed"]);
+  assert.deepEqual([snapshot.flow.phase, snapshot.session.status], ["ready", "ics_ready"]);
   assert.equal(d.requests[0].phase, "ready");
 });
 

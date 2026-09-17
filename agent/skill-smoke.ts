@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import type { AgentRequest, AgentResult } from "../app/lib/agent/protocol.ts";
+import { applyCampaignBriefWrites } from "../app/lib/campaign/brief.ts";
+import type { CampaignDraft } from "../app/lib/campaign/types.ts";
+import { createCampaignDraft } from "../app/lib/campaign/workspace.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
 import { EXAMPLES } from "../app/lib/campaign/ics1811/examples.ts";
 import type { Ics1811Draft } from "../app/lib/campaign/ics1811/types.ts";
@@ -20,6 +23,7 @@ const ENV_FILE = resolve(REPO_ROOT, ".dev.vars");
 const TODAY = "2026-09-17";
 
 const MUTATING_TOOLS = new Set<CampaignToolName>([
+  "update_campaign_brief",
   "extract_campaign_facts",
   "accept_campaign_proposals",
   "ask_campaign_questions",
@@ -42,9 +46,23 @@ function readyDraft(): Ics1811Draft {
   return result.draft;
 }
 
+function readyCampaign(draft: Ics1811Draft): CampaignDraft {
+  const source = "目标是提升活动认知，面向年轻情侣，主题是东方美学新生，通过门店发布";
+  const campaign = { ...createCampaignDraft("skill-smoke-campaign", source), ics1811: structuredClone(draft) };
+  const result = applyCampaignBriefWrites(campaign.brief, [
+    { key: "objective", quote: "提升活动认知" },
+    { key: "audience", quote: "年轻情侣" },
+    { key: "theme", quote: "东方美学新生" },
+    { key: "channels", quote: "通过门店发布" },
+  ], { text: source });
+  assert.deepEqual(result.dropped, [], "Skill smoke 的 Campaign Brief 初始化失败");
+  return { ...campaign, brief: result.brief };
+}
+
 function request(text: string, draft: Ics1811Draft = readyDraft()): AgentRequest {
   return {
     today: TODAY,
+    campaign: readyCampaign(draft),
     draft: structuredClone(draft),
     history: [],
     trigger: { kind: "user_message", text },
@@ -169,7 +187,7 @@ async function main(): Promise<void> {
     };
 
     const fieldInput = request("计折上折是什么意思");
-    await runNormalCase("field", fieldInput, ["ics1811:campaign-sop", "ics1811:field-explainer"], (result) => {
+    await runNormalCase("field", fieldInput, ["ics1811:campaign-orchestrator", "ics1811:campaign-sop", "ics1811:field-explainer"], (result) => {
       const reply = replyOf(result);
       assert.match(reply, /提成/);
       assert.match(reply, /实际售价/);
@@ -188,7 +206,7 @@ async function main(): Promise<void> {
     });
 
     const offerInput = request("黄金以旧换新在 1811 怎么录");
-    await runNormalCase("offer", offerInput, ["ics1811:campaign-sop", "ics1811:offer-entry-guide"], (result) => {
+    await runNormalCase("offer", offerInput, ["ics1811:campaign-orchestrator", "ics1811:campaign-sop", "ics1811:offer-entry-guide"], (result) => {
       const reply = replyOf(result);
       assert.match(
         reply,
@@ -215,7 +233,7 @@ async function main(): Promise<void> {
     });
 
     const settlementInput = request("两家店要不要说明函");
-    await runNormalCase("settlement", settlementInput, ["ics1811:campaign-sop", "ics1811:settlement-guide"], (result) => {
+    await runNormalCase("settlement", settlementInput, ["ics1811:campaign-orchestrator", "ics1811:campaign-sop", "ics1811:settlement-guide"], (result) => {
       const reply = replyOf(result);
       assert.match(reply, /多家|两家|多店/);
       assert.match(reply, /说明函/);
@@ -241,7 +259,7 @@ async function main(): Promise<void> {
     });
 
     const promoInput = request("帮我写一版宣传文案");
-    await runNormalCase("promo", promoInput, ["ics1811:campaign-sop", "ics1811:promo-copy-guide"], (result, trace) => {
+    await runNormalCase("promo", promoInput, ["ics1811:campaign-orchestrator", "ics1811:campaign-sop", "ics1811:promo-copy-guide"], (result, trace) => {
       const loadedIndex = trace.findIndex(
         (event) => event.tool === "load_campaign_skill"
           && event.title === safeTraceTitleByQualifiedName.get("ics1811:promo-copy-guide")
@@ -253,7 +271,7 @@ async function main(): Promise<void> {
       assert.ok(loadedIndex >= 0, "没有看到宣传文案 Skill 加载完成");
       assert.ok(draftedIndex > loadedIndex, "必须先加载宣传文案 Skill，再调用文案工具");
       assert.ok(result.tools.includes("draft_promo_copy"), "结果中缺少 draft_promo_copy 工具记录");
-      assert.ok(result.draft!.promo, "宣传文案没有写入草稿");
+      assert.ok(result.communication, "传播方案没有写入 Campaign 父文档");
     });
 
     const t1 = EXAMPLES.find((item) => item.id === "T1");
@@ -263,7 +281,7 @@ async function main(): Promise<void> {
       trigger: { kind: "first_message", text: t1.first },
       phase: "interpreting",
     };
-    await runNormalCase("plain-facts", plainFactsInput, ["ics1811:campaign-sop"], (result, trace) => {
+    await runNormalCase("plain-facts", plainFactsInput, ["ics1811:campaign-orchestrator", "ics1811:campaign-sop"], (result, trace) => {
       const loadedIndex = trace.findIndex(
         (event) => event.tool === "load_campaign_skill"
           && event.title === safeTraceTitleByQualifiedName.get("ics1811:campaign-sop")

@@ -101,14 +101,14 @@ function ChangeNote({ content, canUndo, busy, onUndo, onOpenPanel }: {
           {open ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
           {open ? "收起这一步" : "看这一步改了什么"}
         </InlineAction>
-        <InlineAction onClick={() => onOpenPanel("sheet")}>查看填写值</InlineAction>
+        <InlineAction onClick={() => onOpenPanel("brief")}>查看活动工作台</InlineAction>
         {canUndo ? (
           <InlineAction disabled={busy} onClick={() => onUndo(content.versionSeq)}>
             <RotateCcw className="size-3" />
             撤销
           </InlineAction>
         ) : (
-          <InlineAction onClick={() => onOpenPanel("versions")}>之后已有修改，去版本里恢复</InlineAction>
+          <InlineAction onClick={() => onOpenPanel("1811")}>之后已有修改，去 1811 版本里恢复</InlineAction>
         )}
       </AgentNote>
       {open ? (
@@ -127,8 +127,8 @@ function ChangeNote({ content, canUndo, busy, onUndo, onOpenPanel }: {
   );
 }
 
-// 活动建好（或建好后又改了）时的那一条。它不是要用户确认的卡片：活动已经建好了，
-// 这里只说清建了什么、去哪看；要改直接在对话里说。hooks 不能写在 switch 分支里，所以单独成组件。
+// 1811 填写值准备好（或后续同步更新）时的那一条。
+// 它只代表优惠配置产物，不表示整体活动已审批或可上线。
 function SheetNote({ content, first, latestSeq, offerPromo, busy, onOpenPanel, onGeneratePromo }: {
   content: Extract<StoredMessage, { kind: "agent_fill_sheet" }>;
   first: boolean;
@@ -146,18 +146,18 @@ function SheetNote({ content, first, latestSeq, offerPromo, busy, onOpenPanel, o
       <AgentNote>
         <span className="inline-flex items-center gap-1.5 font-medium text-[#26785e]">
           <FileSpreadsheet className="size-3.5" />
-          {first ? "活动建好了 · 1811 填写值已生成" : "填写值已同步更新"}
+          {first ? "1811 填写值已准备" : "1811 填写值已同步更新"}
         </span>
         {/* 旧会话存下的这条没有 summary 和 lines，只报明细条数。 */}
         {content.summary ? null : <span>{content.sheet.details.length} 条明细 · {content.sheet.postActions.length} 项建完后待办</span>}
-        <InlineAction onClick={() => onOpenPanel("sheet")}>查看填写值</InlineAction>
+        <InlineAction onClick={() => onOpenPanel("1811")}>查看填写值</InlineAction>
       </AgentNote>
       {content.summary ? <p className="text-[15px] font-medium leading-7 text-[#263950]">{content.summary}</p> : null}
       {lines.length ? (
         <>
           <InlineAction onClick={() => setOpen((value) => !value)}>
             {open ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
-            {open ? "收起" : "这次建了什么"}
+            {open ? "收起" : "这次准备了什么"}
           </InlineAction>
           {open ? (
             <ul className="mt-1 space-y-1 text-[14px] leading-7 text-[#425873]">
@@ -169,7 +169,7 @@ function SheetNote({ content, first, latestSeq, offerPromo, busy, onOpenPanel, o
       {outdated ? <p className="mt-1 text-[12px] text-[#8ca0b7]">之后又改过，以右边最新的为准</p> : null}
       {offerPromo ? (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#cfe0f2] bg-[#f4f9ff] px-3 py-2.5">
-          <p className="text-[13px] leading-5 text-[#536b87]">填写值准备好了。还可以基于已确认的活动信息，生成一版对外营销宣传内容。</p>
+          <p className="text-[13px] leading-5 text-[#536b87]">1811 产物已准备。还可以基于 Campaign Brief 生成分渠道传播方案；是否可上线请以上线检查为准。</p>
           <button
             type="button"
             disabled={busy}
@@ -177,7 +177,7 @@ function SheetNote({ content, first, latestSeq, offerPromo, busy, onOpenPanel, o
             className="inline-flex min-h-9 select-none items-center gap-1.5 rounded-lg bg-[#247cff] px-3 text-[13px] font-medium text-white shadow-sm hover:bg-[#176bea] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Megaphone className="size-3.5" />
-            生成宣传内容
+            生成传播方案
           </button>
         </div>
       ) : null}
@@ -272,8 +272,8 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
       const firstSheet = snapshot.messages.find((item) => item.content.kind === "agent_fill_sheet");
       const promoMessageId = promoCtaMessageId({
         messages: snapshot.messages,
-        phase: snapshot.flow.phase,
-        promo: snapshot.latest.promo,
+        briefReady: snapshot.workspace.brief.status === "ready",
+        communication: snapshot.latest.communication,
       });
       return (
         <AgentRow continued={continued}>

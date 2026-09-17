@@ -1,8 +1,9 @@
 import type { AgentPhase, AgentRequest, AgentResult, AgentTrigger } from "../agent/protocol.ts";
 import type { AgentProgressEvent } from "../agent/stream.ts";
 import { AGENT_TOOL_META } from "../agent/tools.ts";
-import type { CampaignBriefKey, CampaignDraft, CampaignWorkspace } from "../campaign/types.ts";
-import { buildCampaignWorkspace, createCampaignDraft, normalizeCampaignDraft } from "../campaign/workspace.ts";
+import { renderCommunicationPlan } from "../campaign/communication.ts";
+import type { CampaignBriefKey, CampaignDraft, CampaignWorkspace, CommunicationPlan } from "../campaign/types.ts";
+import { buildCampaignWorkspace, createCampaignDraft, ensureIcs1811Child, normalizeCampaignDraft } from "../campaign/workspace.ts";
 import { applyCardAnswers } from "../campaign/ics1811/card.ts";
 import { checkDraft } from "../campaign/ics1811/checks.ts";
 import { deriveFill } from "../campaign/ics1811/derive.ts";
@@ -65,7 +66,7 @@ export type Snapshot = {
   session: { id: string; title: string; status: string; entryMode: string; createdAt: string; updatedAt: string };
   messages: ChatMessage[];
   versions: VersionSummary[];
-  // Campaign 是唯一持久化文档；1811 是可选子流程。fill/sheet/promo 都从子草稿重算，不另存。
+  // Campaign 是唯一持久化文档；1811 是可选子流程。传播方案、fill/sheet/promo 都从草稿重算，不另存。
   latest: {
     seq: number;
     campaign: CampaignDraft;
@@ -73,6 +74,8 @@ export type Snapshot = {
     fill: FillModel | null;
     checks: Check[];
     sheet: FillSheet | null;
+    communication: CommunicationPlan | null;
+    // 旧版 1811 对外文案只读兼容；新传播方案以 communication 为准。
     promo: PromoDoc | null;
   };
   workspace: CampaignWorkspace;
@@ -229,6 +232,13 @@ function phaseOf(state: ReturnType<typeof evaluate>, pendingInterpretation: bool
   return plan.missing.length ? "collecting" : "blocked";
 }
 
+function sessionStatusOf(state: ReturnType<typeof evaluate>): SessionStatus {
+  if (state.plan?.action === "ready") return "ics_ready";
+  if (state.workspace.stage === "preparing") return "preparing";
+  if (state.workspace.stage === "needs_confirmation") return "needs_confirmation";
+  return "briefing";
+}
+
 const BRIEF_LABEL: Record<CampaignBriefKey, string> = {
   name: "活动名称",
   objective: "活动目标",
@@ -308,6 +318,7 @@ export function buildSnapshot(bundle: SessionBundle, today: string): Snapshot {
       fill: state.fill,
       checks: state.checks,
       sheet: state.fill ? renderFillSheet(state.fill, state.checks) : null,
+      communication: renderCommunicationPlan(latest.draft),
       promo: state.draft && state.fill ? renderPromo(state.draft, state.fill) : null,
     },
     workspace: state.workspace,
@@ -382,7 +393,7 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
     return commitAndLoad(deps, {
       isNew: true,
       now: createdAt,
-      session: { id: sessionId, title: text.slice(0, 28), entryMode, status: "collecting", createdAt, updatedAt: createdAt },
+      session: { id: sessionId, title: text.slice(0, 28), entryMode, status: "briefing", createdAt, updatedAt: createdAt },
       version: { id: versionId, seq: 1, draft, sheet: null, createdBy: "human", patch: null },
       messages: [{ id: newId(), role: "user", content: { v: 2, kind: "user_text", text }, producedVersionId: versionId, createdAt }],
     });
@@ -402,7 +413,7 @@ export async function createSession(body: unknown, deps: TurnDeps): Promise<Snap
   return commitAndLoad(deps, {
     isNew: true,
     now: updatedAt,
-    session: { id: sessionId, title: fill.info.name.value, entryMode, status: ready ? "confirmed" : "collecting", createdAt, updatedAt },
+    session: { id: sessionId, title: fill.info.name.value, entryMode, status: ready ? "ics_ready" : "briefing", createdAt, updatedAt },
     version: { id: versionId, seq: 1, draft, sheet, createdBy: "human", patch: null },
     messages: [
       { id: newId(), role: "user", content: { v: 2, kind: "user_text", text: example.first }, producedVersionId: versionId, createdAt },
@@ -504,6 +515,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       userContent = { v: 2, kind: "user_text", text: input.text };
       trigger = { kind: "user_message", text: input.text };
       createdBy = "ai";
+      next = ensureIcs1811Child(prev, input.text, newId);
       // 整句只是「行」「对」：不靠模型理解，按上一句的提议直接记下，模型拿到的是记好之后的草稿。
       if (prev.ics1811 && before.proposals.length && isPureAgreement(input.text)) {
         const accepted = runOrchestratorTool(
@@ -555,7 +567,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
 
   let result: AgentResult | null = null;
   if (trigger) {
-    const current = acceptedByOrchestrator ? evaluate(next, bundle.messages, deps.today) : before;
+    const current = evaluate(next, bundle.messages, deps.today);
     // 1811 子阶段与父 Campaign 阶段分开；没有子流程时不伪造 collecting。
     const phase: AgentPhase | null = input.type === "interpret"
       ? "interpreting"
@@ -668,9 +680,9 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     if (reply) agentMessages.push(reply);
   }
 
-  let status: SessionStatus = "collecting";
+  let status: SessionStatus = sessionStatusOf(after);
   if (after.plan?.action === "ready" && after.draft && after.fill) {
-    status = "confirmed";
+    status = "ics_ready";
     // 齐了就建好：刚补齐的这一轮、或者建好以后又改了，都出一份最新的填写值；什么都没变就不重复出。
     const lastSheet = [...bundle.messages].reverse().find((message) => message.content.kind === "agent_fill_sheet")?.content;
     const rendered = renderFillSheet(after.fill, after.checks);
@@ -696,7 +708,6 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   const trace = traceContent();
   if (trace) agentMessages.unshift(trace);
 
-  if (!after.plan && after.workspace.brief.status === "ready") status = "preparing";
   const title = next.brief.name?.value ?? (after.draft?.facts.offer && after.fill ? after.fill.info.name.value : bundle.session.title);
   const messageRecords = [
     ...(userContent ? [{ id: newId(), role: "user" as const, content: userContent, producedVersionId: versionId, createdAt: userOccurredAt }] : []),

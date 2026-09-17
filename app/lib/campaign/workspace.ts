@@ -41,6 +41,11 @@ function hasTransactionSignal(text: string): boolean {
   return detected !== null && detected.unsupportedType !== "积分加倍";
 }
 
+export function ensureIcs1811Child(draft: CampaignDraft, text: string, newId: () => string): CampaignDraft {
+  if (draft.ics1811 || !hasTransactionSignal(text)) return draft;
+  return { ...draft, ics1811: createEmptyDraft(newId(), text) };
+}
+
 function briefQuotes(draft: CampaignDraft): string {
   return BRIEF_KEYS.flatMap((key) => draft.brief[key]?.quote ?? []).join("。 ");
 }

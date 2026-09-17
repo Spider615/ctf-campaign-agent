@@ -45,7 +45,7 @@ export function registerCampaignTools(actions: CampaignWebMcpActions): () => voi
   const tools: RegisteredTool[] = [
     {
       name: "start_campaign_draft",
-      description: "在周大福 1811 开单助手中新建活动对话，或打开一段完整示例对话。",
+      description: "在周大福营销活动 AI 工作台中新建 Campaign 对话，或打开一段完整示例对话。",
       inputSchema: {
         type: "object",
         properties: {
@@ -82,7 +82,7 @@ export function registerCampaignTools(actions: CampaignWebMcpActions): () => voi
     },
     {
       name: "read_campaign_summary",
-      description: "读取当前活动的状态、明细条数、是否已建好、Agent 正在问的问题、仍缺的项和阻断原因。",
+      description: "读取当前 Campaign 的 Brief、执行阶段、1811 子流程、传播方案、Agent 正在问的问题、仍缺项和阻断原因。",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true },
       execute: async () => textResult(await actions.readSummary()),

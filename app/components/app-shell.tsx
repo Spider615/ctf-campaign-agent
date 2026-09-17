@@ -13,16 +13,10 @@ import {
   postTurn,
   SESSIONS_CHANGED,
 } from "../lib/client/api";
+import { sessionStatusLabel } from "../lib/client/campaign-workspace";
 import type { SessionListItem } from "../lib/server/session-store";
 import { CAMPAIGN_TOOL_NAMES } from "../lib/tool-trace";
 import { registerCampaignTools } from "../lib/webmcp";
-
-// readback 只在旧会话里有：那时复述完等用户点确认，现在齐了直接建好，旧数据按收集中显示。
-const STATUS_LABEL: Record<string, string> = {
-  collecting: "收集中",
-  readback: "收集中",
-  confirmed: "已建好",
-};
 
 function Brand() {
   return (
@@ -32,7 +26,7 @@ function Brand() {
       </span>
       <div>
         <p className="text-sm font-semibold tracking-wide text-[#17243a]">周大福</p>
-        <p className="text-[11px] text-[#7186a1]">1811 AI 工作台</p>
+        <p className="text-[11px] text-[#7186a1]">营销活动 AI 工作台</p>
       </div>
     </div>
   );
@@ -103,9 +97,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return {
         status: snapshot.session.status,
         phase: snapshot.flow.phase,
-        name: snapshot.latest.fill.info.name.value,
-        detailCount: snapshot.latest.fill.details.length,
-        ready: snapshot.flow.phase === "ready",
+        name: snapshot.latest.campaign.brief.name?.value ?? snapshot.latest.fill?.info.name.value ?? snapshot.session.title,
+        detailCount: snapshot.latest.fill?.details.length ?? 0,
+        briefReady: snapshot.workspace.brief.status === "ready",
+        campaignStage: snapshot.workspace.stage,
+        ics1811Status: snapshot.workspace.artifacts.ics1811.status,
+        communicationStatus: snapshot.latest.communication?.status ?? "not_started",
+        readinessStatus: snapshot.workspace.readiness.status,
         asking: snapshot.flow.asking.map((gap) => gap.title),
         missing: snapshot.flow.missing,
         blockers: snapshot.latest.checks.filter((check) => check.severity === "blocker").map((check) => check.message),
@@ -160,7 +158,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#247cff] text-sm font-semibold text-white shadow-[0_10px_24px_rgba(36,124,255,0.24)] transition hover:-translate-y-0.5 hover:bg-[#176bea] hover:shadow-[0_14px_28px_rgba(36,124,255,0.28)]"
             >
               <Plus className="size-4" />
-              新建优惠活动
+              新建营销活动
             </Link>
           </div>
 
@@ -177,7 +175,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       className={`relative block rounded-xl border py-2.5 pl-3 pr-10 transition ${session.id === activeId ? "border-[#c7ddff] bg-[#eaf4ff] text-[#174e96] shadow-[0_8px_22px_rgba(36,124,255,0.09)] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-[#247cff]" : "border-transparent text-[#4f6380] hover:border-[#e1ecf8] hover:bg-[#f5f9ff] hover:text-[#223d63]"}`}
                     >
                       <span className="line-clamp-1 text-sm font-medium">{session.title}</span>
-                      <span className={`mt-0.5 block text-[11px] ${session.id === activeId ? "text-[#5f82ad]" : "text-[#8da0b7]"}`}>{STATUS_LABEL[session.status] ?? "旧版本"}</span>
+                      <span className={`mt-0.5 block text-[11px] ${session.id === activeId ? "text-[#5f82ad]" : "text-[#8da0b7]"}`}>{sessionStatusLabel(session.status)}</span>
                     </Link>
                     <button
                       type="button"
@@ -221,7 +219,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Sparkles className="size-3.5" />
               {CAMPAIGN_TOOL_NAMES.length} 个业务工具 · 实时规则复核
             </div>
-            <p className="mt-2 text-[11px] leading-5 text-[#6f85a0]">理解、查表、规则分析和填写值生成都会留下可展开的执行记录。</p>
+            <p className="mt-2 text-[11px] leading-5 text-[#6f85a0]">活动类型判断、Brief 整理、业务规则和产物生成都会留下可展开的执行记录。</p>
           </div>
         </aside>
 

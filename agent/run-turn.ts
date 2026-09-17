@@ -23,7 +23,7 @@ import {
 } from "../app/lib/agent/tools.ts";
 import { CAMPAIGN_BRIEF_KEYS } from "../app/lib/campaign/brief.ts";
 import { routeCampaign } from "../app/lib/campaign/workspace.ts";
-import type { CampaignBriefKey } from "../app/lib/campaign/types.ts";
+import type { CampaignBriefKey, CampaignChannel } from "../app/lib/campaign/types.ts";
 import { QUESTION_IDS } from "../app/lib/campaign/ics1811/questions.ts";
 import type { FactKey, QuestionId } from "../app/lib/campaign/ics1811/types.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
@@ -68,6 +68,7 @@ const DEFAULT_AGENT_RUNTIME_DEPENDENCIES: AgentRuntimeDependencies = { query };
 
 const factKey = z.enum(FACT_KEYS as [FactKey, ...FactKey[]]);
 const campaignBriefKey = z.enum(CAMPAIGN_BRIEF_KEYS as [CampaignBriefKey, ...CampaignBriefKey[]]);
+const campaignChannel = z.enum(["store", "wechat", "ecommerce", "social", "member_crm", "event"] satisfies [CampaignChannel, ...CampaignChannel[]]);
 const questionId = z.enum(QUESTION_IDS as [QuestionId, ...QuestionId[]]);
 
 export function createAgentRunner(
@@ -172,9 +173,19 @@ export function createAgentRunner(
           name: z.string(),
           content: z.string(),
         }, handle("draft_campaign_copy")),
-        tool("draft_promo_copy", "起草对外宣传文案的创意部分：主标题和卖点。日期、门店、优惠力度由系统按事实填充，不要写，也不要写活动标语；必须先加载 ics1811:promo-copy-guide", {
-          headline: z.string(),
-          highlights: z.array(z.string()),
+        tool("draft_promo_copy", "起草完整传播方案的创意部分：概念、分渠道内容和视觉方向。目标、受众、日期、门店和优惠等硬事实由系统按事实渲染，不要重写，也不要写活动标语；必须先加载 ics1811:promo-copy-guide", {
+          concept: z.object({
+            headline: z.string(),
+            subheadline: z.string(),
+            coreMessage: z.string(),
+          }),
+          channelOutputs: z.array(z.object({
+            channel: campaignChannel,
+            format: z.string(),
+            copy: z.string(),
+            cta: z.string(),
+          })),
+          visualDirection: z.string(),
         }, handle("draft_promo_copy")),
         tool("generate_ics1811_sheet", "活动信息齐了时查看 ICS-1811 填写值摘要；齐了系统也会自动生成", {}, handle("generate_ics1811_sheet")),
         tool("undo_campaign_change", "撤销上一次修改", {}, handle("undo_campaign_change")),

@@ -21,10 +21,11 @@ import {
   type TurnBody,
 } from "../../lib/client/api";
 import { appendLiveReply, emptyLiveReply } from "../../lib/client/live-reply";
-import { PROMO_GENERATION_PROMPT, promoWasGenerated } from "../../lib/client/promo-cta";
+import { CAMPAIGN_STAGE_LABEL, DEFAULT_WORKSPACE_TAB } from "../../lib/client/campaign-workspace";
+import { PROMO_CONTINUE_PROMPT, PROMO_GENERATION_PROMPT, promoWasGenerated } from "../../lib/client/promo-cta";
 import type { Snapshot } from "../../lib/server/turns";
 import { mergeTraceEvent, type AgentTraceEvent } from "../../lib/tool-trace";
-import { DraftPanel, PHASE_LABEL, type PanelEdit } from "../draft/draft-panel";
+import { DraftPanel, type PanelEdit } from "../draft/draft-panel";
 import { Composer } from "./composer";
 import { AgentRow, MessageList, MessageTimestamp, UserBubble } from "./message-view";
 import { MarkdownText } from "./markdown-text";
@@ -92,7 +93,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
-  const [panelTab, setPanelTab] = useState("sheet");
+  const [panelTab, setPanelTab] = useState(DEFAULT_WORKSPACE_TAB);
   // 面板收起时把手也要收起来，否则对话右边挂着一条没有来由的竖线。
   // 这个库不写任何表示折叠的 data-* 属性（只有 data-panel / data-separator），所以只能自己记。
   const [panelCollapsed, setPanelCollapsed] = useState(true);
@@ -286,8 +287,8 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   // 等待时说清系统拿这句话要做什么，别只说「正在思考」。
   const waitingKind = busy && WAITING_KINDS.includes(busy) ? busy : needsInterpretation ? "interpret" : null;
   const waiting = waitingKind
-    ? pendingText === PROMO_GENERATION_PROMPT
-      ? "正在加载宣传规则并起草对外文案…"
+    ? pendingText === PROMO_GENERATION_PROMPT || pendingText === PROMO_CONTINUE_PROMPT
+      ? "正在加载传播规则并起草分渠道方案…"
       : thinkingLabel({
           turnKind: waitingKind as "interpret" | "text",
           phase: flow.phase,
@@ -303,7 +304,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     onOpenPanel: openPanel,
     onGeneratePromo: () => {
       void send({ type: "text", text: PROMO_GENERATION_PROMPT }).then((next) => {
-        if (promoWasGenerated(next)) openPanel("promo");
+        if (promoWasGenerated(next)) openPanel("communications");
       });
     },
   };
@@ -318,6 +319,12 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       onDismiss={(noteId) => void send({ type: "dismiss", noteId })}
       onRollback={(seq) => void send({ type: "rollback", seq })}
       onShowSource={showSource}
+      onGenerateCommunication={actions.onGeneratePromo}
+      onContinueCommunication={() => {
+        void send({ type: "text", text: PROMO_CONTINUE_PROMPT }).then((next) => {
+          if (promoWasGenerated(next)) openPanel("communications");
+        });
+      }}
     />
   );
 
@@ -325,16 +332,16 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     <section data-testid="chat" className="flex h-full min-w-0 flex-1 flex-col bg-white/22">
       <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-[#d9e7f6] bg-white/72 px-4 shadow-[0_6px_22px_rgba(49,93,143,0.04)] backdrop-blur-xl md:px-6">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-[#20314d]">{snapshot.latest.draft.facts.offer ? snapshot.latest.fill.info.name.value : snapshot.session.title}</p>
+          <p className="truncate text-sm font-semibold text-[#20314d]">{snapshot.latest.campaign.brief.name?.value ?? snapshot.latest.fill?.info.name.value ?? snapshot.session.title}</p>
           <p className="mt-0.5 text-[12px] text-[#7187a1]">
-            {PHASE_LABEL[flow.phase]}
-            {pendingInterpretation ? "" : ` · ${snapshot.latest.fill.details.length} 条明细`}
+            {CAMPAIGN_STAGE_LABEL[snapshot.workspace.stage]}
+            {pendingInterpretation || !snapshot.latest.fill ? "" : ` · 1811 ${snapshot.latest.fill.details.length} 条明细`}
             {flow.phase === "collecting" && flow.missing.length ? ` · 还差 ${flow.missing.length} 项` : ""}
           </p>
         </div>
         <Button variant="outline" size="sm" className="h-11 border-[#cfe0f2] bg-white/80 text-[#49647f] shadow-[0_4px_14px_rgba(44,94,148,0.05)] hover:border-[#94bfff] hover:bg-[#f4f9ff] hover:text-[#247cff]" onClick={togglePanel}>
           <PanelRight />
-          填写值
+          活动工作台
         </Button>
       </header>
 
@@ -412,8 +419,8 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       <Sheet open={panelOpen} onOpenChange={setPanelOpen}>
         <SheetContent side="right" className="w-full gap-0 border-l-[#d9e7f6] bg-[#f8fbff] p-0 sm:max-w-[440px]">
           <SheetHeader className="sr-only">
-            <SheetTitle>1811 填写值</SheetTitle>
-            <SheetDescription>随对话实时更新的 1811 填写值草稿</SheetDescription>
+            <SheetTitle>活动工作台</SheetTitle>
+            <SheetDescription>随对话实时更新的 Brief、执行轨、上线检查、传播方案和 1811 产物</SheetDescription>
           </SheetHeader>
           {panel}
         </SheetContent>

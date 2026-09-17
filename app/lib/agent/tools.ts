@@ -1,6 +1,7 @@
 import { checkDraft } from "../campaign/ics1811/checks.ts";
 import { applyCampaignBriefWrites, CAMPAIGN_BRIEF_KEYS, type CampaignBriefWrite } from "../campaign/brief.ts";
-import type { CampaignDraft } from "../campaign/types.ts";
+import { communicationGate, validateCommunicationCreative } from "../campaign/communication.ts";
+import type { CampaignChannel, CampaignDraft, CommunicationCreative } from "../campaign/types.ts";
 import { buildCampaignWorkspace, normalizeCampaignDraft } from "../campaign/workspace.ts";
 import { CODEBOOK, type Entry } from "../campaign/ics1811/codebook.ts";
 import { deriveFill, discountText } from "../campaign/ics1811/derive.ts";
@@ -28,7 +29,7 @@ export const AGENT_TOOL_META: Record<CampaignToolName, { title: string }> = {
   analyze_campaign_state: { title: "运行 1811 规则分析" },
   ask_campaign_questions: { title: "登记要问的问题" },
   draft_campaign_copy: { title: "起草活动名称与内容" },
-  draft_promo_copy: { title: "起草对外宣传文案" },
+  draft_promo_copy: { title: "起草分渠道传播方案" },
   generate_ics1811_sheet: { title: "生成 1811 填写值" },
   undo_campaign_change: { title: "撤销上次修改" },
 };
@@ -216,34 +217,53 @@ export function draftCampaignCopy(state: AgentState, input: Record<string, unkno
   return done("名称和内容已保存。不要再调用工具，用一两句话告诉用户就行。");
 }
 
-// 对外宣传文案：模型只写创意部分（主标题和卖点）。日期、门店、优惠力度由代码
-// 从事实层渲染，不让模型重写——数字有守卫拦着，但「闽深区」写成「华南区」拦不住。
-// 这里不套 COPY_SPECIAL：那条白名单是为 1811 字段服务的，对外文案要能用逗号和感叹号。
+const CAMPAIGN_CHANNELS: readonly CampaignChannel[] = ["store", "wechat", "ecommerce", "social", "member_crm", "event"];
+
+// 对外传播方案：模型只写创意概念、分渠道文本与视觉方向；目标、受众、日期、
+// 门店和优惠等硬事实继续由 communication.ts 从 Campaign Brief / 1811 子单确定性渲染。
 function draftPromoCopy(state: AgentState, input: Record<string, unknown>): ToolOutcome {
   state.tools.push("draft_promo_copy");
   if (state.undo) return refuse("这一轮已经撤销了，不要再改文案。");
-  if (!state.draft) return refuse("当前活动没有 1811 优惠事实；请先补齐 Campaign Brief，再按传播方案规则起草。");
-  if (!state.draft.facts.offer || !state.draft.facts.categories) return refuse("优惠方式和货类都记下来之后，才能起草对外宣传文案。");
-  // 对外文案是要发出去的东西，源头就不该带 ** 这类标记——这个工具没套 COPY_SPECIAL
-  // 白名单（宣传语要能用逗号和感叹号），所以标记拦不住，只能在这里剥掉。
-  // 剥离放在长度校验之前：否则「**限时五天**」会按 8 个字算，白吃掉一半额度。
-  const headline = plainText(typeof input.headline === "string" ? input.headline.trim() : "");
-  const highlights = Array.isArray(input.highlights)
-    ? input.highlights.filter((item): item is string => typeof item === "string").map((item) => plainText(item.trim())).filter(Boolean)
-    : [];
+  const gate = communicationGate(state.campaign);
+  if (!gate.ready) return refuse(`传播方案还不能起草，先补齐：${gate.missing.join("、")}。`);
+
+  const conceptInput = isRecord(input.concept) ? input.concept : {};
+  const clean = (value: unknown) => plainText(typeof value === "string" ? value.trim() : "");
+  const concept = {
+    headline: clean(conceptInput.headline),
+    subheadline: clean(conceptInput.subheadline),
+    coreMessage: clean(conceptInput.coreMessage),
+  };
+  const channelOutputs = (Array.isArray(input.channelOutputs) ? input.channelOutputs : [])
+    .filter(isRecord)
+    .map((output) => ({
+      channel: output.channel,
+      format: clean(output.format),
+      copy: clean(output.copy),
+      cta: clean(output.cta),
+    }));
+  const visualDirection = clean(input.visualDirection);
   const problems: string[] = [];
-  if (!headline || [...headline].length > 20) problems.push(`主标题要有，且不超过 20 个字（现在 ${[...headline].length} 个字）`);
-  if (!highlights.length || highlights.length > 4) problems.push("卖点要有 1 到 4 条");
-  if (highlights.some((item) => [...item].length > 30)) problems.push("每条卖点不超过 30 个字");
-  // 事实层里没有赠品、抽奖这类权益，对外文案写了就是替活动多承诺（实测模型写过「到店即享好礼」）。
-  if (/赠|送礼品|好礼|礼品|抽奖|免费|加赠|豪礼|礼包/.test(`${headline}${highlights.join("")}`)) problems.push("不能写赠品、好礼、抽奖、免费这类活动里没有的权益");
-  // 对外发布的东西编错数字最贵，守卫和活动名称共用一套。
-  const allowed = allowedNumbers(state.draft);
-  const stray = [...new Set([...`${headline} ${highlights.join(" ")}`.matchAll(/\d+(?:\.\d+)?/g)].map((match) => match[0]).filter((number) => !allowed.has(number)))];
-  if (stray.length) problems.push(`这些数字在用户说过的信息里找不到：${stray.join("、")}`);
+  if (!concept.headline || [...concept.headline].length > 28) problems.push("主标题要有，且不超过 28 个字");
+  if (!concept.subheadline || [...concept.subheadline].length > 48) problems.push("副标题要有，且不超过 48 个字");
+  if (!concept.coreMessage || [...concept.coreMessage].length > 160) problems.push("核心信息要有，且不超过 160 个字");
+  if (!channelOutputs.length) problems.push("至少要有 1 个分渠道版本");
+  if (channelOutputs.some((output) => !CAMPAIGN_CHANNELS.includes(output.channel as CampaignChannel))) problems.push("分渠道版本里有未知渠道");
+  if (channelOutputs.some((output) => !output.format || !output.copy || !output.cta)) problems.push("每个渠道都要有内容形式、正文和 CTA");
+  if (channelOutputs.some((output) => [...output.copy].length > 300)) problems.push("单个渠道正文不超过 300 个字");
+  if (!visualDirection || [...visualDirection].length > 240) problems.push("视觉方向要有，且不超过 240 个字");
   if (problems.length) return refuse(`没保存：${problems.join("；")}。改好后重新调用 draft_promo_copy。`);
-  state.draft = { ...state.draft, promo: { headline, highlights, source: "ai" } };
-  return done("对外宣传文案已保存。日期、门店和优惠力度由系统按事实填充，你不用写，也不要写活动标语。");
+
+  const creative: CommunicationCreative = {
+    concept,
+    channelOutputs: channelOutputs as CommunicationCreative["channelOutputs"],
+    visualDirection,
+    source: "ai",
+  };
+  const checked = validateCommunicationCreative(state.campaign, creative);
+  if (!checked.ok) return refuse(`没保存：${checked.errors.join("；")}。改好后重新调用 draft_promo_copy。`);
+  state.campaign = { ...state.campaign, communication: creative, ics1811: state.draft };
+  return done({ saved: true, channelCount: creative.channelOutputs.length, status: "needs_review" });
 }
 
 const isQuestionId = (value: unknown): value is QuestionId => typeof value === "string" && (QUESTION_IDS as string[]).includes(value);
@@ -391,7 +411,7 @@ export function analyzeCampaignState(state: AgentState): ToolOutcome {
     next: status.outOfScope
       ? "不在 1811 范围，说明原因即可"
       : status.complete
-        ? "齐了：系统这一轮会直接生成 1811 填写值。用两三句话告诉用户活动建好了，不要再问确认。"
+        ? "齐了：系统这一轮会直接生成 1811 填写值。用两三句话告诉用户 1811 配置产物已准备，并说明整体活动仍要看上线检查；不要说活动已建好或可以上线。"
         : status.missing.length
           ? "还缺：挑最要紧的 1–3 项，先调用 ask_campaign_questions 登记，再在回复里问。"
           : "不缺信息，但有挡着生成的问题：如实说明，告诉用户怎么处理。",
@@ -450,7 +470,7 @@ const REFUSED_SUMMARY: Record<CampaignToolName, string> = {
   analyze_campaign_state: "规则分析未执行",
   ask_campaign_questions: "问题或提议没通过校验，Agent 已调整",
   draft_campaign_copy: "名称或内容不合规（长度、字符或数字），Agent 重拟",
-  draft_promo_copy: "文案尚未生成，Agent 会先加载规则或修正文案",
+  draft_promo_copy: "传播方案尚未生成，Agent 会先加载规则或修正内容",
   generate_ics1811_sheet: "信息还没齐，暂不生成",
   undo_campaign_change: "现在没有可撤销的修改",
 };
@@ -482,7 +502,7 @@ export function safeToolSummary(name: CampaignToolName, outcome: ToolOutcome, st
     case "draft_campaign_copy":
       return "活动名称与内容已起草";
     case "draft_promo_copy":
-      return `对外宣传文案已起草 · ${state.draft?.promo?.highlights.length ?? 0} 条卖点`;
+      return `传播方案已起草 · ${state.campaign.communication?.channelOutputs.length ?? 0} 个渠道版本`;
     case "generate_ics1811_sheet":
       return `生成 ${Number(body?.detailCount ?? 0)} 条优惠明细`;
     case "undo_campaign_change":

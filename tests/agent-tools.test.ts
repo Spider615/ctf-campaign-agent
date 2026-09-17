@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { AgentRequest } from "../app/lib/agent/protocol.ts";
 import { createAgentState, finishAgentTurn, runAgentTool, safeToolSummary } from "../app/lib/agent/tools.ts";
+import type { CommunicationCreative } from "../app/lib/campaign/types.ts";
 import { buildCampaignWorkspace, createCampaignDraft } from "../app/lib/campaign/workspace.ts";
 import { EXAMPLES } from "../app/lib/campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
@@ -87,32 +88,54 @@ test("1811-only tools reject a parent campaign with no child and keep facts unch
   assert.equal(state.draft, null);
 });
 
-test("promo copy refuses an empty draft and invented numbers, then stores the creative part", () => {
-  const t1 = EXAMPLES[0];
+test("communication copy needs a ready Brief, rejects invented claims, then stores a multi-channel parent artifact", () => {
+  const briefText = "目标是提升新品认知，面向年轻情侣，主题是福启新章，通过门店和微信发布";
 
-  // 事实还没齐就起草对外文案，等于让模型对着空草稿编，拒绝掉。
-  const bare = createAgentState(requestFor("想做个国庆活动"));
-  const tooEarly = runAgentTool(bare, "draft_promo_copy", { headline: "国庆好礼", highlights: ["全场优惠"] }, PROMO_CONTEXT);
-  assert.equal(tooEarly.isError, true, "优惠和货类都还没有，不能起草宣传文案");
+  // Brief 还没齐就起草传播方案，等于让模型对着空草稿编，拒绝掉。
+  const bare = createAgentState(parentRequestFor("想做个国庆活动"));
+  const tooEarly = runAgentTool(bare, "draft_promo_copy", {
+    concept: { headline: "国庆臻选", subheadline: "到店探索", coreMessage: "为你呈现新品" },
+    channelOutputs: [{ channel: "store", format: "海报", copy: "国庆臻选", cta: "到店了解" }],
+    visualDirection: "红金留白",
+  }, PROMO_CONTEXT);
+  assert.equal(tooEarly.isError, true, "Brief 核心字段不齐时不能起草传播方案");
 
-  const ready = createAgentState({
-    ...requestFor(t1.first),
-    draft: applyFactWrites(createEmptyDraft("promo", t1.first), t1.firstWrites, { text: t1.first, today: TODAY }).draft,
+  const ready = createAgentState(parentRequestFor(briefText));
+  runAgentTool(ready, "update_campaign_brief", {
+    writes: [
+      { key: "objective", quote: "提升新品认知" },
+      { key: "audience", quote: "年轻情侣" },
+      { key: "theme", quote: "福启新章" },
+      { key: "channels", quote: "门店和微信" },
+    ],
   });
 
-  // 对外文案最容易出事的就是编数字。8888 在 T1 的事实层里不存在，必须挡住。
-  const invented = runAgentTool(ready, "draft_promo_copy", { headline: "满8888送好礼", highlights: ["每克减15元"] }, PROMO_CONTEXT);
-  assert.equal(invented.isError, true, "事实层里没有的数字不能出现在对外文案里");
-  // 用局部变量接住再断言：直接 assert.equal(ready.draft.promo, null) 会让 TS 把这个属性
-  // 永久收窄成 null（它不知道后面的 runAgentTool 会改写它），后面读 promo.headline 就成了 never。
-  const afterInvented = ready.draft!.promo;
-  assert.equal(afterInvented, null, "被拒的文案不能落进草稿");
+  const invented = runAgentTool(ready, "draft_promo_copy", {
+    concept: { headline: "福启新章", subheadline: "限时7天", coreMessage: "年轻情侣到店即享好礼" },
+    channelOutputs: [{ channel: "social", format: "帖子", copy: "限时7天", cta: "立即领取" }],
+    visualDirection: "红金留白",
+  }, PROMO_CONTEXT);
+  assert.equal(invented.isError, true, "未确认的数字、权益和渠道都不能落入传播方案");
+  assert.equal(ready.campaign.communication, null);
 
-  const ok = runAgentTool(ready, "draft_promo_copy", { headline: "黄金每克减15", highlights: ["一般足金类每克立减15元"] }, PROMO_CONTEXT);
+  const ok = runAgentTool(ready, "draft_promo_copy", {
+    concept: {
+      headline: "福启新章",
+      subheadline: "让心意在此刻相遇",
+      coreMessage: "以新品表达年轻情侣的珍贵心意",
+    },
+    channelOutputs: [
+      { channel: "store", format: "门店海报", copy: "福启新章，让心意在此刻相遇", cta: "欢迎到店了解" },
+      { channel: "wechat", format: "微信推文", copy: "以新品表达年轻情侣的珍贵心意", cta: "查看活动详情" },
+    ],
+    visualDirection: "以红金为主色，保留珠宝质感和充足留白",
+  }, PROMO_CONTEXT);
   assert.equal(ok.isError, undefined);
-  assert.equal(ready.draft!.promo?.headline, "黄金每克减15");
-  assert.deepEqual(ready.draft!.promo?.highlights, ["一般足金类每克立减15元"]);
-  assert.equal(ready.draft!.promo?.source, "ai");
+  const communication = ready.campaign.communication as CommunicationCreative | null;
+  assert.equal(communication?.concept.headline, "福启新章");
+  assert.deepEqual(communication?.channelOutputs.map((item) => item.channel), ["store", "wechat"]);
+  assert.equal(communication?.source, "ai");
+  assert.equal(ready.draft, null, "品牌传播活动不应为了生成文案伪造 1811 子流程");
 });
 
 test("promo copy requires the same-turn guide without mutating state", () => {
@@ -124,14 +147,15 @@ test("promo copy requires the same-turn guide without mutating state", () => {
   const before = structuredClone(state);
 
   const blocked = runAgentTool(state, "draft_promo_copy", {
-    headline: "黄金克减季",
-    highlights: ["一般足金类每克立减15元"],
+    concept: { headline: "黄金克减季", subheadline: "到店了解", coreMessage: "一般足金类每克立减15元" },
+    channelOutputs: [{ channel: "store", format: "海报", copy: "一般足金类每克立减15元", cta: "到店了解" }],
+    visualDirection: "红金视觉",
   });
 
   assert.equal(blocked.isError, true);
   assert.match(blocked.text, /先加载 promo-copy-guide/);
   assert.deepEqual(state, before);
-  assert.equal(safeToolSummary("draft_promo_copy", blocked, state), "文案尚未生成，Agent 会先加载规则或修正文案");
+  assert.equal(safeToolSummary("draft_promo_copy", blocked, state), "传播方案尚未生成，Agent 会先加载规则或修正内容");
 });
 
 test("campaign tools expose deterministic analysis without changing the draft", () => {

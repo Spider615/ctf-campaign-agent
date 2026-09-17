@@ -16,16 +16,16 @@ const sheet = (id: string, versionSeq: number): ChatMessage => ({
   },
 });
 
-test("promo CTA stays on the first fill-sheet message after later sheet updates", () => {
+test("communication CTA stays on the first fill-sheet message after later sheet updates", () => {
   const messages = [sheet("old", 1), sheet("latest", 2)];
-  assert.equal(promoCtaMessageId({ messages, phase: "ready", promo: null }), "old");
-  assert.equal(promoCtaMessageId({ messages, phase: "collecting", promo: null }), null);
-  assert.equal(promoCtaMessageId({ messages, phase: "ready", promo: { headline: "已有文案" } }), null);
-  assert.equal(promoCtaMessageId({ messages: [], phase: "ready", promo: null }), null);
+  assert.equal(promoCtaMessageId({ messages, briefReady: true, communication: null }), "old");
+  assert.equal(promoCtaMessageId({ messages, briefReady: false, communication: null }), null);
+  assert.equal(promoCtaMessageId({ messages, briefReady: true, communication: { concept: {} } }), null);
+  assert.equal(promoCtaMessageId({ messages: [], briefReady: true, communication: null }), null);
 });
 
-test("promo panel opens only when the returned snapshot actually contains promo content", () => {
+test("communication panel opens only when the returned snapshot actually contains a parent plan", () => {
   assert.equal(promoWasGenerated(null), false);
-  assert.equal(promoWasGenerated({ latest: { promo: null } }), false);
-  assert.equal(promoWasGenerated({ latest: { promo: { headline: "国庆好礼" } } }), true);
+  assert.equal(promoWasGenerated({ latest: { communication: null } }), false);
+  assert.equal(promoWasGenerated({ latest: { communication: { status: "needs_review" } } }), true);
 });

@@ -90,7 +90,7 @@ function buildToolApiContract(hasIcs1811: boolean): string {
   if (!hasIcs1811) {
     return [...shared,
       "- 当前没有 1811 子流程，不要调用 1811 字段、代码表、追问或填写值工具。",
-      "- draft_promo_copy：起草传播内容；还必须在同一回合成功加载 promo-copy-guide，并满足工具返回的 Brief 门槛。",
+      "- draft_promo_copy：Brief 齐备后起草传播方案；参数包含 concept（headline、subheadline、coreMessage）、channelOutputs（只为已确认渠道填写 channel、format、copy、cta）和 visualDirection。还必须在同一回合成功加载 promo-copy-guide，并服从工具的渠道、数字、权益和人群守卫。",
       "- undo_campaign_change：只撤销上一次修改，不和其他修改工具混用。",
     ].join("\n");
   }
@@ -104,7 +104,7 @@ function buildToolApiContract(hasIcs1811: boolean): string {
     PROPOSAL_GUIDE.split("\n").map((line) => `  - ${line}`).join("\n"),
     "  优惠方式和力度、各货类对应的折扣、标语原文、标语法务确认都不能提议，必须由用户自己说。二选一问题只登记题号，不登记提议。",
     "- draft_campaign_copy：只起草活动名称和内部活动内容；参数结构和是否接受以工具结果为准。",
-    "- draft_promo_copy：只起草对外文案创意部分；还必须在同一回合成功加载 promo-copy-guide。",
+    "- draft_promo_copy：只起草传播方案的创意概念、已确认渠道版本和视觉方向；参数包含 concept、channelOutputs、visualDirection。活动硬事实由系统渲染，不要重写；还必须在同一回合成功加载 promo-copy-guide。",
     "- generate_ics1811_sheet：只在活动齐全时成功；最终填写值仍由编排器按最新草稿重算。",
     "- undo_campaign_change：只撤销上一次修改，不和其他修改工具混用。",
   ].join("\n");

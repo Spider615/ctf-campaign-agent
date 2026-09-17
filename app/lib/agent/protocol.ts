@@ -13,7 +13,7 @@ export type AgentTrigger = { kind: "first_message"; text: string } | { kind: "us
 
 export type AgentHistoryItem = { role: "user" | "assistant"; text: string };
 
-// interpreting 第一次理解需求；collecting 还在补信息；ready 活动已经建好，改动会同步到填写值。
+// interpreting 第一次理解需求；collecting 还在补 1811 信息；ready 仅表示 1811 填写值已准备。
 export type AgentPhase = "interpreting" | "collecting" | "ready";
 
 export type AgentRequest = {
