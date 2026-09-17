@@ -104,7 +104,10 @@ const PHASE_TEXT: Record<AgentRequest["phase"], string> = {
   ready: "活动已经建好，改动会同步到填写值",
 };
 
-export function buildAgentUserPrompt(request: AgentRequest): string {
+export function buildAgentUserPrompt(
+  request: AgentRequest,
+  requiredSkills: readonly string[] = [],
+): string {
   const status = draftStatus(request.draft, request.today);
   const history = request.history.map((item) => `${item.role === "user" ? "用户" : "助手"}：${item.text}`).join("\n");
   return [
@@ -116,6 +119,11 @@ export function buildAgentUserPrompt(request: AgentRequest): string {
     `- 你上一句的提议（用户同意就按这个记）：${request.proposals.map((item) => `${item.id} ${item.text}`).join("；") || "无"}`,
     `- 挡着生成的问题：${status.blockers.join("；") || "无"}`,
     `- 当前名称和内容：${status.name}｜${status.content}${request.draft.copy ? "" : "（模板生成，信息齐了可以用 draft_campaign_copy 重拟）"}`,
+    "## 本轮业务规则",
+    `- 必须先加载：${requiredSkills.length
+      ? requiredSkills.map((name) => `ics1811:${name}`).join("、")
+      : "无"}`,
+    "- 成功加载后再回答；加载失败不要凭印象继续",
     "## 已记下的信息",
     FACT_KEYS.map((key) => `- ${FACT_LABEL[key]}：${factText(key, request.draft.facts[key])}`).join("\n"),
     ...(history ? ["## 最近对话", history] : []),

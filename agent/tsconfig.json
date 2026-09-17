@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["server.ts", "skills.ts"]
+  "include": ["server.ts", "run-turn.ts", "skills.ts"]
 }

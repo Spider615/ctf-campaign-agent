@@ -48,6 +48,10 @@ export type AgentState = {
 
 export type ToolOutcome = { text: string; isError?: boolean };
 
+export type AgentToolContext = {
+  loadedSkills?: ReadonlySet<string>;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const done = (value: unknown): ToolOutcome => ({ text: typeof value === "string" ? value : JSON.stringify(value) });
 const refuse = (text: string): ToolOutcome => ({ text, isError: true });
@@ -359,7 +363,15 @@ const TOOL_HANDLERS: Record<CampaignToolName, (state: AgentState, input: Record<
   undo_campaign_change: (state) => undoCampaignChange(state),
 };
 
-export function runAgentTool(state: AgentState, name: CampaignToolName, input: Record<string, unknown> = {}): ToolOutcome {
+export function runAgentTool(
+  state: AgentState,
+  name: CampaignToolName,
+  input: Record<string, unknown> = {},
+  context: AgentToolContext = {},
+): ToolOutcome {
+  if (name === "draft_promo_copy" && !context.loadedSkills?.has("promo-copy-guide")) {
+    return refuse("没保存：先加载 promo-copy-guide 业务规则，再重新调用 draft_promo_copy。");
+  }
   return TOOL_HANDLERS[name](state, input);
 }
 
@@ -371,7 +383,7 @@ const REFUSED_SUMMARY: Record<CampaignToolName, string> = {
   analyze_campaign_state: "规则分析未执行",
   ask_campaign_questions: "问题或提议没通过校验，Agent 已调整",
   draft_campaign_copy: "名称或内容不合规（长度、字符或数字），Agent 重拟",
-  draft_promo_copy: "文案不合规（长度或数字），Agent 重拟",
+  draft_promo_copy: "文案尚未生成，Agent 会先加载规则或修正文案",
   generate_ics1811_sheet: "信息还没齐，暂不生成",
   undo_campaign_change: "现在没有可撤销的修改",
 };

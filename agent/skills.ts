@@ -631,6 +631,3 @@ export function finishSkillCheckedTurn<T>(
   assertSkillTurnContract(required, state);
   return finish();
 }
-
-// 临时兼容当前服务入口；后续接入完成后移除。
-export const listSkills = loadSkillCatalog;

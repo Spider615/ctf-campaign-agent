@@ -587,6 +587,62 @@ test("a failed streamed tool trace stays retryable", async () => {
   assert.deepEqual(lastAgent(snapshot).kind, "agent_error");
 });
 
+test("a failed Skill load keeps the user input and warning trace without changing the activity", async () => {
+  const d = deps();
+  d.runAgent = async (_request, onTrace) => {
+    const started = startTraceEvent({
+      id: "skill-load-warning",
+      tool: "load_campaign_skill",
+      title: "加载业务规则：ICS-1811 字段解释",
+      initiatedBy: "model",
+      at: 100,
+    });
+    onTrace?.(started);
+    onTrace?.(finishTraceEvent(started, {
+      status: "warning",
+      summary: "规则没有加载成功",
+      at: 125,
+    }));
+    throw new Error("业务规则没有加载成功，请重试");
+  };
+
+  let snapshot = await createSession({ entryMode: "example" }, d);
+  const beforeLatest = structuredClone(snapshot.latest);
+  const beforeVersions = structuredClone(snapshot.versions);
+  const text = "计折上折是什么意思";
+
+  snapshot = await say(snapshot, d, text);
+
+  assert.deepEqual(snapshot.latest, beforeLatest, "Skill 失败不能改变草稿、fill、sheet 或 seq");
+  assert.deepEqual(snapshot.versions, beforeVersions, "Skill 失败不能创建版本");
+  assert.deepEqual(
+    snapshot.messages.slice(-3).map((message) => message.content.kind),
+    ["user_text", "agent_tool_trace", "agent_error"],
+  );
+  assert.ok(snapshot.messages.some(
+    (message) => message.role === "user" && message.content.kind === "user_text" && message.content.text === text,
+  ), "失败时仍要保存用户原话");
+
+  const trace = lastOfKind(snapshot, "agent_tool_trace");
+  assert.ok(trace);
+  assert.equal(trace.trace.status, "warning");
+  assert.deepEqual(trace.trace.steps, [{
+    id: "skill-load-warning",
+    tool: "load_campaign_skill",
+    title: "加载业务规则：ICS-1811 字段解释",
+    status: "warning",
+    initiatedBy: "model",
+    startedAt: 100,
+    summary: "规则没有加载成功",
+    durationMs: 25,
+  }]);
+
+  const error = lastAgent(snapshot);
+  assert.equal(error.kind, "agent_error");
+  assert.match(error.kind === "agent_error" ? error.text : "", /业务规则没有加载成功，请重试/);
+  assert.deepEqual(error.kind === "agent_error" && error.retry, { type: "text", text });
+});
+
 test("the orchestrator supplements the rule analysis and the fill sheet the model omitted", async () => {
   const d = deps([
     record(example("T2").firstWrites),
@@ -652,13 +708,22 @@ test("prompts carry today, what the agent asked and proposed, and the recorded f
   assert.match(system, /一个活动只能选一个区域/);
 
   const proposal = (checkProposal(draft, "Q5a", { none: true }) as { ok: true; proposal: Proposal }).proposal;
-  const prompt = buildAgentUserPrompt({
+  const request: AgentRequest = {
     today: TODAY, draft, history: [], trigger: { kind: "user_message", text: "下周开始" },
     phase: "collecting", openQuestions: ["Q1"], proposals: [proposal], canUndo: true,
-  });
+  };
+  const prompt = buildAgentUserPrompt(request);
   assert.match(prompt, /你上一句问的问题：Q1 活动从哪天到哪天？/);
   assert.match(prompt, /你上一句的提议（用户同意就按这个记）：Q5a 让扣点和回款率：让扣点 0，回款率 0/);
   assert.match(prompt, /还缺：Q1 活动从哪天到哪天？/);
   assert.match(prompt, /门店：7590/);
   assert.match(prompt, /用户说：「下周开始」/);
+
+  const requiredPrompt = buildAgentUserPrompt(request, ["field-explainer"]);
+  assert.match(requiredPrompt, /## 本轮业务规则/);
+  assert.match(requiredPrompt, /必须先加载：ics1811:field-explainer/);
+  assert.doesNotMatch(requiredPrompt, /ics1811:offer-entry-guide/);
+
+  const plainPrompt = buildAgentUserPrompt(request, []);
+  assert.match(plainPrompt, /必须先加载：无/);
 });

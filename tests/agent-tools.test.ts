@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { AgentRequest } from "../app/lib/agent/protocol.ts";
-import { createAgentState, runAgentTool } from "../app/lib/agent/tools.ts";
+import { createAgentState, runAgentTool, safeToolSummary } from "../app/lib/agent/tools.ts";
 import { EXAMPLES } from "../app/lib/campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
 
 const TODAY = "2026-09-16";
+const PROMO_CONTEXT = { loadedSkills: new Set(["promo-copy-guide"]) };
 
 const requestFor = (text: string): AgentRequest => ({
   today: TODAY,
@@ -24,7 +25,7 @@ test("promo copy refuses an empty draft and invented numbers, then stores the cr
 
   // 事实还没齐就起草对外文案，等于让模型对着空草稿编，拒绝掉。
   const bare = createAgentState(requestFor("想做个国庆活动"));
-  const tooEarly = runAgentTool(bare, "draft_promo_copy", { headline: "国庆好礼", highlights: ["全场优惠"] });
+  const tooEarly = runAgentTool(bare, "draft_promo_copy", { headline: "国庆好礼", highlights: ["全场优惠"] }, PROMO_CONTEXT);
   assert.equal(tooEarly.isError, true, "优惠和货类都还没有，不能起草宣传文案");
 
   const ready = createAgentState({
@@ -33,18 +34,37 @@ test("promo copy refuses an empty draft and invented numbers, then stores the cr
   });
 
   // 对外文案最容易出事的就是编数字。8888 在 T1 的事实层里不存在，必须挡住。
-  const invented = runAgentTool(ready, "draft_promo_copy", { headline: "满8888送好礼", highlights: ["每克减15元"] });
+  const invented = runAgentTool(ready, "draft_promo_copy", { headline: "满8888送好礼", highlights: ["每克减15元"] }, PROMO_CONTEXT);
   assert.equal(invented.isError, true, "事实层里没有的数字不能出现在对外文案里");
   // 用局部变量接住再断言：直接 assert.equal(ready.draft.promo, null) 会让 TS 把这个属性
   // 永久收窄成 null（它不知道后面的 runAgentTool 会改写它），后面读 promo.headline 就成了 never。
   const afterInvented = ready.draft.promo;
   assert.equal(afterInvented, null, "被拒的文案不能落进草稿");
 
-  const ok = runAgentTool(ready, "draft_promo_copy", { headline: "黄金每克减15", highlights: ["一般足金类每克立减15元"] });
+  const ok = runAgentTool(ready, "draft_promo_copy", { headline: "黄金每克减15", highlights: ["一般足金类每克立减15元"] }, PROMO_CONTEXT);
   assert.equal(ok.isError, undefined);
   assert.equal(ready.draft.promo?.headline, "黄金每克减15");
   assert.deepEqual(ready.draft.promo?.highlights, ["一般足金类每克立减15元"]);
   assert.equal(ready.draft.promo?.source, "ai");
+});
+
+test("promo copy requires the same-turn guide without mutating state", () => {
+  const t1 = EXAMPLES[0];
+  const state = createAgentState({
+    ...requestFor(t1.first),
+    draft: applyFactWrites(createEmptyDraft("promo-gate", t1.first), t1.firstWrites, { text: t1.first, today: TODAY }).draft,
+  });
+  const before = structuredClone(state);
+
+  const blocked = runAgentTool(state, "draft_promo_copy", {
+    headline: "黄金克减季",
+    highlights: ["一般足金类每克立减15元"],
+  });
+
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.text, /先加载 promo-copy-guide/);
+  assert.deepEqual(state, before);
+  assert.equal(safeToolSummary("draft_promo_copy", blocked, state), "文案尚未生成，Agent 会先加载规则或修正文案");
 });
 
 test("campaign tools expose deterministic analysis without changing the draft", () => {
