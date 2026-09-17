@@ -4,7 +4,7 @@
 
 **Goal:** Upgrade the demo from a single ICS-1811 form assistant into a campaign-orchestration Agent with a parent Brief, dynamic execution tracks, launch-readiness gates, an optional ICS-1811 child flow, and a richer communication plan.
 
-**Architecture:** Persist a new `campaign/v1` parent document in the existing JSON column and keep `Ics1811Draft` unchanged as an optional leaf task. Pure domain functions own quote-guarded Brief writes, deterministic multi-track routing, child evaluation, communication rendering, and readiness aggregation. The Agent receives only controlled parent context plus the active optional child; its tools can update Brief/communication or the active child, while Workers merge the result and preserve parent identity, siblings, and human gates. `Snapshot.workspace` is the only UI source for campaign stage, tracks, gates, and artifacts.
+**Architecture:** Persist a new `campaign/v1` parent document in the existing JSON column and keep `Ics1811Draft` unchanged as one optional leaf. Pure domain functions own quote-guarded Brief writes, deterministic multi-track routing, child evaluation, communication rendering, and readiness aggregation. The Agent receives only controlled parent context plus the optional child; its tools can update Brief/communication or the child, while Workers merge the result and preserve parent identity. `Snapshot.workspace` is the only UI source for campaign stage, tracks, gates, and artifacts. This batch deliberately defers multiple 1811 children and writable human approval gates.
 
 **Tech Stack:** TypeScript 5.9, Node.js `>=22.13`, Node test runner, React 19, vinext, Claude Agent SDK `0.3.272`, local Agent Skills
 
@@ -34,11 +34,11 @@
 - Create: `tests/campaign-workspace.test.ts`
 
 - [ ] Add failing tests that normalize the same legacy `ics1811/v1` document into one stable `campaign/v1` parent/task without changing the child.
-- [ ] Add failing routing tests: pure brand launch → `brand_launch` and zero 1811 tasks; pure member request → `member_crm` and zero tasks; “新品发布 + 9 折” → both `brand_launch` and `transaction_offer` with one task; vague request → `needs_confirmation`.
-- [ ] Add failing quote-guard tests for objective, audience, theme, and channels; values whose quote is not a substring of the current user message must be dropped.
+- [ ] Add failing routing tests: pure brand launch → `brand_launch` and no 1811 child; pure member request → `member_crm` and no child; “新品发布 + 9 折” → both `brand_launch` and `transaction_offer` with one child; vague request → `needs_confirmation`.
+- [ ] Add failing quote-guard tests for name, objective, audience, theme, channels, timing, and scope; values whose quote is not a substring of the current user message must be dropped.
 - [ ] Add failing workspace tests proving a ready child yields `ics1811.sheet_ready` but does not make the campaign launch-ready while required manual gates remain.
 - [ ] Run `node --test --experimental-strip-types tests/campaign-workspace.test.ts` and confirm the missing modules/behaviors fail.
-- [ ] Implement `CampaignDraft`, `CampaignBrief`, track/channel/task/gate/artifact types, legacy normalization, deterministic 0/1 task creation, active-child helpers, and guarded Brief writes.
+- [ ] Implement `CampaignDraft`, `CampaignBrief`, track/channel/gate/artifact types, legacy normalization, deterministic optional-child creation, and guarded Brief writes. Derive routing every round; do not persist it.
 - [ ] Implement `buildCampaignWorkspace` by reusing `deriveFill`, `checkDraft`, and `planNext`; do not copy 1811 facts into the parent.
 - [ ] Re-run the focused test and `npx tsc --noEmit`.
 - [ ] Commit: `feat: add campaign parent workspace`
@@ -53,14 +53,14 @@
 - Modify: `tests/session-store.test.ts`
 - Modify: `tests/conversation.test.ts`
 
-- [ ] Add failing validation tests for valid legacy/new documents, invalid child documents, duplicate task ids, and an `activeTaskId` that does not exist.
+- [ ] Add failing validation tests for valid legacy/new documents and an invalid optional child document.
 - [ ] Add failing store tests showing legacy JSON loads as a stable campaign parent and a new campaign version round-trips in the same `brief_json` column.
 - [ ] Add failing conversation tests showing a brand-only session has no 1811 child, no `out_of_scope` refusal, and no fill-sheet message; preserve the existing example conversation and values.
 - [ ] Run the three focused test files and confirm failures before implementation.
 - [ ] Change store-facing version types to `CampaignDraft`; normalize legacy documents at the storage boundary and keep pre-1811 legacy data rejected.
 - [ ] Add `campaign` and `workspace` to `Snapshot`; make active `draft`, `fill`, and `sheet` nullable while keeping the transaction path backward compatible.
-- [ ] Update `createSession`, `evaluate`, title/status logic, undo/rollback, and commit payloads to operate on the parent and optional active child.
-- [ ] Scope 1811 questions/proposals/fill-sheet messages with optional `taskId`; legacy unscoped messages belong only to the single wrapped child.
+- [ ] Update `createSession`, `evaluate`, title/status logic, undo/rollback, and commit payloads to operate on the parent and optional child.
+- [ ] Keep the existing single-child message flow unchanged; verify legacy/new mixed version histories are adapted per version and do not become 410.
 - [ ] Re-run focused tests, `npx tsc --noEmit`, and `git diff --check`.
 - [ ] Commit: `refactor: persist campaign parent documents`
 
@@ -96,11 +96,11 @@
 
 - [ ] Add failing tests for `update_campaign_brief` and `analyze_campaign_plan`, including quote rejection, channel parsing, no-child analysis, and no mutation on rejection.
 - [ ] Add failing gate tests: no campaign business tool before `campaign-orchestrator`; 1811 tools also require `campaign-sop`; communication drafting also requires `promo-copy-guide`.
-- [ ] Add failing protocol tests showing parent context and an optional active child round-trip, while parent ids, siblings, and manual gate inputs cannot be returned as model edits.
+- [ ] Add failing protocol tests showing parent context and an optional child round-trip, while the parent id cannot be returned as a model edit. Carry `campaignStage` and nullable `ics1811Phase` separately.
 - [ ] Run focused tests and confirm failures.
-- [ ] Extend `AgentState` with mutable Brief/communication plus optional active child; keep existing 1811 tool implementations behind an active-child helper.
+- [ ] Extend `AgentState` with mutable Brief/communication plus an optional child; keep existing 1811 tool implementations behind a child-required helper.
 - [ ] Register both new SDK MCP tools with zod and extend the prompt’s machine contract/current-state summary without adding CTF workflow back to the generic system prompt.
-- [ ] Merge only tool-produced Brief/communication/active-child fields in Workers and supplement overall plan analysis when the model omits it.
+- [ ] Merge only tool-produced Brief/communication/child fields in Workers and supplement overall plan analysis when the model omits it.
 - [ ] Update trace titles and summaries so the user can distinguish overall campaign analysis from 1811 analysis.
 - [ ] Re-run focused tests and `npx tsc -p agent/tsconfig.json`.
 - [ ] Commit: `feat: orchestrate campaign brief through harness`

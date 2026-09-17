@@ -50,10 +50,13 @@
 
 ```ts
 type CampaignBrief = {
+  name: Fact<string> | null;
   objective: Fact<string> | null;
   audience: Fact<string> | null;
   theme: Fact<string> | null;
   channels: Fact<CampaignChannel[]> | null;
+  timing: Fact<string> | null;
+  scope: Fact<string> | null;
 };
 
 type CampaignDraft = {
@@ -61,35 +64,23 @@ type CampaignDraft = {
   id: string;
   requestText: string;
   brief: CampaignBrief;
-  routing: {
-    tracks: Array<"brand_launch" | "transaction_offer" | "member_crm">;
-    status: "decided" | "needs_confirmation";
-    basis: string[];
-  };
-  tasks: Array<{
-    id: string;
-    kind: "ics1811";
-    label: string;
-    draft: Ics1811Draft;
-  }>;
-  activeTaskId: string | null;
+  ics1811: Ics1811Draft | null;
   communication: CommunicationCreative | null;
-  gateInputs: Record<string, HumanGateInput | undefined>;
 };
 ```
 
-`objective`、`audience`、`theme` 只保存用户原话；`channels` 由代码从同一段原话识别为有限枚举。父层不复制日期、门店、优惠、货类和结算等 1811 事实，避免双向同步。
+`name`、`objective`、`audience`、`theme`、`timing`、`scope` 都保存经工具截取或用户确认的值，并附用户原话证据；`channels` 由代码从同一段原话识别为有限枚举。主题允许 Agent 提议，但只有用户明确同意后才成为 Brief 事实。父层不复制日期、门店、优惠、货类和结算等 1811 事实，避免双向同步；交易活动的时间和范围优先从 1811 事实渲染。
 
-路由不是互斥单标签，而是纯函数根据 `requestText`、Brief 与 1811 优惠事实推导的多轨集合：
+路由不落库，而是纯函数每轮根据 `requestText`、所有 Brief 事实的 quote 与可选的 1811 优惠事实推导的多轨集合：
 
 - `transaction_offer`：成交优惠、折扣、满减、克减、换购等；
 - `brand_launch`：品牌、新品、联名、内容或线下体验；
 - `member_crm`：会员、私域、积分或 CRM 触达；
 - 信息不足时 `status = "needs_confirmation"`，先补 Brief，不默认成 1811 活动。
 
-同一活动可以同时命中多条轨，例如“新品发布 + 门店 9 折”同时包含 `brand_launch` 和 `transaction_offer`。首批自动创建 0 或 1 个 1811 任务；数据结构允许将来在有确定性拆分依据时扩为多个任务，但不恢复旧设计的多维笛卡尔拆单。
+同一活动可以同时命中多条轨，例如“新品发布 + 门店 9 折”同时包含 `brand_launch` 和 `transaction_offer`。首批只支持一场 Campaign 下 0 或 1 张 1811 子单；后续用户新增交易优惠时可以创建子单，本批次不支持删除子单或多 1811 拆分。等仓库出现确定性拆分依据后，再单独设计多子单，不恢复旧设计的多维笛卡尔拆单。
 
-读取旧 `ics1811/v1` 时，服务端用旧 draft id 稳定、无损地包装成一个 `campaign/v1` 父对象和一个 1811 任务；首次写新版本后保存父对象。数据库列无需迁移。
+读取旧 `ics1811/v1` 时，服务端以 `campaign:${oldDraft.id}` 作为稳定父 id，无损包装为一个 `campaign/v1` 父对象和原 1811 子单；首次写新版本后保存父对象。每个历史版本都分别经过适配器再组装会话，不能因为新旧版本混存而误判整个会话为 legacy。数据库列无需迁移。
 
 ### 3.2 共享工作台视图
 
@@ -97,8 +88,12 @@ type CampaignDraft = {
 
 ```ts
 type CampaignWorkspace = {
-  tracks: CampaignTrack[];
-  stage: "briefing" | "planning" | "preparing" | "blocked" | "ready_for_launch";
+  routing: {
+    tracks: CampaignTrackKind[];
+    status: "decided" | "needs_confirmation";
+    basis: string[];
+  };
+  stage: "briefing" | "planning" | "preparing" | "blocked" | "needs_confirmation";
   brief: {
     status: "draft" | "ready";
     items: BriefItem[];
@@ -106,17 +101,40 @@ type CampaignWorkspace = {
     completeCount: number;
     totalCount: number;
   };
-  tracks: ExecutionTrack[];
+  executionTracks: Array<{
+    id: string;
+    kind: "strategy" | "transaction_offer" | "brand_launch" | "member_crm" | "store_readiness";
+    title: string;
+    status: "not_started" | "in_progress" | "blocked" | "needs_confirmation" | "ready" | "not_applicable";
+    summary: string;
+    nextAction: string | null;
+    ownerRole: string;
+    basis: string[];
+  }>;
   readiness: {
-    status: "blocked" | "needs_confirmation" | "ready";
-    gates: ReadinessGate[];
+    status: "blocked" | "needs_confirmation";
+    gates: Array<{
+      id: string;
+      title: string;
+      status: "pending" | "needs_confirmation" | "blocked" | "passed" | "not_applicable";
+      basis: string[];
+      nextAction: string | null;
+    }>;
   };
   artifacts: {
-    ics1811: Ics1811Artifact;
-    communications: CommunicationsArtifact;
+    ics1811: {
+      status: "not_applicable" | "collecting" | "blocked" | "sheet_ready";
+      missingCount: number;
+      blockerCount: number;
+    };
+    communications: {
+      status: "not_started" | "draft" | "needs_review";
+    };
   };
 };
 ```
+
+`CampaignTrackKind` 是 `"brand_launch" | "transaction_offer" | "member_crm"`。`routing.tracks` 是业务路由结果，`executionTracks` 是给界面展示的执行实例，两者不复用同名字段。
 
 工作台是从事实和确定性结果重算的投影视图，不单独落库。轨道、门禁和 artifact 都必须带 `basis` 或 `nextAction`，让用户知道状态为什么成立以及下一步是什么。
 
@@ -144,7 +162,7 @@ type CampaignWorkspace = {
 - 会员配置：需要会员触达时标为“待人工确认 CRM 配置”；
 - 门店准备：有门店时标为“待人工确认库存、物料与人员准备”。
 
-`ready_for_launch` 只在所有适用门禁为 `passed` 或 `not_applicable` 时出现。由于 demo 没有外部系统和人工确认写入，涉及审批、CRM、库存、物料与培训的门禁不会自动通过。首批 UI 通常显示“待上线确认”，这是准确状态，不是功能失败。
+由于 demo 没有外部系统和人工确认写入，本批次不提供 `ready_for_launch`，最高只到 `needs_confirmation`。涉及审阅、CRM、库存、物料与培训的门禁不会自动通过；UI 显示“待上线确认”是准确状态，不是功能失败。未来若要让人工门禁通过，必须单独设计带身份、时间、证据、撤销和版本化的确认动作，不能复用普通聊天文字假装审批。
 
 ## 4. Agent、Skill 与工具
 
@@ -174,9 +192,11 @@ type CampaignWorkspace = {
 - `draft_promo_copy` 升级为传播方案创意输入，仍须先加载 `promo-copy-guide`；
 - 所有活动业务工具在 `campaign-orchestrator` 加载前都被门禁拒绝；1811 专属工具还要求 `campaign-sop`。
 
-Agent 可以在同一回合并行组织需要的分析，但事实写入仍逐个经过确定性工具。编排器仅在模型漏跑安全分析时补跑，并在轨迹中标记“系统补跑”。
+Agent 可以并行组织互不依赖的只读分析；所有修改同一可变状态的工具必须串行执行并逐个经过确定性守卫。编排器仅在模型漏跑安全分析时补跑，并在轨迹中标记“系统补跑”。
 
-Agent 协议保持最小权限：请求携带父层 Brief、路由、门禁摘要和可选的当前 1811 子任务；结果只返回工具实际改过的 Brief、传播创意和当前子任务。Workers 把结果合并回父对象，父 id、兄弟任务和人工门禁不能被模型覆盖。品牌或会员活动即使没有 1811 子任务，也必须走真实 harness，通过父层工具完成分析和对话。
+Agent 协议保持最小权限：请求携带父层 Brief、路由、门禁摘要和可选 1811 子单；结果只返回工具实际改过的 Brief、传播创意和可选子单。Workers 把结果合并回父对象，父 id 不能被模型覆盖。品牌或会员活动即使没有 1811 子单，也必须走真实 harness，通过父层工具完成分析和对话。
+
+最终协议明确区分两个阶段：`campaignStage` 使用 workspace 阶段；`ics1811Phase` 为现有 `interpreting | collecting | ready` 或 `null`，不重载同一个 `phase` 字段。`AgentResult` 不返回整个父对象，只返回 `brief`、`communication`、`ics1811` 和相应工具结果。
 
 ### 4.3 对话行为
 
@@ -211,7 +231,7 @@ type CommunicationCreative = {
 };
 ```
 
-最终 `CommunicationPlan` 由创意输入加确定性事实生成：目标、受众、主题、活动时间、适用门店、优惠力度、用户提供且已法务确认的标语，以及发布前检查提示。
+最终 `CommunicationPlan` 由创意输入加确定性事实生成：名称、目标、受众、主题、渠道，以及当前已有的活动时间、适用门店、范围、优惠力度、用户提供且已法务确认的标语和发布前检查提示。缺失的可选事实不渲染，绝不由模型补齐。
 
 ### 5.2 生成门槛与守卫
 
@@ -229,14 +249,15 @@ type CommunicationCreative = {
 
 ## 6. 服务端流程和兼容性
 
-1. `createSession` 创建 `campaign/v1` 父 draft；确定性初筛命中交易优惠时创建一个 1811 子任务，否则任务数组为空。
-2. `runTurn` 调模型前生成整体 workspace，把父层上下文和当前可选子任务交给 Agent；`AgentRequest.phase` 使用活动父层阶段。
-3. 模型返回后，Workers 只合并受控的 Brief、传播创意和当前子任务，再重算所有 artifact 与 workspace。
-4. 没有 1811 子任务时，`Snapshot.latest.ics1811` 为 `null`；界面显示“不适用”，不造一份空填写值欺骗旧组件。
-5. 1811 专属消息带可选 `taskId`；问题、提议和填写值按任务作用域读取。旧消息没有 `taskId` 时只归唯一的 legacy 子任务。
-6. `ics_orders_json` 兼容旧单份 `FillSheet` 与按 `taskId` 保存的 `campaign-outputs/v1` 映射，不改数据库表。
-7. 会话数据库状态暂保留 `collecting | confirmed`；UI 将 `confirmed` 安全显示为“1811 已就绪”，不再映射为“活动已建好”。整体 stage 只从 Snapshot workspace 展示。
-8. 旧 `ics1811/v1` 在读取时无损包装；更早的旧营销方案结构仍返回 410。
+1. `createSession` 创建 `campaign/v1` 父 draft；确定性初筛命中交易优惠时创建一张 1811 子单，否则为 `null`。
+2. `runTurn` 调模型前生成整体 workspace，把父层上下文和可选子单交给 Agent；请求分别携带 `campaignStage` 与 `ics1811Phase`。
+3. 模型返回后，Workers 只合并受控的 Brief、传播创意和子单，再重算所有 artifact 与 workspace。
+4. `Snapshot.latest` 的权威形态为 `{ seq, campaign, draft: Ics1811Draft | null, fill: FillModel | null, checks: Check[], sheet: FillSheet | null, communication: CommunicationPlan | null }`；`Snapshot.workspace` 承载父层投影。旧的 `promo` 字段不再作为新 UI 权威来源。
+5. 没有 1811 子单时，界面显示“不适用”，不造一份空填写值欺骗旧组件；现有全局 `flowOf(messages)` 继续适用于唯一子单。
+6. `ics_orders_json` 继续兼容旧单份 `FillSheet`；本批次只有一个子单，不引入多任务 output map。
+7. session status 扩展为 `briefing | preparing | needs_confirmation | ics_ready`；旧 `collecting | readback | confirmed` 读取时做兼容标签映射。`ics_ready` 只表示子单就绪，整体 stage 仍从 workspace 展示。
+8. store 对每个版本调用 `parseCampaignDocument`：`campaign/v1` 直接校验，`ics1811/v1` 逐版本适配；更早的旧营销方案结构仍返回 410。
+9. 旧子单的 `copy` 保持在 1811 中并作为父名称的展示 fallback，不伪造新的 Brief 事实；旧 `promo` 作为 `legacy` 传播产物兼容展示，缺少的新版字段标为未生成，重新生成后才写父层结构。
 
 ## 7. 界面设计
 
@@ -273,10 +294,10 @@ type CommunicationCreative = {
 ### 9.1 自动化测试
 
 - `campaign-brief.test.ts`：原话写入守卫、渠道解析、旧 draft 兼容。
-- `campaign-workspace.test.ts`：旧 draft 稳定包装、多轨路由、0/1 子任务、动态轨道、1811 不适用、门禁聚合和整体 stage。
+- `campaign-workspace.test.ts`：旧 draft 逐版本稳定包装、多轨路由、可选单一子单、动态轨道、1811 不适用、门禁聚合和整体 stage。
 - `agent-tools.test.ts`：两个新工具、传播生成门槛、Skill 门禁、无写入副作用。
 - `skills.test.ts`：基线 `campaign-orchestrator`、按需 `campaign-sop` 与来源校验。
-- `conversation.test.ts`：优惠活动仍生成填写值；品牌活动不再被拒绝；1811 就绪不等于活动可上线；Agent 不能覆盖父层或兄弟任务；任务作用域不串提议；传播方案完整落库并从事实重算。
+- `conversation.test.ts`：优惠活动仍生成填写值；品牌活动不再被拒绝；1811 就绪不等于活动可上线；Agent 不能覆盖父 id；传播方案完整落库并从事实重算。
 - `promo.test.ts`：多渠道传播结构、数字/权益守卫、标语和硬事实边界。
 - 纯 UI view-model 测试：状态标签、默认 tab、传播入口 `generate | view | continue | disabled`。
 
@@ -292,6 +313,7 @@ type CommunicationCreative = {
 
 ## 10. 发布约束
 
+- 实现分三段验收：P1 父层适配器、workspace 与准确措辞；P2 Brief 工具、动态路由和无 1811 活动；P3 传播方案与五页签 UI。人工门禁写入和多 1811 子单不在本批次。
 - 所有 Skill 规则必须来自本文、现有代码或仓库引用资料，并逐条标 `[S#]`。
 - 先写失败测试，再实现；每一批都运行 Node 24 下的 focused tests。
 - 最终运行 `npm test`、两套 TypeScript 检查、lint 和 build。
