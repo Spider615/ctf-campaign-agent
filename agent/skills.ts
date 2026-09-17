@@ -12,6 +12,7 @@ import {
 export const PLUGIN_NAME = "ics1811";
 
 export const BASELINE_SKILL_NAMES = [
+  "campaign-orchestrator",
   "campaign-sop",
   "offer-entry-guide",
   "field-explainer",
@@ -21,6 +22,11 @@ export const BASELINE_SKILL_NAMES = [
 
 export type BaselineSkillName = typeof BASELINE_SKILL_NAMES[number];
 
+export type SkillRoutingContext = {
+  hasIcs1811?: boolean;
+  tracks?: readonly string[];
+};
+
 const FIELD_TOPIC = /计折上折|折上折|固定(?:折扣)?模式|浮动(?:折扣)?模式|固定(?:折扣)?(?:模式)?(?:和|与|、|还是|或)浮动(?:折扣)?(?:模式)?|浮动(?:折扣)?(?:模式)?(?:和|与|、|还是|或)固定(?:折扣)?(?:模式)?|让扣点|回款率|货品范围|货类明细|货类|售价类型|限制条件|餐牌|活动分组/;
 const EXPLAIN_INTENT = /什么意思|是什么意思|什么含义|怎么理解|如何理解|有什么区别|区别是什么|有什么差别|差别是什么|为什么(?:要|需要)?(?:问|填|确认)|解释|含义|指什么/;
 const OFFER_TOPIC = /折扣|打(?:\d+(?:\.\d+)?)?折|满减|克减|每克减|以旧换新|以小换大|换购|outlet|转餐牌|累加|抽奖|签到|优惠玩法|活动玩法|优惠开单|1811/;
@@ -28,8 +34,9 @@ const ENTRY_INTENT = /怎么录|如何录|怎样录|怎么填|如何填|怎样�
 const SUPPORT_INTENT = /是否支持|支不支持|支持.{0,12}吗|能不能|能(?:做|录|建)吗|可以吗|可不可以|适不适用|是不是超出|是否超出/;
 const SETTLEMENT_TOPIC = /结算说明函|说明函|跨区域|跨区|多门店|多家(?:门店|店)|两家(?:门店|店)|单店|文件命名|上传流程/;
 const SETTLEMENT_INTENT = /要不要|是否|需不需要|需要吗|怎么|如何|怎样|什么时候|何时|是什么|指什么|什么(?:规则|要求|格式|内容|材料)|规则(?:是什么|怎么|如何|怎样|呢|吗)|解释|说明(?!函)|可以吗|能否|必须.{0,12}吗|是不是必须/;
-const PROMO_TOPIC = /宣传(?:文案|内容)|活动文案|对外文案|推广文案|主标题|卖点|标语|宣传语/;
+const PROMO_TOPIC = /宣传(?:文案|内容)|营销(?:宣传|文案)|传播(?:方案|内容|文案)|活动文案|对外文案|推广文案|海报(?:文案)?|小红书|公众号|短信文案|社媒|主标题|卖点|标语|宣传语/;
 const PROMO_INTENT = /帮我|请写|生成|起草|写一版|写个|改写|修改|润色|优化|评价|点评|看看|讨论|建议|怎么写|如何写|要不要|是否合适|怎么样/;
+const ICS1811_CONTEXT = /1811|优惠开单|折扣|(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百]+(?:点[零〇一二两三四五六七八九]+)?)折|满减|克减|每克减|以旧换新|以小换大|换购|outlet|转餐牌|让扣点|回款率|货品范围|货类明细|货类|售价类型|限制条件|活动分组|结算说明函|说明函|多门店|多店|门店(?:是|为|包括|包含|有|怎么|如何|怎样|：|:)|\d{3,}店|标语(?:是|为|：|:)/;
 const EXPLAIN_TERMS = ["解释", "说明"] as const;
 const DIFFERENCE_TERMS = ["区别", "差别"] as const;
 const HOW_TERMS = ["怎么", "如何", "怎样"] as const;
@@ -59,9 +66,10 @@ function hasTermsInOrder(text: string, groups: readonly (readonly string[])[]): 
 
 export function requiredSkillsForTurn(
   request: Pick<AgentRequest, "trigger">,
+  context: SkillRoutingContext = {},
 ): BaselineSkillName[] {
   const text = request.trigger.text.replace(/\s+/g, "").toLowerCase();
-  const required = new Set<BaselineSkillName>(["campaign-sop"]);
+  const required = new Set<BaselineSkillName>(["campaign-orchestrator"]);
   const fieldTopic = FIELD_TOPIC.test(text);
   const explanation = EXPLAIN_INTENT.test(text);
   const offerTopic = OFFER_TOPIC.test(text);
@@ -69,17 +77,25 @@ export function requiredSkillsForTurn(
   const explainThenEnter = EXPLAIN_THEN_ENTER_ORDERS.some(
     (groups) => hasTermsInOrder(text, groups),
   );
-
-  if ((fieldTopic && explanation) || explainThenEnter) required.add("field-explainer");
-  if (
-    explainThenEnter
+  const offerGuidance = explainThenEnter
     || (entry && (offerTopic || fieldTopic))
     || (offerTopic && SUPPORT_INTENT.test(text))
-    || (offerTopic && explanation && !fieldTopic)
-  ) {
+    || (offerTopic && explanation && !fieldTopic);
+  const settlementGuidance = SETTLEMENT_TOPIC.test(text) && SETTLEMENT_INTENT.test(text);
+  const transactionContext = context.hasIcs1811 === true
+    || context.tracks?.includes("transaction_offer") === true
+    || ICS1811_CONTEXT.test(text)
+    || fieldTopic
+    || offerGuidance
+    || settlementGuidance;
+
+  if (transactionContext) required.add("campaign-sop");
+
+  if ((fieldTopic && explanation) || explainThenEnter) required.add("field-explainer");
+  if (offerGuidance) {
     required.add("offer-entry-guide");
   }
-  if (SETTLEMENT_TOPIC.test(text) && SETTLEMENT_INTENT.test(text)) {
+  if (settlementGuidance) {
     required.add("settlement-guide");
   }
   if (PROMO_TOPIC.test(text) && PROMO_INTENT.test(text)) {

@@ -23,6 +23,7 @@ test.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const BASELINE = [
+  "campaign-orchestrator",
   "campaign-sop",
   "offer-entry-guide",
   "field-explainer",
@@ -116,10 +117,15 @@ function expectCatalogError(action: () => unknown, relativePath: string, reason:
   });
 }
 
-function requiredSkills(text: string) {
+type SkillRoutingContext = {
+  hasIcs1811?: boolean;
+  tracks?: string[];
+};
+
+function requiredSkills(text: string, context: SkillRoutingContext = {}) {
   return skillModule.requiredSkillsForTurn({
     trigger: { kind: "user_message", text },
-  });
+  }, context);
 }
 
 function assertSafeSkillTrace(event: unknown): void {
@@ -134,20 +140,20 @@ function assertSafeSkillTrace(event: unknown): void {
 
 test("按知识请求保守选择基线 Skill，并保持基线顺序", () => {
   const cases: Array<[string, readonly string[]]> = [
-    ["计折上折是什么意思", ["campaign-sop", "field-explainer"]],
-    ["黄金以旧换新在 1811 怎么录", ["campaign-sop", "offer-entry-guide"]],
-    ["两家店要不要说明函", ["campaign-sop", "settlement-guide"]],
-    ["帮我写一版宣传文案", ["campaign-sop", "promo-copy-guide"]],
-    ["浮动和固定有什么区别", ["campaign-sop", "field-explainer"]],
-    ["固定折扣模式是什么意思", ["campaign-sop", "field-explainer"]],
-    ["浮动折扣和固定折扣有什么区别", ["campaign-sop", "field-explainer"]],
-    ["浮动折扣模式和固定折扣模式有什么区别", ["campaign-sop", "field-explainer"]],
-    ["这个活动该选浮动还是固定，1811 怎么录", ["campaign-sop", "offer-entry-guide"]],
-    ["先解释浮动和固定的区别，再告诉我这个活动怎么录", ["campaign-sop", "offer-entry-guide", "field-explainer"]],
-    ["先解释区别，再告诉我这个活动怎么录", ["campaign-sop", "offer-entry-guide", "field-explainer"]],
-    ["这个活动怎么录，再解释区别", ["campaign-sop", "offer-entry-guide", "field-explainer"]],
-    ["区别解释怎么录", ["campaign-sop"]],
-    ["满减是什么意思", ["campaign-sop", "offer-entry-guide"]],
+    ["计折上折是什么意思", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["黄金以旧换新在 1811 怎么录", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
+    ["两家店要不要说明函", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["帮我写一版宣传文案", ["campaign-orchestrator", "promo-copy-guide"]],
+    ["浮动和固定有什么区别", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["固定折扣模式是什么意思", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["浮动折扣和固定折扣有什么区别", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["浮动折扣模式和固定折扣模式有什么区别", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["这个活动该选浮动还是固定，1811 怎么录", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
+    ["先解释浮动和固定的区别，再告诉我这个活动怎么录", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide", "field-explainer"]],
+    ["先解释区别，再告诉我这个活动怎么录", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide", "field-explainer"]],
+    ["这个活动怎么录，再解释区别", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide", "field-explainer"]],
+    ["区别解释怎么录", ["campaign-orchestrator"]],
+    ["满减是什么意思", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
   ];
 
   for (const [text, expected] of cases) {
@@ -157,26 +163,27 @@ test("按知识请求保守选择基线 Skill，并保持基线顺序", () => {
 
 test("识别解释、录入、结算和文案请求的常用同义表达", () => {
   const cases: Array<[string, readonly string[]]> = [
-    ["计折上折什么意思", ["campaign-sop", "field-explainer"]],
-    ["让扣点是什么含义", ["campaign-sop", "field-explainer"]],
-    ["回款率怎么理解", ["campaign-sop", "field-explainer"]],
-    ["满减怎么填", ["campaign-sop", "offer-entry-guide"]],
-    ["以旧换新如何录", ["campaign-sop", "offer-entry-guide"]],
-    ["这个活动该选浮动还是固定", ["campaign-sop", "offer-entry-guide"]],
-    ["抽奖是否支持", ["campaign-sop", "offer-entry-guide"]],
-    ["说明函怎么上传", ["campaign-sop", "settlement-guide"]],
-    ["说明函如何命名", ["campaign-sop", "settlement-guide"]],
-    ["说明函必须上传吗", ["campaign-sop", "settlement-guide"]],
-    ["说明函什么时候上传", ["campaign-sop", "settlement-guide"]],
-    ["说明函上传需要什么材料", ["campaign-sop", "settlement-guide"]],
-    ["请解释说明函的上传规则", ["campaign-sop", "settlement-guide"]],
-    ["请解释结算说明函的命名规则", ["campaign-sop", "settlement-guide"]],
-    ["请说明结算说明函的上传流程", ["campaign-sop", "settlement-guide"]],
-    ["请起草宣传文案", ["campaign-sop", "promo-copy-guide"]],
-    ["请写宣传文案", ["campaign-sop", "promo-copy-guide"]],
-    ["修改活动文案", ["campaign-sop", "promo-copy-guide"]],
-    ["润色宣传语", ["campaign-sop", "promo-copy-guide"]],
-    ["评价这个标语", ["campaign-sop", "promo-copy-guide"]],
+    ["计折上折什么意思", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["让扣点是什么含义", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["回款率怎么理解", ["campaign-orchestrator", "campaign-sop", "field-explainer"]],
+    ["满减怎么填", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
+    ["以旧换新如何录", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
+    ["这个活动该选浮动还是固定", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
+    ["抽奖是否支持", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
+    ["说明函怎么上传", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["说明函如何命名", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["说明函必须上传吗", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["说明函什么时候上传", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["说明函上传需要什么材料", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["请解释说明函的上传规则", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["请解释结算说明函的命名规则", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["请说明结算说明函的上传流程", ["campaign-orchestrator", "campaign-sop", "settlement-guide"]],
+    ["请起草宣传文案", ["campaign-orchestrator", "promo-copy-guide"]],
+    ["请写宣传文案", ["campaign-orchestrator", "promo-copy-guide"]],
+    ["修改活动文案", ["campaign-orchestrator", "promo-copy-guide"]],
+    ["润色宣传语", ["campaign-orchestrator", "promo-copy-guide"]],
+    ["评价这个标语", ["campaign-orchestrator", "promo-copy-guide"]],
+    ["请生成小红书和门店海报传播方案", ["campaign-orchestrator", "promo-copy-guide"]],
   ];
 
   for (const [text, expected] of cases) {
@@ -184,7 +191,7 @@ test("识别解释、录入、结算和文案请求的常用同义表达", () =>
   }
 });
 
-test("普通活动事实每轮只要求基础 campaign-sop", () => {
+test("普通交易事实加载编排与 1811 子流程 Skill", () => {
   for (const text of [
     "10月1日到7日，7590店，钻石95折",
     "多店活动，门店是7590和7601",
@@ -196,20 +203,42 @@ test("普通活动事实每轮只要求基础 campaign-sop", () => {
     "说明函已按上传要求提交",
     "标语是请到店参与活动",
   ]) {
-    assert.deepEqual(requiredSkills(text), ["campaign-sop"], text);
+    assert.deepEqual(requiredSkills(text), ["campaign-orchestrator", "campaign-sop"], text);
   }
 });
 
-test("每个模型回合都重新要求 campaign-sop", () => {
-  assert.deepEqual(requiredSkills("10月1日到7日，7590店，钻石95折"), ["campaign-sop"]);
-  assert.deepEqual(requiredSkills("让扣点2%，回款率98%"), ["campaign-sop"]);
+test("每个模型回合都要求编排 Skill，通用活动不误载 1811 子流程", () => {
+  assert.deepEqual(requiredSkills("帮我策划一场新品发布活动"), ["campaign-orchestrator"]);
+  assert.deepEqual(requiredSkills("做一个会员唤醒活动"), ["campaign-orchestrator"]);
+  assert.deepEqual(requiredSkills("先继续完善活动方案"), ["campaign-orchestrator"]);
+  assert.deepEqual(requiredSkills("10月1日到7日，7590店，钻石95折"), ["campaign-orchestrator", "campaign-sop"]);
+  assert.deepEqual(requiredSkills("让扣点2%，回款率98%"), ["campaign-orchestrator", "campaign-sop"]);
+});
+
+test("活动上下文让短回复稳定加载对应子流程", () => {
+  assert.deepEqual(
+    requiredSkills("行", { hasIcs1811: true }),
+    ["campaign-orchestrator", "campaign-sop"],
+  );
+  assert.deepEqual(
+    requiredSkills("继续", { tracks: ["transaction_offer"] }),
+    ["campaign-orchestrator", "campaign-sop"],
+  );
+  assert.deepEqual(
+    requiredSkills("继续", { tracks: ["brand_launch", "member_crm"] }),
+    ["campaign-orchestrator"],
+  );
 });
 
 test("生成宣传内容 CTA 的固定提示语确定性加载宣传文案 Skill", () => {
   assert.equal(PROMO_GENERATION_PROMPT, "请基于当前活动生成一份对外营销宣传内容");
   assert.deepEqual(
     requiredSkills(PROMO_GENERATION_PROMPT),
-    ["campaign-sop", "promo-copy-guide"],
+    ["campaign-orchestrator", "promo-copy-guide"],
+  );
+  assert.deepEqual(
+    requiredSkills(PROMO_GENERATION_PROMPT, { hasIcs1811: true }),
+    ["campaign-orchestrator", "campaign-sop", "promo-copy-guide"],
   );
 });
 
@@ -220,7 +249,7 @@ test("混合意图扫描对不完整的长输入保持线性", () => {
     const actual = requiredSkillsForTurn({
       trigger: { kind: "user_message", text: "解释区别怎么".repeat(320) },
     });
-    if (JSON.stringify(actual) !== '["campaign-sop"]') process.exit(1);
+    if (JSON.stringify(actual) !== '["campaign-orchestrator"]') process.exit(1);
   `;
   const result = spawnSync(
     process.execPath,
@@ -233,14 +262,14 @@ test("混合意图扫描对不完整的长输入保持线性", () => {
 });
 
 test("路由只归一化空白和大小写，首轮消息也使用同一规则", () => {
-  assert.deepEqual(requiredSkills("  OUTLET   如何录  "), ["campaign-sop", "offer-entry-guide"]);
-  assert.deepEqual(requiredSkills("浮动 和 固定有什么区别"), ["campaign-sop", "field-explainer"]);
-  assert.deepEqual(requiredSkills("黄金以旧换新怎么\n录"), ["campaign-sop", "offer-entry-guide"]);
+  assert.deepEqual(requiredSkills("  OUTLET   如何录  "), ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]);
+  assert.deepEqual(requiredSkills("浮动 和 固定有什么区别"), ["campaign-orchestrator", "campaign-sop", "field-explainer"]);
+  assert.deepEqual(requiredSkills("黄金以旧换新怎么\n录"), ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]);
   assert.deepEqual(
     skillModule.requiredSkillsForTurn({
       trigger: { kind: "first_message", text: "计折上折是什么意思" },
     }),
-    ["campaign-sop", "field-explainer"],
+    ["campaign-orchestrator", "campaign-sop", "field-explainer"],
   );
 });
 
@@ -473,6 +502,7 @@ test("发现基线和新增 Skill，并按短名称排序后生成精确限定�
   const catalog = skillModule.loadSkillCatalog(pluginDir);
   const expected = [
     "additional-guide",
+    "campaign-orchestrator",
     "campaign-sop",
     "field-explainer",
     "offer-entry-guide",
@@ -1089,7 +1119,7 @@ test("加载目录时不要求来源文件存在，显式来源校验才检查�
   mkdirSync(repoRoot);
   expectCatalogError(
     () => skillModule.validateSkillSources(catalog, repoRoot),
-    "skills/campaign-sop/SKILL.md",
+    "skills/campaign-orchestrator/SKILL.md",
     /docs\/source\.md.*不存在|不存在.*docs\/source\.md/,
   );
 });
@@ -1105,7 +1135,7 @@ test("来源校验拒绝通过符号链接逃出仓库的路径", () => {
 
   expectCatalogError(
     () => skillModule.validateSkillSources(catalog, repoRoot),
-    "skills/campaign-sop/SKILL.md",
+    "skills/campaign-orchestrator/SKILL.md",
     /docs\/source\.md.*仓库|仓库.*docs\/source\.md/,
   );
 });
@@ -1142,13 +1172,14 @@ test("目录、条目、来源数组和来源对象全部冻结", () => {
   }
 });
 
-test("仓库内五份基线 Skill 通过严格目录和来源校验", () => {
+test("仓库内六份基线 Skill 通过严格目录和来源校验", () => {
   const pluginDir = join(repoRoot, "agent", "plugin");
   const manifest = JSON.parse(readFileSync(join(pluginDir, ".claude-plugin", "plugin.json"), "utf8"));
   assert.deepEqual(manifest, MANIFEST);
 
   const catalog = skillModule.loadSkillCatalog(pluginDir);
   assert.deepEqual(catalog.map((skill) => skill.name), [
+    "campaign-orchestrator",
     "campaign-sop",
     "field-explainer",
     "offer-entry-guide",
@@ -1156,10 +1187,11 @@ test("仓库内五份基线 Skill 通过严格目录和来源校验", () => {
     "settlement-guide",
   ]);
   assert.deepEqual(catalog.map((skill) => skill.title), [
-    "ICS-1811 优惠开单活动创建 SOP",
+    "营销活动编排工作法",
+    "ICS-1811 优惠开单子流程",
     "ICS-1811 字段解释",
     "ICS-1811 优惠玩法与录入指引",
-    "ICS-1811 对外宣传文案指引",
+    "营销活动传播方案指引",
     "ICS-1811 结算说明函指引",
   ]);
   for (const skill of catalog) {
@@ -1169,7 +1201,40 @@ test("仓库内五份基线 Skill 通过严格目录和来源校验", () => {
   assert.doesNotThrow(() => skillModule.validateSkillSources(catalog, repoRoot));
 });
 
-test("campaign-sop 只承载有出处的工作流合同", () => {
+test("campaign-orchestrator 只承载有出处的父级编排合同", () => {
+  const path = join(repoRoot, "agent", "plugin", "skills", "campaign-orchestrator", "SKILL.md");
+  const text = readFileSync(path, "utf8");
+  const headings = [...text.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
+
+  assert.deepEqual(headings, ["适用场景", "回答原则", "业务知识", "不能做什么", "冲突处理", "出处"]);
+  assert.match(text, /Brief/);
+  assert.match(text, /动态/);
+  assert.match(text, /执行轨/);
+  assert.match(text, /1811[^\n]*子流程/);
+  assert.match(text, /上线/);
+  assert.match(text, /人工|外部/);
+  assert.match(text, /不能[^\n]*(?:假装|声称)/);
+  assert.match(text, /工具[^\n]*为准/);
+  assert.match(text, /思维链|内部推理/);
+  assert.doesNotMatch(text, /先.*1811.*再.*传播.*再.*上线/);
+});
+
+test("promo-copy-guide 定义多渠道传播方案而不越过事实和上线门禁", () => {
+  const path = join(repoRoot, "agent", "plugin", "skills", "promo-copy-guide", "SKILL.md");
+  const text = readFileSync(path, "utf8");
+
+  assert.match(text, /创意概念/);
+  assert.match(text, /核心信息/);
+  assert.match(text, /渠道/);
+  assert.match(text, /视觉方向/);
+  assert.match(text, /事实/);
+  assert.match(text, /发布前|上线前/);
+  assert.match(text, /审核|复核/);
+  assert.match(text, /不能[^\n]*虚构/);
+  assert.match(text, /工具[^\n]*为准/);
+});
+
+test("campaign-sop 只承载有出处的 1811 子流程合同", () => {
   const path = join(repoRoot, "agent", "plugin", "skills", "campaign-sop", "SKILL.md");
   const text = readFileSync(path, "utf8");
 
@@ -1179,10 +1244,12 @@ test("campaign-sop 只承载有出处的工作流合同", () => {
   assert.match(text, /人定字段[^\n]*不能默认/);
   assert.match(text, /生成[^\n]*1811[^\n]*填写值/);
   assert.match(text, /修改[^\n]*重新/);
-  assert.match(text, /对外宣传文案/);
-  assert.match(text, /不能[^\n]*自动生成/);
+  assert.match(text, /子流程/);
+  assert.match(text, /不代表[^\n]*活动[^\n]*(?:完成|上线)/);
   assert.match(text, /一个活动只能选一个区域/);
   assert.match(text, /不能[^\n]*拆单/);
   assert.match(text, /工具[^\n]*为准/);
+  assert.doesNotMatch(text, /每个由模型处理的活动回合都先使用/);
+  assert.doesNotMatch(text, /邀请用户继续生成对外宣传文案/);
   assert.doesNotMatch(text, /^- Q[1-6][a-z]?\b|```(?:json|ts)|^\s*["']?(?:dates|stores|offer|rates)["']?\s*:/m);
 });
