@@ -1166,7 +1166,7 @@ test("campaign-sop 只承载有出处的工作流合同", () => {
 
   assert.match(text, /先提取用户这一轮明确说过的事实/);
   assert.match(text, /规则分析/);
-  assert.match(text, /最多两轮/);
+  assert.match(text, /没有轮次上限/);
   assert.match(text, /人定字段[^\n]*不能默认/);
   assert.match(text, /生成[^\n]*1811[^\n]*填写值/);
   assert.match(text, /修改[^\n]*重新/);

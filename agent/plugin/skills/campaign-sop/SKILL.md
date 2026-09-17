@@ -16,14 +16,14 @@ description: 执行 ICS-1811 优惠开单活动的创建、补充、修改、查
 - 来源编号只用于内部维护和审计，不能向用户朗读。[S1]
 - 先提取用户这一轮明确说过的事实，再运行规则分析；只根据工具返回的缺项、校验和填写值决定下一步。[S1][S2][S4]
 - 人定字段不能默认，也不能把页面默认值、常见做法、“不知道”或“按惯例”当成用户答案。[S1][S3][S4]
-- 需要用户补充时，只问规则分析返回的当轮全部缺项；问题内容和是否可确认以工具结果为准。[S1][S2][S3]
+- 需要用户补充时，只从规则分析返回的缺项里挑最要紧的 1 到 3 项自然地问；缺项内容和活动是否齐全以工具结果为准。[S1][S2][S3][S9]
 - 信息齐全时查看或生成最新的 1811 填写值；活动建好后发生修改，也要重新分析并同步生成最新填写值。[S1][S2][S5][S6]
 - 用简洁自然的中文说明实际完成的动作，不声称未成功执行的工具、保存、上传或审批已经完成。[S1][S2][S7]
 
 ## 业务知识
 
-- 创建流程按“明确事实、规则分析、补齐缺项、白话复述、用户确认、生成填写值”推进；事实层与填写值分开，填写值每轮从事实重新推导。[S1][S2][S5]
-- 每轮把当时的全部缺项一起问，最多两轮；两轮后仍缺的内容要如实列在复述里，不能确认或生成可执行结果。[S1][S3]
+- 创建流程按“明确事实、规则分析、继续补齐缺项、齐了直接生成填写值”推进；没有单独的复述确认步骤，填写值每轮从事实重新推导。[S1][S2][S5][S9]
+- 缺项没齐就继续在对话中问，没有轮次上限；什么时候问、一次问哪 1 到 3 项和怎样措辞由 Agent 决定，缺项目录和是否齐全由代码决定。[S2][S3][S9]
 - 模型可以提出仓库允许的建议，但建议本身不等于用户事实；只有用户明确同意且确定性工具接受后才能写入。[S1][S4][S7]
 - 用户的数值、日期、门店、优惠和其他人定信息必须带本轮原话证据交给工具；工具会重新解析并拒绝不在原话里的片段。[S1][S4][S7]
 - 字段解释、优惠录入、结算说明函和宣传文案分别由专项 Skill 补充；本 SOP 不替代这些专项知识。[S1][S7]
@@ -49,11 +49,12 @@ description: 执行 ICS-1811 优惠开单活动的创建、补充、修改、查
 
 ## 出处
 
-- [S1] `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md` — §1、§2、§4、§6、§8，活动创建流程与模型边界
+- [S1] `docs/superpowers/specs/2026-09-17-harness-first-campaign-agent-design.md` — §3 至 §6，通用 Agent、运行时 Skill 和工具权威边界
 - [S2] `app/lib/server/turns.ts` — runTurn、runAgentTurn、appendProgress，回合编排和确定性分支
-- [S3] `app/lib/campaign/ics1811/questions.ts` — gapsOf、planNext、MAX_ROUNDS，缺项和两轮追问
+- [S3] `app/lib/campaign/ics1811/questions.ts` — QUESTION_PRIORITY、gapsOf、planNext，缺项目录和无轮次流程
 - [S4] `app/lib/campaign/ics1811/facts.ts` — applyFactWrites，原话证据与事实写入守卫
 - [S5] `app/lib/campaign/ics1811/derive.ts` — deriveFill，事实到 1811 填写值的每轮推导
 - [S6] `app/lib/campaign/ics1811/checks.ts` — checkDraft，blocker 与 warning 校验
 - [S7] `app/lib/agent/tools.ts` — 活动工具、宣传文案门禁和 finishAgentTurn
 - [S8] `app/lib/campaign/ics1811/messages.ts` — flowOf、消息状态和撤销恢复后的流程推导
+- [S9] `docs/superpowers/specs/2026-09-16-conversational-build-design.md` — D5、D6、分工、流程和去掉的轮次上限
