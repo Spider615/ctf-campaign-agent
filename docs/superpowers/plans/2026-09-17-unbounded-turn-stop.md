@@ -244,7 +244,6 @@ test("streaming turns expose a real stop control and keep the wave below tool tr
   assert.match(conversationSource, /inFlightTurn/);
   assert.match(conversationSource, /setInput\(\(current\)/);
   assert.match(conversationSource, /caught instanceof ApiError && caught\.status === 409/);
-  assert.match(conversationSource, /latestUserText\(next\) === text/);
   assert.match(conversationSource, /trim\(\)\.slice\(0, 1000\)/);
   assert.match(composerSource, /maxLength=\{1000\}/);
   assert.match(conversationSource, /!stopping && !liveReply\.text && waiting/);
@@ -572,25 +571,25 @@ const placeholder = interpretationStopped
   onSubmit={() => {
     const text = input.trim().slice(0, 1000);
     if (!text) return;
-    const submittedSessionId = sessionId;
+    const textTurn = ++submittedTextTurn.current;
     setInput("");
-    void send({ type: "text", text }).then((next) => {
-      const alreadyCommitted = next ? latestUserText(next) === text : false;
-      if (!alreadyCommitted && currentSessionId.current === submittedSessionId) {
-        setInput((current) => current.length ? current : text);
-      }
+    void send({ type: "text", text }).then((result) => {
+      setInput((current) => reconcileSubmittedText(current, text, {
+        committed: result?.committed ?? false,
+        current: submittedTextTurn.current === textTurn && inFlightTurn.ownsSession(sessionOwner),
+      }));
     });
   }}
 />
 ```
 
-Add a small `latestUserText(snapshot)` helper that scans messages from the end and returns the newest `user_text` value. Use the same canonical text as the server—`input.trim().slice(0, 1000)`—for sending, committed-text comparison, and restoration; Composer's `maxLength={1000}` is the matching UI guard. The source assertions above are the >1000-character regression contract.
+Add receipt-aware behavior coverage with real `runTurn`: submit A with its leased `clientTurnId`, commit B from another tab, then retry A and verify the returned Snapshot recognizes A even though B is the newest user message. `turnWasCommitted` scans all persisted message receipts for the submitted ID. Only a Snapshot with no receipts at all may use the newest `user_text` as a legacy fallback; another receipt carrying the same text cannot impersonate A. Use the same canonical text as the server—`input.trim().slice(0, 1000)`—for sending and restoration; Composer's `maxLength={1000}` is the matching UI guard.
 
 When `interpretationStopped` is true, render a neutral inline status above Composer: “已停止理解，你可以继续补充，或继续理解”，with a “继续理解” button wired to `retryInterpretation`. It is not a red error. Keep the textarea editable during streaming; the functional input restore above preserves anything the user typed while waiting.
 
 Do not rely on a later 409 to discover whether a stopped or transport-uncertain turn committed. `Conversation` leases a `crypto.randomUUID()` `clientTurnId` per canonical controlled `TurnBody`: an uncertain `null` result keeps the lease for the same-body retry, a different body gets a different ID, and a successful Snapshot or completed stale-seq 409 reconciliation clears it. The server excludes `expectedSeq` and `clientTurnId` from the request hash, stores the ID plus hash on the first persisted message, and uses a deterministic message primary key as the atomic idempotency fence. A committed same-ID/same-body retry returns the winning Snapshot; same ID with a different body is a 400 without another Agent call. After a successful send, deliberately sending the same text again therefore receives a fresh ID. Non-chat `postTurn` callers also receive an ID at the API boundary.
 
-The submit callback still restores the canonical submitted text only if that exact text is not already the newest committed user message. A genuine stale-seq 409 still refreshes the Snapshot without a red error, avoiding duplicates without discarding a different stale-tab draft.
+The submit callback restores the canonical submitted text only when this exact local submit attempt is still current and its `clientTurnId` has no persisted receipt. A genuine stale-seq 409 still refreshes the Snapshot without a red error. A late result from an older send cannot clear a newer lease or overwrite a newer draft.
 
 - [ ] **Step 6: Keep the three-dot wave visible after traces start**
 

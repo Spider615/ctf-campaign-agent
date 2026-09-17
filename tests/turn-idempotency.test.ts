@@ -6,9 +6,11 @@ import { decodeMessage, encodeMessage } from "../app/lib/campaign/ics1811/messag
 import { ConflictError, createMemoryStore, type TurnWrite } from "../app/lib/server/session-store.ts";
 import { createSession, parseTurnInput, runTurn, TurnError, type TurnDeps } from "../app/lib/server/turns.ts";
 import { createClientTurnLease, turnRequestHash, type ClientTurnBody } from "../app/lib/turn-identity.ts";
+import { reconcileSubmittedText, turnWasCommitted } from "../app/lib/client/turn-result.ts";
 
 const TURN_ID = "11111111-1111-4111-8111-111111111111";
 const NEXT_ID = "22222222-2222-4222-8222-222222222222";
+const THIRD_ID = "33333333-3333-4333-8333-333333333333";
 
 const CLIENT_BODIES: ClientTurnBody[] = [
   { type: "text", text: "继续讨论" },
@@ -57,6 +59,55 @@ test("消息编解码兼容无凭据旧数据并保留新回合凭据", () => {
   const receipt = { id: TURN_ID, requestHash: "a".repeat(64) };
   const current = { v: 2 as const, kind: "user_text" as const, text: "新消息", turn: receipt };
   assert.deepEqual(decodeMessage("user", encodeMessage(current)), current);
+});
+
+test("A 已提交且 B 更晚时按 A receipt 确认，不把 A 恢复到输入框", async () => {
+  const { deps } = setup();
+  const initial = await createSession({ entryMode: "new", text: "你好" }, deps);
+  const ids = [TURN_ID, THIRD_ID];
+  const lease = createClientTurnLease(() => ids.shift()!);
+  const a = { type: "text" as const, text: "回合 A" };
+  const aId = lease.acquire(a);
+  const afterA = await runTurn(initial.session.id, { ...a, clientTurnId: aId, expectedSeq: initial.latest.seq }, deps);
+  await runTurn(initial.session.id, { type: "text", text: "回合 B", clientTurnId: NEXT_ID, expectedSeq: afterA.latest.seq }, deps);
+
+  const retryId = lease.acquire({ ...a, expectedSeq: 99 });
+  const reconciled = await runTurn(initial.session.id, { ...a, clientTurnId: retryId, expectedSeq: initial.latest.seq }, deps);
+  const committed = turnWasCommitted(reconciled, retryId, a.text);
+  const latestUser = reconciled.messages.findLast((message) => message.content.kind === "user_text");
+  assert.equal(latestUser?.content.kind === "user_text" ? latestUser.content.text : null, "回合 B", "更晚的 B 仍是最新用户回合");
+  assert.equal(committed, true, "必须扫描 A 的 receipt，不能只看最新文案 B");
+  assert.equal(reconcileSubmittedText("", a.text, { committed, current: true }), "");
+  assert.equal(lease.complete(retryId), true);
+  assert.equal(lease.acquire(a), THIRD_ID, "A 成功后再次发送相同文案必须使用新 ID");
+});
+
+test("没有 A receipt 时才恢复 A，同文案的其他 receipt 不能冒充 A", async () => {
+  const { deps } = setup();
+  const initial = await createSession({ entryMode: "new", text: "你好" }, deps);
+  const other = await runTurn(initial.session.id, {
+    type: "text",
+    text: "回合 A",
+    clientTurnId: NEXT_ID,
+    expectedSeq: initial.latest.seq,
+  }, deps);
+  assert.equal(turnWasCommitted(other, TURN_ID, "回合 A"), false, "其他 ID 的同文案不能冒充本回合");
+  assert.equal(reconcileSubmittedText("", "回合 A", { committed: false, current: true }), "回合 A");
+
+  const legacy = structuredClone(other);
+  for (const message of legacy.messages) delete message.content.turn;
+  assert.equal(turnWasCommitted(legacy, TURN_ID, "回合 A"), true, "完全没有 receipt 的旧 Snapshot 保留末句 fallback");
+});
+
+test("迟到旧 send 不能清除新租约或覆盖新草稿", () => {
+  const ids = [TURN_ID, NEXT_ID, THIRD_ID];
+  const lease = createClientTurnLease(() => ids.shift()!);
+  const oldId = lease.acquire({ type: "text", text: "旧回合" });
+  const currentId = lease.acquire({ type: "text", text: "新回合" });
+  assert.equal(lease.complete(oldId), false);
+  assert.equal(lease.acquire({ type: "text", text: "新回合" }), currentId);
+  assert.equal(reconcileSubmittedText("新草稿", "旧回合", { committed: false, current: false }), "新草稿");
+  assert.equal(reconcileSubmittedText("", "旧回合", { committed: false, current: false }), "", "新回合已清空输入时也不能被旧回合回填");
 });
 
 function deferred() {

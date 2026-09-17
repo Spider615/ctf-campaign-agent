@@ -26,7 +26,6 @@ test("streaming turns expose a real stop control and keep the wave below tool tr
   assert.match(conversationSource, /inFlightTurn/);
   assert.match(conversationSource, /setInput\(\(current\)/);
   assert.match(conversationSource, /caught instanceof ApiError && caught\.status === 409/);
-  assert.match(conversationSource, /latestUserText\(next\) === text/);
   assert.match(conversationSource, /trim\(\)\.slice\(0, 1000\)/);
   assert.match(composerSource, /maxLength=\{1000\}/);
   assert.match(conversationSource, /!stopping && !liveReply\.text && waiting/);

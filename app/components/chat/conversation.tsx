@@ -23,6 +23,7 @@ import {
 } from "../../lib/client/api";
 import { appendLiveReply, emptyLiveReply } from "../../lib/client/live-reply";
 import { createTurnOwnership, type TurnOwner } from "../../lib/client/turn-ownership";
+import { reconcileSubmittedText, turnWasCommitted } from "../../lib/client/turn-result";
 import { CAMPAIGN_STAGE_LABEL, DEFAULT_WORKSPACE_TAB } from "../../lib/client/campaign-workspace";
 import { PROMO_CONTINUE_PROMPT, PROMO_GENERATION_PROMPT, promoWasGenerated } from "../../lib/client/promo-cta";
 import type { Snapshot } from "../../lib/server/turns";
@@ -55,14 +56,6 @@ function collectingPlaceholder(flow: Snapshot["flow"]): string {
 
 // 只有这两种回合会调模型、需要等待；其余由代码直接处理，不显示等待文案。
 const WAITING_KINDS: readonly TurnKind[] = ["interpret", "text"];
-
-function latestUserText(snapshot: Snapshot): string | null {
-  for (let index = snapshot.messages.length - 1; index >= 0; index--) {
-    const message = snapshot.messages[index];
-    if (message.content.kind === "user_text") return message.content.text;
-  }
-  return null;
-}
 
 const XL = "(min-width: 1280px)";
 const SHEET_PANEL_ID = "sheet";
@@ -110,6 +103,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const [livePhase, setLivePhase] = useState<"analyzing" | "writing" | null>(null);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [input, setInput] = useState("");
+  const submittedTextTurn = useRef(0);
   const [error, setError] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelTab, setPanelTab] = useState(DEFAULT_WORKSPACE_TAB);
@@ -195,7 +189,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     return () => cancelAnimationFrame(frame);
   }, [messageCount, busy, liveTrace.length, liveReply.text, loadState]);
 
-  const send = async (body: TurnBody): Promise<Snapshot | null> => {
+  const send = async (body: TurnBody): Promise<{ snapshot: Snapshot; committed: boolean } | null> => {
     if (!inFlightTurn.ownsSession(sessionOwner) || !snapshot || snapshot.session.id !== sessionId || busy) return null;
     const streams = WAITING_KINDS.includes(body.type);
     const requestSessionId = sessionId;
@@ -243,7 +237,10 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       setSnapshot(next);
       if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
       notifySessionsChanged();
-      return next;
+      return {
+        snapshot: next,
+        committed: turnWasCommitted(next, clientTurnId, body.type === "text" ? body.text : undefined),
+      };
     } catch (caught) {
       if (isTurnCancelled(caught) || controller?.signal.aborted) {
         if (ownsUi() && body.type === "interpret") setInterpretationStopped(true);
@@ -253,7 +250,10 @@ export function Conversation({ sessionId }: { sessionId: string }) {
         if (caught instanceof ApiError && caught.status === 409) {
           const reconciled = await load(turn);
           if (reconciled) turnLease.complete(clientTurnId);
-          return reconciled;
+          return reconciled ? {
+            snapshot: reconciled,
+            committed: turnWasCommitted(reconciled, clientTurnId, body.type === "text" ? body.text : undefined),
+          } : null;
         }
         setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
       }
@@ -395,8 +395,8 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     onRetry: (retry: RetryInput) => void send(retry.type === "text" ? { type: "text", text: retry.text } : { type: "interpret" }),
     onOpenPanel: openPanel,
     onGeneratePromo: () => {
-      void send({ type: "text", text: PROMO_GENERATION_PROMPT }).then((next) => {
-        if (promoWasGenerated(next)) openPanel("communications");
+      void send({ type: "text", text: PROMO_GENERATION_PROMPT }).then((result) => {
+        if (promoWasGenerated(result?.snapshot ?? null)) openPanel("communications");
       });
     },
   };
@@ -407,14 +407,14 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       busy={busy !== null}
       tab={panelTab}
       onTabChange={setPanelTab}
-      onEdit={async (edit: PanelEdit) => Boolean(await send({ type: "edit", origin: "panel", ...edit }))}
+      onEdit={async (edit: PanelEdit) => Boolean((await send({ type: "edit", origin: "panel", ...edit }))?.snapshot)}
       onDismiss={(noteId) => void send({ type: "dismiss", noteId })}
       onRollback={(seq) => void send({ type: "rollback", seq })}
       onShowSource={showSource}
       onGenerateCommunication={actions.onGeneratePromo}
       onContinueCommunication={() => {
-        void send({ type: "text", text: PROMO_CONTINUE_PROMPT }).then((next) => {
-          if (promoWasGenerated(next)) openPanel("communications");
+        void send({ type: "text", text: PROMO_CONTINUE_PROMPT }).then((result) => {
+          if (promoWasGenerated(result?.snapshot ?? null)) openPanel("communications");
         });
       }}
     />
@@ -485,12 +485,13 @@ export function Conversation({ sessionId }: { sessionId: string }) {
               if (!inFlightTurn.ownsSession(sessionOwner)) return;
               const text = input.trim().slice(0, 1000);
               if (!text) return;
+              const textTurn = ++submittedTextTurn.current;
               setInput("");
-              void send({ type: "text", text }).then((next) => {
-                const alreadyCommitted = next ? latestUserText(next) === text : false;
-                if (!alreadyCommitted && inFlightTurn.ownsSession(sessionOwner)) {
-                  setInput((current) => current.length ? current : text);
-                }
+              void send({ type: "text", text }).then((result) => {
+                setInput((current) => reconcileSubmittedText(current, text, {
+                  committed: result?.committed ?? false,
+                  current: submittedTextTurn.current === textTurn && inFlightTurn.ownsSession(sessionOwner),
+                }));
               });
             }}
           />

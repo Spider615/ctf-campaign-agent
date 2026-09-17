@@ -44,3 +44,19 @@ final review 指出的停止、对账和提交竞态已经收口。浏览器现�
 - diff：`git diff --check`，通过。
 
 未启动或操作 dev 服务，未安装依赖，未修改 lockfile、Campaign/1811/Skill 业务规则、总时限或 `maxTurns = 12`。
+
+## Final 4 Important 跟进
+
+独立复审补出了跨标签顺序：A 已提交但当前标签结果不确定，另一标签再提交 B，当前标签用 A 的同一 `clientTurnId` 重试后会得到包含 A 与 B 的最新 Snapshot。旧客户端只比较最新用户文案，因此会把已经提交的 A 错误恢复到输入框。
+
+修复后，`send` 返回 Snapshot 及本次 `clientTurnId` 的提交判定；判定会扫描所有消息的持久化 receipt，不再要求 A 是最后一句。只有完全没有 receipt 的旧 Snapshot 才保留末句文案 fallback；只要已有其他 receipt，即使文案相同也不能冒充 A。输入恢复另受本地 submit 代次保护，迟到旧 send 既不能清除新租约，也不能覆盖新草稿。行为测试用真实 `runTurn`、客户端租约和 A→B→重试 A 顺序覆盖该边界，并覆盖无 A receipt 恢复、同文案其他 receipt 隔离、成功后同文案使用新 ID。
+
+本轮未修改服务端幂等协议、业务规则、依赖或 lockfile，也未启动或操作 dev 服务。
+
+### 跟进验证
+
+- focused：92/92 通过（`campaign-ui`、`client-stream`、`client-turn-ownership`、`conversation`、`turn-idempotency`）。
+- 全量：`npm test`，356/356 通过。
+- lint：0 errors / 0 warnings。
+- 页面与 Agent 两套 TypeScript 检查通过。
+- 生产构建通过；`git diff --check` 通过。
