@@ -1,6 +1,7 @@
 import { CalendarDays, CircleAlert, Gem, Megaphone, MessageCircle, Share2, ShoppingBag, Sparkles, Store, UsersRound } from "lucide-react";
 
 import type { CampaignChannel, CommunicationPlan } from "../../lib/campaign/types";
+import { CopyButton } from "../chat/copy-button";
 
 const CHANNEL = {
   store: { label: "门店", icon: Store },
@@ -80,7 +81,13 @@ export function CommunicationsView({ plan }: { plan: CommunicationPlan | null })
                     <Icon className="size-4" aria-hidden="true" />
                     <h5 className="text-[12px] font-semibold">{channel.label}</h5>
                   </div>
-                  <span className="border border-[#e2d6cd] bg-[#fbf8f4] px-2 py-1 text-[9px] tracking-[0.08em] text-[#8a7771]">{output.format}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="border border-[#e2d6cd] bg-[#fbf8f4] px-2 py-1 text-[9px] tracking-[0.08em] text-[#8a7771]">{output.format}</span>
+                    <CopyButton
+                      text={`${channel.label} · ${output.format}\n${output.copy}\n行动引导：${output.cta}`}
+                      className="text-[#8a7771] hover:bg-[#f6eee7] hover:text-[#8f1737]"
+                    />
+                  </div>
                 </div>
                 <p className="mt-3 whitespace-pre-line text-[12px] leading-6 text-[#514347]">{output.copy}</p>
                 <p className="mt-3 border-l-2 border-[#b38b55] pl-2.5 text-[11px] font-medium text-[#805f37]">行动引导 · {output.cta}</p>
