@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     };
 
     const fieldInput = request("计折上折是什么意思");
-    await runNormalCase("field", fieldInput, ["ics1811:field-explainer"], (result) => {
+    await runNormalCase("field", fieldInput, ["ics1811:campaign-sop", "ics1811:field-explainer"], (result) => {
       const reply = replyOf(result);
       assert.match(reply, /提成/);
       assert.match(reply, /实际售价/);
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
     });
 
     const offerInput = request("黄金以旧换新在 1811 怎么录");
-    await runNormalCase("offer", offerInput, ["ics1811:offer-entry-guide"], (result) => {
+    await runNormalCase("offer", offerInput, ["ics1811:campaign-sop", "ics1811:offer-entry-guide"], (result) => {
       const reply = replyOf(result);
       assert.match(
         reply,
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
     });
 
     const settlementInput = request("两家店要不要说明函");
-    await runNormalCase("settlement", settlementInput, ["ics1811:settlement-guide"], (result) => {
+    await runNormalCase("settlement", settlementInput, ["ics1811:campaign-sop", "ics1811:settlement-guide"], (result) => {
       const reply = replyOf(result);
       assert.match(reply, /多家|两家|多店/);
       assert.match(reply, /说明函/);
@@ -241,7 +241,7 @@ async function main(): Promise<void> {
     });
 
     const promoInput = request("帮我写一版宣传文案");
-    await runNormalCase("promo", promoInput, ["ics1811:promo-copy-guide"], (result, trace) => {
+    await runNormalCase("promo", promoInput, ["ics1811:campaign-sop", "ics1811:promo-copy-guide"], (result, trace) => {
       const loadedIndex = trace.findIndex(
         (event) => event.tool === "load_campaign_skill"
           && event.title === safeTraceTitleByQualifiedName.get("ics1811:promo-copy-guide")
@@ -263,12 +263,17 @@ async function main(): Promise<void> {
       trigger: { kind: "first_message", text: t1.first },
       phase: "interpreting",
     };
-    await runNormalCase("plain-facts", plainFactsInput, [], (result, trace) => {
-      assert.equal(
-        trace.some((event) => event.tool === "load_campaign_skill"),
-        false,
-        "纯活动事实不应加载 Skill",
+    await runNormalCase("plain-facts", plainFactsInput, ["ics1811:campaign-sop"], (result, trace) => {
+      const loadedIndex = trace.findIndex(
+        (event) => event.tool === "load_campaign_skill"
+          && event.title === safeTraceTitleByQualifiedName.get("ics1811:campaign-sop")
+          && event.status === "completed",
       );
+      const extractedIndex = trace.findIndex(
+        (event) => event.tool === "extract_campaign_facts" && event.status === "started",
+      );
+      assert.ok(loadedIndex >= 0, "纯活动事实没有加载 campaign-sop");
+      assert.ok(extractedIndex > loadedIndex, "必须先加载 campaign-sop，再提取活动事实");
       assert.ok(result.tools.includes("extract_campaign_facts"), "纯活动事实没有调用 extract_campaign_facts");
     });
 

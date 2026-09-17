@@ -12,6 +12,7 @@ import {
 export const PLUGIN_NAME = "ics1811";
 
 export const BASELINE_SKILL_NAMES = [
+  "campaign-sop",
   "offer-entry-guide",
   "field-explainer",
   "settlement-guide",
@@ -60,7 +61,7 @@ export function requiredSkillsForTurn(
   request: Pick<AgentRequest, "trigger">,
 ): BaselineSkillName[] {
   const text = request.trigger.text.replace(/\s+/g, "").toLowerCase();
-  const required = new Set<BaselineSkillName>();
+  const required = new Set<BaselineSkillName>(["campaign-sop"]);
   const fieldTopic = FIELD_TOPIC.test(text);
   const explanation = EXPLAIN_INTENT.test(text);
   const offerTopic = OFFER_TOPIC.test(text);
