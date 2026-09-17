@@ -1,0 +1,5 @@
+{
+  "name": "ics1811",
+  "version": "0.1.0",
+  "description": "周大福 ICS-1811 优惠开单活动的业务规则，按场景由 Agent 加载"
+}
