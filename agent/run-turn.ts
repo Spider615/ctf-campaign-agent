@@ -12,7 +12,7 @@ import { buildAgentSystemPrompt, buildAgentUserPrompt } from "../app/lib/agent/p
 import type { AgentRequest, AgentResult } from "../app/lib/agent/protocol.ts";
 import { createReplyStreamState, reduceReplyStream } from "../app/lib/agent/reply-stream.ts";
 import type { AgentProgressEvent } from "../app/lib/agent/stream.ts";
-import { relayAbort, TurnCancelledError } from "../app/lib/cancellation.ts";
+import { relayAbort, throwIfTurnCancelled, TurnCancelledError } from "../app/lib/cancellation.ts";
 import {
   AGENT_TOOL_META,
   AGENT_TOOL_NAMES,
@@ -72,6 +72,42 @@ const campaignBriefKey = z.enum(CAMPAIGN_BRIEF_KEYS as [CampaignBriefKey, ...Cam
 const campaignChannel = z.enum(["store", "wechat", "ecommerce", "social", "member_crm", "event"] satisfies [CampaignChannel, ...CampaignChannel[]]);
 const questionId = z.enum(QUESTION_IDS as [QuestionId, ...QuestionId[]]);
 
+async function* cancellableMessages(messages: AsyncIterable<SDKMessage>, signal: AbortSignal) {
+  const iterator = messages[Symbol.asyncIterator]();
+  let done = false;
+  try {
+    while (!done) {
+      let abort = () => {};
+      let next: IteratorResult<SDKMessage>;
+      try {
+        next = await new Promise<IteratorResult<SDKMessage>>((resolve, reject) => {
+          abort = () => reject(new TurnCancelledError());
+          signal.addEventListener("abort", abort, { once: true });
+          // SDK 在启动或停止时可能一直挂在 next；取消不能等待它交出下一条消息。
+          Promise.resolve(iterator.next()).then(resolve, reject);
+          if (signal.aborted) abort();
+        });
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+      throwIfTurnCancelled(signal);
+      done = next.done === true;
+      if (!done) yield next.value;
+    }
+  } finally {
+    if (!done && iterator.return) {
+      try {
+        const closing = iterator.return();
+        // 异步生成器的 return 也可能排在挂起的 next 后面；发出关闭请求但不阻塞取消。
+        if (signal.aborted) void Promise.resolve(closing).catch(() => {});
+        else await closing;
+      } catch (error) {
+        if (!signal.aborted) throw error;
+      }
+    }
+  }
+}
+
 export function createAgentRunner(
   config: AgentRuntimeConfig,
   dependencies: AgentRuntimeDependencies = DEFAULT_AGENT_RUNTIME_DEPENDENCIES,
@@ -90,18 +126,22 @@ export function createAgentRunner(
     let replyStream = createReplyStreamState();
     let publicPhase: "analyzing" | "writing" | null = null;
     const setPublicPhase = (phase: "analyzing" | "writing") => {
-      if (phase === publicPhase) return;
+      if (externalSignal?.aborted || phase === publicPhase) return;
       publicPhase = phase;
       onProgress?.({ type: "phase", phase, at: Date.now() });
     };
     setPublicPhase("analyzing");
     const recordSkill = (event: AgentTraceEvent) => {
+      if (externalSignal?.aborted) return;
       state.trace = mergeTraceEvent(state.trace, event);
       onTrace?.(event);
     };
 
     const handle = (name: AgentToolName) => async (args: Record<string, unknown>) => {
+      const cancelled = () => ({ content: [{ type: "text" as const, text: "已停止生成" }], isError: true });
+      if (externalSignal?.aborted) return cancelled();
       setPublicPhase("analyzing");
+      if (externalSignal?.aborted) return cancelled();
       const started = startTraceEvent({
         id: crypto.randomUUID(),
         tool: name,
@@ -111,6 +151,7 @@ export function createAgentRunner(
       });
       state.trace = mergeTraceEvent(state.trace, started);
       onTrace?.(started);
+      if (externalSignal?.aborted) return cancelled();
       const outcome = runCampaignToolWithSkillGate(
         state,
         name,
@@ -124,6 +165,7 @@ export function createAgentRunner(
       });
       state.trace = mergeTraceEvent(state.trace, finished);
       onTrace?.(finished);
+      if (externalSignal?.aborted) return cancelled();
       if (config.debug) {
         console.log(`[tool] ${name} ${JSON.stringify(args).slice(0, 800)}\n       → ${outcome.isError ? "拒绝：" : ""}${outcome.text.slice(0, 500)}`);
       }
@@ -200,7 +242,7 @@ export function createAgentRunner(
     let reply: string | null = null;
 
     try {
-      for await (const message of dependencies.query({
+      for await (const message of cancellableMessages(dependencies.query({
         prompt: buildAgentUserPrompt(request, requiredSkills),
         options: {
           model: config.model,
@@ -216,7 +258,7 @@ export function createAgentRunner(
           includePartialMessages: true,
           cwd: config.runtimeDir,
           abortController,
-          stderr: (data) => stderr.push(data),
+          stderr: (data) => { if (!externalSignal?.aborted) stderr.push(data); },
           env: {
             PATH: process.env.PATH,
             HOME: process.env.HOME,
@@ -226,7 +268,8 @@ export function createAgentRunner(
             CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
           },
         },
-      })) {
+      }), abortController.signal)) {
+        throwIfTurnCancelled(externalSignal);
         if (message.type === "stream_event") {
           const reduced = reduceReplyStream(replyStream, {
             parentToolUseId: message.parent_tool_use_id,
@@ -234,13 +277,16 @@ export function createAgentRunner(
           });
           replyStream = reduced.state;
           for (const action of reduced.actions) {
+            throwIfTurnCancelled(externalSignal);
             if (action.type === "text_delta") setPublicPhase("writing");
             if (action.type === "text_reset") setPublicPhase("analyzing");
+            throwIfTurnCancelled(externalSignal);
             onProgress?.(action);
           }
         }
         if (message.type === "assistant") {
           for (const block of message.message.content) {
+            throwIfTurnCancelled(externalSignal);
             if (block.type !== "tool_use" || block.name !== "Skill") continue;
             const requested = (block.input as { skill?: unknown }).skill;
             recordSkill(beginSkillLoad(catalog, skillLoads, {
@@ -248,6 +294,7 @@ export function createAgentRunner(
               requested,
               at: Date.now(),
             }));
+            throwIfTurnCancelled(externalSignal);
             if (config.debug) {
               const skill = skillOf(catalog, requested);
               console.log(`[skill] ${skill ? `${skill.qualifiedName}（${skill.title}）` : "未知规则"}`);
@@ -256,6 +303,7 @@ export function createAgentRunner(
         }
         if (message.type === "user" && Array.isArray(message.message.content)) {
           for (const block of message.message.content) {
+            throwIfTurnCancelled(externalSignal);
             if (block.type !== "tool_result") continue;
             const event = finishSkillLoad(skillLoads, {
               toolUseId: block.tool_use_id,
@@ -284,8 +332,9 @@ export function createAgentRunner(
       throw error;
     } finally {
       stopRelaying();
-      for (const event of finishPendingSkillLoads(skillLoads, Date.now())) {
-        if (!externalSignal?.aborted) recordSkill(event);
+      if (externalSignal?.aborted) skillLoads.pending.clear();
+      else {
+        for (const event of finishPendingSkillLoads(skillLoads, Date.now())) recordSkill(event);
       }
     }
 

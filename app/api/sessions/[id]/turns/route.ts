@@ -31,8 +31,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           const emit = (event: unknown) => write(`${JSON.stringify(event)}\n`);
           // 静默等待模型时也让代理持续写响应，及时检测浏览器断连。
           // 空行不是业务事件；仅保活，不限制回合总时长。
-          write("\n");
-          heartbeat = setInterval(() => write("\n"), 250);
+          const keepAlive = () => {
+            if ((controller.desiredSize ?? 0) > 0) write("\n");
+          };
+          keepAlive();
+          heartbeat = setInterval(keepAlive, 250);
           void runTurn(
             id,
             body,
