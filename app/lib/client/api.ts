@@ -1,4 +1,5 @@
 import type { Snapshot } from "../server/turns.ts";
+import type { ClientTurnBody } from "../turn-identity.ts";
 import { consumeTurnStream, type TurnStreamHandlers } from "./stream.ts";
 
 export const SESSIONS_CHANGED = "campaign:sessions-changed";
@@ -26,34 +27,33 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-export type TurnBody =
-  | { type: "text"; text: string }
-  | { type: "edit"; answers?: Record<string, unknown>; copy?: { name?: string; content?: string }; origin: "panel" | "tool" }
-  | { type: "interpret" }
-  | { type: "dismiss"; noteId: string }
-  | { type: "undo"; versionSeq: number }
-  | { type: "rollback"; seq: number };
+export type TurnBody = ClientTurnBody;
+type TurnRequestBody = TurnBody & { expectedSeq: number; clientTurnId?: string };
 
-export function fetchSnapshot(id: string): Promise<Snapshot> {
-  return request<Snapshot>(`/api/sessions/${encodeURIComponent(id)}`);
+function identifyTurn(body: TurnRequestBody): TurnRequestBody & { clientTurnId: string } {
+  return body.clientTurnId ? body as TurnRequestBody & { clientTurnId: string } : { ...body, clientTurnId: crypto.randomUUID() };
+}
+
+export function fetchSnapshot(id: string, signal?: AbortSignal): Promise<Snapshot> {
+  return request<Snapshot>(`/api/sessions/${encodeURIComponent(id)}`, { signal });
 }
 
 export function createSessionRequest(body: { entryMode: "new"; text: string } | { entryMode: "example" }): Promise<Snapshot> {
   return request<Snapshot>("/api/sessions", json(body));
 }
 
-export function postTurn(id: string, body: TurnBody & { expectedSeq: number }): Promise<Snapshot> {
-  return request<Snapshot>(`/api/sessions/${encodeURIComponent(id)}/turns`, json(body));
+export function postTurn(id: string, body: TurnRequestBody): Promise<Snapshot> {
+  return request<Snapshot>(`/api/sessions/${encodeURIComponent(id)}/turns`, json(identifyTurn(body)));
 }
 
 export async function postTurnStream(
   id: string,
-  body: TurnBody & { expectedSeq: number },
+  body: TurnRequestBody,
   handlers: TurnStreamHandlers,
   signal?: AbortSignal,
 ): Promise<Snapshot> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/turns`, {
-    ...json(body),
+    ...json(identifyTurn(body)),
     headers: { "content-type": "application/json", accept: "application/x-ndjson" },
     signal,
   });

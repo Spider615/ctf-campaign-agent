@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import test from "node:test";
 
 import { createTurnOwnership } from "../app/lib/client/turn-ownership.ts";
@@ -29,6 +30,43 @@ test("停止发生在 409 对账读取期间时不应用快照并返回 null", a
   assert.equal(owner.begin(session), null, "取消传播期间仍持有回合锁");
   assert.equal(owner.finish(turn), true);
   assert.ok(owner.begin(session));
+});
+
+for (const late of ["resolve", "reject"] as const) {
+  test(`409 对账底层一直挂起也能停止并释放发送锁，消费迟到 ${late}`, async () => {
+    const owner = createTurnOwnership("A");
+    const session = owner.visit("A");
+    const controller = new AbortController();
+    const turn = owner.begin(session, controller.signal)!;
+    let resolve!: (value: string) => void;
+    let reject!: (reason: Error) => void;
+    const response = new Promise<string>((done, fail) => { resolve = done; reject = fail; });
+    const ui = { busy: true, snapshot: "原快照" };
+    const pending = owner.readCurrent(turn, () => response, (next) => { ui.snapshot = next; })
+      .finally(() => { if (owner.finish(turn)) ui.busy = false; });
+
+    controller.abort();
+    await new Promise<void>((done) => setImmediate(done));
+    assert.equal(ui.busy, false, "不应等 GET 返回才释放 composer");
+    assert.equal(await pending, null);
+    const nextTurn = owner.begin(session)!;
+    assert.ok(nextTurn, "停止后能立即发送下一回合");
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+
+    if (late === "resolve") resolve("迟到快照");
+    else reject(new Error("迟到读取失败"));
+    await new Promise<void>((done) => setImmediate(done));
+    assert.equal(ui.snapshot, "原快照");
+    assert.equal(owner.isCurrent(nextTurn), true);
+  });
+}
+
+test("对账正常结束后移除取消监听", async () => {
+  const owner = createTurnOwnership("A");
+  const controller = new AbortController();
+  const turn = owner.begin(owner.visit("A"), controller.signal)!;
+  assert.equal(await owner.readCurrent(turn, async () => "已保存", () => {}), "已保存");
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 });
 
 test("A→B→A 时首个 A 对账不能覆盖新 A 或释放新回合", async () => {

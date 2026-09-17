@@ -41,7 +41,6 @@ test("成功回合与 409 对账会清掉首次理解的停止状态", () => {
   const clearsStoppedInterpretation = /setSnapshot\(next\);\s+if \(next\.flow\.pendingInterpretation === false\) setInterpretationStopped\(false\);/;
   assert.match(loadSource, clearsStoppedInterpretation, "409 对账后的已完成结果应清除停止状态");
   assert.match(sendSource, clearsStoppedInterpretation, "补充内容成功后应清除停止状态");
-  assert.match(sendSource, /caught instanceof ApiError && caught\.status === 409\) return await load\(turn\)/);
 });
 
 test("Conversation 在更新 UI 前获取当前会话租约并让对账携带回合归属", () => {

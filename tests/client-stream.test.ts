@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ApiError, postTurnStream } from "../app/lib/client/api.ts";
+import { ApiError, fetchSnapshot, postTurn, postTurnStream } from "../app/lib/client/api.ts";
+import { isClientTurnId } from "../app/lib/turn-identity.ts";
 import { consumeTurnStream } from "../app/lib/client/stream.ts";
 import type { Snapshot } from "../app/lib/server/turns.ts";
 import type { AgentTraceEvent } from "../app/lib/tool-trace.ts";
@@ -18,12 +19,39 @@ const completedEvent: AgentTraceEvent = {
 };
 const snapshot = { session: { id: "session-1" } } as unknown as Snapshot;
 
-test("postTurnStream forwards the AbortSignal to fetch", async (t) => {
+test("非聊天调用 postTurn 也会安全生成客户端回合 ID", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let sent: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_input, init) => {
+    sent = JSON.parse(String(init?.body));
+    return Response.json(snapshot);
+  };
+  await postTurn("session-1", { type: "edit", origin: "tool", expectedSeq: 1 });
+  assert.equal(isClientTurnId(sent?.clientTurnId), true);
+});
+
+test("快照对账将取消信号传到 GET", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const controller = new AbortController();
+  let received: AbortSignal | null | undefined;
+  globalThis.fetch = async (_input, init) => {
+    received = init?.signal;
+    return Response.json(snapshot);
+  };
+  await fetchSnapshot("session-1", controller.signal);
+  assert.equal(received, controller.signal);
+});
+
+test("postTurnStream 保留租约 ID 并将 AbortSignal 传给 fetch", async (t) => {
   const originalFetch = globalThis.fetch;
   const controller = new AbortController();
   let received: AbortSignal | null = null;
+  let sent: Record<string, unknown> | undefined;
   globalThis.fetch = async (_input, init) => {
     received = init?.signal as AbortSignal;
+    sent = JSON.parse(String(init?.body));
     assert.equal(received, controller.signal);
     return await new Promise<Response>((_resolve, reject) => {
       received?.addEventListener("abort", () => reject(new DOMException("已停止", "AbortError")), { once: true });
@@ -31,11 +59,13 @@ test("postTurnStream forwards the AbortSignal to fetch", async (t) => {
   };
   t.after(() => { globalThis.fetch = originalFetch; });
 
-  const pending = postTurnStream("session-1", { type: "interpret", expectedSeq: 1 }, {}, controller.signal);
+  const clientTurnId = "11111111-1111-4111-8111-111111111111";
+  const pending = postTurnStream("session-1", { type: "interpret", expectedSeq: 1, clientTurnId }, {}, controller.signal);
   controller.abort();
 
   await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
   assert.equal(received, controller.signal);
+  assert.equal(sent?.clientTurnId, clientTurnId);
 });
 
 test("browser decoder cancels its reader and ignores buffered events after abort", async () => {

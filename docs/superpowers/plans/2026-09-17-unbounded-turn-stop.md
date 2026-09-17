@@ -586,7 +586,11 @@ const placeholder = interpretationStopped
 
 Add a small `latestUserText(snapshot)` helper that scans messages from the end and returns the newest `user_text` value. Use the same canonical text as the server—`input.trim().slice(0, 1000)`—for sending, committed-text comparison, and restoration; Composer's `maxLength={1000}` is the matching UI guard. The source assertions above are the >1000-character regression contract.
 
-When `interpretationStopped` is true, render a neutral inline status above Composer: “已停止理解，你可以继续补充，或继续理解”，with a “继续理解” button wired to `retryInterpretation`. It is not a red error. Keep the textarea editable during streaming; the functional input restore above preserves anything the user typed while waiting. A 409 refresh returns its refreshed snapshot; the submit callback restores the canonical submitted text only if that exact text is not already the newest committed user message. This avoids duplicates without discarding a genuinely different stale-tab draft.
+When `interpretationStopped` is true, render a neutral inline status above Composer: “已停止理解，你可以继续补充，或继续理解”，with a “继续理解” button wired to `retryInterpretation`. It is not a red error. Keep the textarea editable during streaming; the functional input restore above preserves anything the user typed while waiting.
+
+Do not rely on a later 409 to discover whether a stopped or transport-uncertain turn committed. `Conversation` leases a `crypto.randomUUID()` `clientTurnId` per canonical controlled `TurnBody`: an uncertain `null` result keeps the lease for the same-body retry, a different body gets a different ID, and a successful Snapshot or completed stale-seq 409 reconciliation clears it. The server excludes `expectedSeq` and `clientTurnId` from the request hash, stores the ID plus hash on the first persisted message, and uses a deterministic message primary key as the atomic idempotency fence. A committed same-ID/same-body retry returns the winning Snapshot; same ID with a different body is a 400 without another Agent call. After a successful send, deliberately sending the same text again therefore receives a fresh ID. Non-chat `postTurn` callers also receive an ID at the API boundary.
+
+The submit callback still restores the canonical submitted text only if that exact text is not already the newest committed user message. A genuine stale-seq 409 still refreshes the Snapshot without a red error, avoiding duplicates without discarding a different stale-tab draft.
 
 - [ ] **Step 6: Keep the three-dot wave visible after traces start**
 

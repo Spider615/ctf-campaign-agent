@@ -20,6 +20,7 @@ import { buildReadback } from "../campaign/ics1811/readback.ts";
 import type { Check, FactKey, FillModel, FlowPhase, Gap, Ics1811Draft, Proposal, QuestionId } from "../campaign/ics1811/types.ts";
 import { finishTraceEvent, intervalUnionDurationMs, isToolTraceTiming, mergeTraceEvent, startTraceEvent, type AgentTraceEvent, type CampaignToolName, type ToolTrace, type ToolTraceTiming } from "../tool-trace.ts";
 import { ConflictError, type SessionBundle, type SessionStatus, type SessionStore, type TurnWrite } from "./session-store.ts";
+import { isClientTurnId, turnMessageId, turnRequestHash, type TurnReceipt } from "../turn-identity.ts";
 
 // 需要模型的回合（理解首句、用户打字）交给 Agent 服务：问什么、怎么说归模型。
 // 缺什么、齐没齐、生不生成填写值、落库都由这里的代码按事实层重算决定（设计文档 4.3 节）。
@@ -51,13 +52,14 @@ export class TurnError extends Error {
 }
 
 // 没有「确认」和「提交卡片」：信息齐了就生成填写值，追问在对话里答。
-export type TurnInput =
+export type TurnInput = (
   | { type: "text"; text: string; expectedSeq: number }
   | { type: "edit"; answers: Record<string, unknown>; copy: { name?: string; content?: string } | null; origin: "panel" | "tool"; expectedSeq: number }
   | { type: "interpret"; expectedSeq: number }
   | { type: "dismiss"; noteId: string; expectedSeq: number }
   | { type: "undo"; versionSeq: number; expectedSeq: number }
-  | { type: "rollback"; seq: number; expectedSeq: number };
+  | { type: "rollback"; seq: number; expectedSeq: number }
+) & { clientTurnId?: string };
 
 export type VersionSummary = { seq: number; source: string; createdAt: string; diffCount: number };
 
@@ -156,11 +158,12 @@ function timingFromAgentError(error: unknown): ToolTraceTiming | undefined {
 
 export function parseTurnInput(body: unknown): TurnInput {
   if (!isRecord(body) || !integer(body.expectedSeq)) throw new TurnError(400, "请求内容不完整");
-  const expectedSeq = body.expectedSeq;
+  if (body.clientTurnId !== undefined && !isClientTurnId(body.clientTurnId)) throw new TurnError(400, "回合标识格式不正确");
+  const identity = { expectedSeq: body.expectedSeq, ...(body.clientTurnId !== undefined ? { clientTurnId: body.clientTurnId } : {}) };
   switch (body.type) {
     case "text":
       if (typeof body.text !== "string" || !body.text.trim()) throw new TurnError(400, "请输入内容");
-      return { type: "text", text: body.text.trim().slice(0, 1000), expectedSeq };
+      return { type: "text", text: body.text.trim().slice(0, 1000), ...identity };
     case "edit": {
       const copy = isRecord(body.copy) ? body.copy : null;
       return {
@@ -168,20 +171,20 @@ export function parseTurnInput(body: unknown): TurnInput {
         answers: isRecord(body.answers) ? body.answers : {},
         copy: copy ? { ...(typeof copy.name === "string" ? { name: copy.name.trim() } : {}), ...(typeof copy.content === "string" ? { content: copy.content.trim() } : {}) } : null,
         origin: body.origin === "tool" ? "tool" : "panel",
-        expectedSeq,
+        ...identity,
       };
     }
     case "interpret":
-      return { type: "interpret", expectedSeq };
+      return { type: "interpret", ...identity };
     case "dismiss":
       if (typeof body.noteId !== "string" || !body.noteId) throw new TurnError(400, "请求内容不完整");
-      return { type: "dismiss", noteId: body.noteId, expectedSeq };
+      return { type: "dismiss", noteId: body.noteId, ...identity };
     case "undo":
       if (!integer(body.versionSeq)) throw new TurnError(400, "请求内容不完整");
-      return { type: "undo", versionSeq: body.versionSeq, expectedSeq };
+      return { type: "undo", versionSeq: body.versionSeq, ...identity };
     case "rollback":
       if (!integer(body.seq)) throw new TurnError(400, "请求内容不完整");
-      return { type: "rollback", seq: body.seq, expectedSeq };
+      return { type: "rollback", seq: body.seq, ...identity };
     default:
       throw new TurnError(400, "不支持的操作");
   }
@@ -338,11 +341,33 @@ export function buildSnapshot(bundle: SessionBundle, today: string): Snapshot {
   };
 }
 
-async function commitAndLoad(deps: TurnDeps, write: TurnWrite): Promise<Snapshot> {
+function alreadyCommitted(bundle: SessionBundle, receipt: TurnReceipt): boolean {
+  const message = bundle.messages.find((item) => item.id === turnMessageId(bundle.session.id, receipt.id));
+  if (!message) return false;
+  if (message.content.turn?.requestHash !== receipt.requestHash) throw new TurnError(400, "回合标识已用于不同请求，请重新发送");
+  return true;
+}
+
+async function commitAndLoad(deps: TurnDeps, write: TurnWrite, receipt?: TurnReceipt): Promise<Snapshot> {
+  if (receipt) {
+    if (!write.messages.length) throw new Error("回合缺少可保存的提交凭据");
+    write = { ...write, messages: write.messages.map((message, index) => index === 0 ? {
+      ...message,
+      id: turnMessageId(write.session.id, receipt.id),
+      content: { ...message.content, turn: receipt },
+    } : message) };
+  }
   try {
+    // 所有提交共用线性化入口；取消在 commit 调用前获胜，调用后必须返回完整提交结果。
+    throwIfTurnCancelled(deps.signal);
     await deps.store.commit(write);
   } catch (error) {
-    if (error instanceof ConflictError) throw new TurnError(409, error.message);
+    if (error instanceof ConflictError) {
+      // 并发重试可能都已调过 Agent；message 主键让整次 batch 只成功一次，另一方读取胜出的结果。
+      const committed = receipt ? await deps.store.load(write.session.id) : null;
+      if (committed && receipt && alreadyCommitted(committed, receipt)) return buildSnapshot(committed, deps.today);
+      throw new TurnError(409, error.message);
+    }
     throw error;
   }
   const bundle = await deps.store.load(write.session.id);
@@ -439,6 +464,9 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
   if (bundle.legacy) throw new TurnError(410, "这个活动是旧版本创建的，请新建活动");
   const latest = bundle.versions.at(-1);
   if (!latest) throw new TurnError(404, "活动还没有可打开的版本");
+  const receipt = input.clientTurnId ? { id: input.clientTurnId, requestHash: await turnRequestHash(input) } : undefined;
+  // 先按回合身份对账，再判断草稿 seq；仅消息成功/失败不增长 seq，已提交的老版本重试也应直接返回。
+  if (receipt && alreadyCommitted(bundle, receipt)) return buildSnapshot(bundle, deps.today);
   if (input.expectedSeq !== latest.seq) throw new TurnError(409, "页面已更新，请重试");
 
   let traceEvents: AgentTraceEvent[] = [];
@@ -496,7 +524,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       session: { ...bundle.session, updatedAt: committedAt },
       version: null,
       messages: records,
-    });
+    }, receipt);
   };
 
   let next: CampaignDraft = prev;
@@ -729,8 +757,6 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
     })),
   ];
   const committedAt = timestamp();
-  // 取消只能在线性化边界前生效；原子提交一旦开始，就必须返回完整提交结果。
-  throwIfTurnCancelled(deps.signal);
   return commitAndLoad(deps, {
     isNew: false,
     now: committedAt,
@@ -739,7 +765,7 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
       ? { id: versionId, seq: versionSeq, draft: next, sheet: after.fill ? renderFillSheet(after.fill, after.checks) : null, createdBy, patch: patch ? { id: newId(), ...patch } : null }
       : null,
     messages: messageRecords,
-  });
+  }, receipt);
 }
 
 type Evaluation = ReturnType<typeof evaluate>;

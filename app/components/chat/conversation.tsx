@@ -27,6 +27,7 @@ import { CAMPAIGN_STAGE_LABEL, DEFAULT_WORKSPACE_TAB } from "../../lib/client/ca
 import { PROMO_CONTINUE_PROMPT, PROMO_GENERATION_PROMPT, promoWasGenerated } from "../../lib/client/promo-cta";
 import type { Snapshot } from "../../lib/server/turns";
 import { mergeTraceEvent, type AgentTraceEvent } from "../../lib/tool-trace";
+import { createClientTurnLease } from "../../lib/turn-identity";
 import { DraftPanel, type PanelEdit } from "../draft/draft-panel";
 import { Composer } from "./composer";
 import { AgentRow, MessageList, MessageTimestamp, UserBubble } from "./message-view";
@@ -97,6 +98,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const [stopping, setStopping] = useState(false);
   const [interpretationStopped, setInterpretationStopped] = useState(false);
   const [inFlightTurn] = useState(() => createTurnOwnership(sessionId));
+  const [turnLease] = useState(createClientTurnLease);
   // 渲染时就更换代次，关闭会话切换到 Effect 清理之间的旧闭包窗口。
   const sessionOwner = inFlightTurn.visit(sessionId);
   const activeTurn = useRef<{ owner: TurnOwner; controller: AbortController; kind: TurnKind } | null>(null);
@@ -150,7 +152,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const load = useCallback(async (turn?: TurnOwner): Promise<Snapshot | null> => {
     const owner = turn ?? sessionOwner;
     try {
-      return await inFlightTurn.readCurrent(owner, () => fetchSnapshot(owner.sessionId), (next) => {
+      return await inFlightTurn.readCurrent(owner, () => fetchSnapshot(owner.sessionId, turn?.signal), (next) => {
         setSnapshot(next);
         if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
         setLoadState("ready");
@@ -200,6 +202,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     const controller = streams ? new AbortController() : null;
     const turn = inFlightTurn.begin(sessionOwner, controller?.signal);
     if (!turn) return null;
+    const clientTurnId = turnLease.acquire(body);
     if (controller) activeTurn.current = { owner: turn, controller, kind: body.type };
     const ownsUi = () => inFlightTurn.ownsTurn(turn);
     const isCurrent = () => inFlightTurn.isCurrent(turn);
@@ -216,7 +219,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
       setRunStartedAt(Date.now());
     }
     try {
-      const payload = { ...body, expectedSeq: snapshot.latest.seq };
+      const payload = { ...body, expectedSeq: snapshot.latest.seq, clientTurnId };
       const next = streams
         ? await postTurnStream(requestSessionId, payload, {
             onTrace: (event) => {
@@ -235,6 +238,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
             },
           }, controller?.signal)
         : await postTurn(requestSessionId, payload);
+      turnLease.complete(clientTurnId);
       if (!isCurrent()) return null;
       setSnapshot(next);
       if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
@@ -246,7 +250,11 @@ export function Conversation({ sessionId }: { sessionId: string }) {
         return null;
       }
       if (ownsUi()) {
-        if (caught instanceof ApiError && caught.status === 409) return await load(turn);
+        if (caught instanceof ApiError && caught.status === 409) {
+          const reconciled = await load(turn);
+          if (reconciled) turnLease.complete(clientTurnId);
+          return reconciled;
+        }
         setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
       }
       return null;

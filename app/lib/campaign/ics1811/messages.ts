@@ -7,12 +7,13 @@ import { fillSheetText, type FillSheet } from "./fill-sheet.ts";
 import type { Readback } from "./readback.ts";
 import type { FactKey, Facts, Gap, Ics1811Draft, OfferFact, Proposal, QuestionId } from "./types.ts";
 import { isToolTrace, traceSummary, type ToolTrace } from "../../tool-trace.ts";
+import type { TurnReceipt } from "../../turn-identity.ts";
 
 export type ChangeItem = { label: string; before: string; after: string };
 export type RetryInput = { type: "text"; text: string } | { type: "interpret" };
 
 // 标「旧会话」的几种不再产生，只为读得出早先存下的消息：那时有追问卡片、复述卡片和「确认」按钮。
-export type StoredMessage =
+export type StoredMessage = (
   | { v: 2; kind: "user_text"; text: string }
   | { v: 2; kind: "user_card_submit"; round: number; label: string } // 旧会话
   | { v: 2; kind: "user_edit"; label: string; origin: "panel" | "tool" }
@@ -26,7 +27,8 @@ export type StoredMessage =
   | { v: 2; kind: "agent_change"; title: string; items: ChangeItem[]; versionSeq: number }
   | { v: 2; kind: "agent_readback"; versionSeq: number; readback: Readback } // 旧会话
   // 活动建好（或建好后又改了）时生成。summary、lines 是代码写的「建了什么」，旧会话没有。
-  | { v: 2; kind: "agent_fill_sheet"; versionSeq: number; sheet: FillSheet; summary?: string; lines?: string[] };
+  | { v: 2; kind: "agent_fill_sheet"; versionSeq: number; sheet: FillSheet; summary?: string; lines?: string[] }
+) & { turn?: TurnReceipt }; // 首消息的提交凭据，仅用于持久化回合幂等，不影响业务消息含义。
 
 export type MessageKind = StoredMessage["kind"];
 

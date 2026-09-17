@@ -1,3 +1,5 @@
+import { TurnCancelledError } from "../cancellation.ts";
+
 export type SessionOwner = { sessionId: string; generation: number };
 export type TurnOwner = SessionOwner & { token: symbol; signal?: AbortSignal };
 
@@ -46,14 +48,25 @@ export function createTurnOwnership(initialSessionId: string) {
     },
     async readCurrent<T>(owner: SessionOwner | TurnOwner, read: () => Promise<T>, apply: (next: T) => void): Promise<T | null> {
       if (!isCurrent(owner)) return null;
+      const signal = "token" in owner ? owner.signal : undefined;
+      let stopWaiting = () => {};
       try {
-        const next = await read();
+        // 对账 GET 即便没有响应取消，也不能继续占用发送锁；迟到结果由 then 两侧消费。
+        const next = await new Promise<T>((resolve, reject) => {
+          const abort = () => reject(new TurnCancelledError());
+          signal?.addEventListener("abort", abort, { once: true });
+          stopWaiting = () => signal?.removeEventListener("abort", abort);
+          if (signal?.aborted) abort();
+          else read().then(resolve, reject);
+        });
         if (!isCurrent(owner)) return null;
         apply(next);
         return isCurrent(owner) ? next : null;
       } catch (error) {
         if (!isCurrent(owner)) return null;
         throw error;
+      } finally {
+        stopWaiting();
       }
     },
   };

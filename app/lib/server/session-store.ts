@@ -195,6 +195,12 @@ export function createMemoryStore(): SessionStore {
       if (write.isNew && existing) throw new ConflictError("会话已存在");
       if (!write.isNew && !existing) throw new Error("会话不存在");
       if (write.version && existing?.versions.some((version) => version.seq === write.version!.seq)) throw new ConflictError("页面已更新，请重试");
+      // 与 D1 的 message.id 主键一致：跨会话和同一 batch 内都唯一，冲突前不能改变任何数据。
+      const messageIds = new Set([...sessions.values()].flatMap((bundle) => bundle.messages.map((message) => message.id)));
+      for (const message of write.messages) {
+        if (messageIds.has(message.id)) throw new ConflictError("页面已更新，请重试");
+        messageIds.add(message.id);
+      }
       const bundle: SessionBundle = existing ? structuredClone(existing) : { session: write.session, messages: [], versions: [], legacy: false };
       bundle.session = { ...write.session };
       if (write.version) {

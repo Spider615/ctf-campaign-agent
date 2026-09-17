@@ -607,6 +607,48 @@ test("原子提交开始后取消不会伪装成未提交", async () => {
   assert.equal(stored?.messages.at(-1)?.content.kind, "agent_text");
 });
 
+test("失败轨迹回调触发停止时不能提交用户消息和 agent_error", async () => {
+  const d = deps([T2_ASK, new Error("上游连接中断")]);
+  const initial = await askedT2(d);
+  const before = await d.store.load(initial.session.id);
+  const controller = new AbortController();
+  d.signal = controller.signal;
+  let failedTrace = false;
+  d.emitTrace = (event) => {
+    if (event.status === "failed") {
+      failedTrace = true;
+      controller.abort();
+    }
+  };
+
+  await assert.rejects(say(initial, d, "行"), (error: unknown) => error instanceof Error && error.name === "AbortError");
+  assert.equal(failedTrace, true);
+  assert.deepEqual(await d.store.load(initial.session.id), before);
+});
+
+for (const outcome of ["success", "error"] as const) {
+  test(`仅消息 ${outcome} 原子提交调用后停止仍返回整轮快照`, async () => {
+    const d = deps([outcome === "success" ? { reply: "请继续说说" } : new Error("上游连接中断")]);
+    const initial = await createSession({ entryMode: "new", text: "你好" }, d);
+    const base = d.store;
+    const controller = new AbortController();
+    d.signal = controller.signal;
+    d.store = {
+      ...base,
+      commit: async (write) => {
+        controller.abort();
+        await base.commit(write);
+      },
+    };
+    const snapshot = await say(initial, d, "继续讨论");
+    assert.equal(controller.signal.aborted, true);
+    assert.equal(snapshot.latest.seq, initial.latest.seq);
+    assert.equal(snapshot.messages.at(-1)?.content.kind, outcome === "success" ? "agent_text" : "agent_error");
+    assert.equal(countOf(snapshot, "user_text"), 2);
+    assert.deepEqual(snapshot.messages, (await base.load(initial.session.id))?.messages.map(({ id, role, createdAt, content }) => ({ id, role, createdAt, content })));
+  });
+}
+
 test("a nod that fails in the agent keeps nothing and can be retried", async () => {
   const d = deps([T2_ASK, new Error("Agent 超时了，请重试")]);
   let snapshot = await askedT2(d);
