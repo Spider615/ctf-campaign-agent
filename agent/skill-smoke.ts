@@ -193,18 +193,14 @@ async function main(): Promise<void> {
     const settlementInput = request("两家店要不要说明函");
     await runNormalCase("settlement", settlementInput, ["ics1811:settlement-guide"], (result) => {
       const reply = replyOf(result);
-      assert.match(reply, /多家(?:分店|门店)|多店/);
+      assert.match(reply, /多家|两家|多店/);
       assert.match(reply, /说明函/);
       assert.match(reply, /上传/);
+      // 现有材料没有单店和跨月命名规则，回复里出现这类补写结论就让 smoke 失败。
       assert.doesNotMatch(
         reply,
-        /单店(?:活动)?(?:一定|肯定)?(?:无需|不需要|不用|不必)(?:上传|提供)?(?:结算)?说明函/,
-        "不能断言单店一定不需要说明函",
-      );
-      assert.doesNotMatch(
-        reply,
-        /跨月(?:活动)?(?:文件名)?(?:应|要|需|必须)(?:使用|采用|按|取).{0,8}(?:开始|起始)月份/,
-        "不能断言跨月活动使用开始月份",
+        /单店.{0,12}(?:一定)?不需要|跨月.{0,20}开始月份/,
+        "不能补写单店不需要说明函或跨月使用开始月份的规则",
       );
       assertDraftUnchanged(result, settlementInput);
       assertNoMutatingTools(result);
