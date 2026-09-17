@@ -140,11 +140,33 @@ function parseFrontmatter(lines: string[], relativePath: string): ParsedFrontmat
     throw new SkillCatalogError(relativePath, "frontmatter 缺少 description");
   }
 
+  validatePlainDescription(values.get("description")!, relativePath);
+
   return {
     name: values.get("name")!,
     description: values.get("description")!,
     bodyLines: lines.slice(closingIndex + 1),
   };
+}
+
+function validatePlainDescription(description: string, relativePath: string): void {
+  if (!description) {
+    throw new SkillCatalogError(relativePath, "frontmatter description 不能为空");
+  }
+  if (/^["']|["']$/.test(description)) {
+    throw new SkillCatalogError(relativePath, "frontmatter description 必须是未加引号的 YAML 字符串");
+  }
+  if (/^[\-?:](?:\s|$)|^[\[\]{}&,*!|>@`]/.test(description)) {
+    throw new SkillCatalogError(relativePath, "frontmatter description 不能以 YAML 指示符开头");
+  }
+  if (/:\s|\s#|:$/.test(description)) {
+    throw new SkillCatalogError(relativePath, "frontmatter description 不能包含 YAML 保留的冒号空格、注释或行尾冒号");
+  }
+  if (/^(?:~|null|true|false|yes|no|on|off)$/i.test(description)
+    || /^(?:[-+]?(?:(?:\d[\d_]*)(?:\.\d[\d_]*)?|\.\d[\d_]*)(?:[eE][-+]?\d[\d_]*)?|[-+]?0x[\da-f_]+|[-+]?0o[0-7_]+|[-+]?0b[01_]+)$/i.test(description)
+    || /^\d{4}-\d{2}-\d{2}(?:$|[Tt ]\d)/.test(description)) {
+    throw new SkillCatalogError(relativePath, "frontmatter description 必须解析为字符串，不能是 YAML 标量值");
+  }
 }
 
 function parseBody(

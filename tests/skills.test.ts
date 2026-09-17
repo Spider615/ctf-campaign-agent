@@ -293,6 +293,35 @@ test("frontmatter 有未知、重复或空白字段时拒绝", () => {
   );
 });
 
+test("description 遵守 YAML 安全未加引号字符串子集", () => {
+  const invalidDescriptions = [
+    "解释 ICS-1811: 字段和业务名词。",
+    "内容 # 注释",
+    "\"带引号的描述\"",
+    "'带引号的描述'",
+    "true",
+    "123",
+    "2026-09-17",
+  ];
+  for (const description of invalidDescriptions) {
+    const pluginDir = createPlugin();
+    replaceSkill(pluginDir, "field-explainer", skillMarkdown("field-explainer", { description }));
+    expectCatalogError(
+      () => skillModule.loadSkillCatalog(pluginDir),
+      "skills/field-explainer/SKILL.md",
+      /description.*(?:YAML|字符串|标量)|YAML.*description/,
+    );
+  }
+
+  const valid = createPlugin();
+  replaceSkill(
+    valid,
+    "field-explainer",
+    skillMarkdown("field-explainer", { description: "Explain ICS-1811 fields and business terms." }),
+  );
+  assert.equal(skillModule.loadSkillCatalog(valid)[0]?.description, "Explain ICS-1811 fields and business terms.");
+});
+
 test("Skill 名称格式错误或与目录不一致时拒绝", () => {
   const invalid = createPlugin();
   replaceSkill(invalid, "field-explainer", skillMarkdown("Field_Explainer"));
@@ -332,7 +361,7 @@ test("SKILL.md 不是普通文件时拒绝", () => {
   );
 });
 
-test("普通 SKILL.md 读取失败时包装为带路径的 SkillCatalogError", () => {
+test("普通 SKILL.md 读取失败时包装为带路径的 SkillCatalogError", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
   const pluginDir = createPlugin();
   const skillPath = join(pluginDir, "skills", "field-explainer", "SKILL.md");
   chmodSync(skillPath, 0o000);
