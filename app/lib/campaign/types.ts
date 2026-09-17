@@ -33,6 +33,29 @@ export type CommunicationCreative = {
   source: "ai" | "user";
 };
 
+export type CommunicationPlanFacts = {
+  name: string | null;
+  objective: string;
+  audience: string;
+  theme: string;
+  channels: CampaignChannel[];
+  timing: string | null;
+  scope: string | null;
+  period: string | null;
+  stores: string | null;
+  offer: string[];
+  slogan: string | null;
+};
+
+export type CommunicationPlan = {
+  status: "needs_review";
+  concept: CommunicationCreative["concept"];
+  channelOutputs: CommunicationCreative["channelOutputs"];
+  visualDirection: string;
+  facts: CommunicationPlanFacts;
+  reviewNotes: string[];
+};
+
 export type CampaignDraft = {
   schema: "campaign/v1";
   id: string;
