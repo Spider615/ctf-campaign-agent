@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { getDbBinding } from "../../../db/index.ts";
 import { parseAgentResult, type AgentRequest, type AgentResult } from "../agent/protocol.ts";
 import { advanceAgentStreamLifecycle, decodeAgentStreamLine, type AgentStreamLifecycle } from "../agent/stream.ts";
+import { isTurnCancelled, TurnCancelledError } from "../cancellation.ts";
 import type { AgentTraceEvent, ToolTraceTiming } from "../tool-trace.ts";
 import { createD1Store } from "./session-store.ts";
 import { TurnError, type AgentTransientEvent, type TurnDeps } from "./turns.ts";
@@ -14,16 +15,16 @@ const agentHeaders = () => ({
   ...(env.AGENT_SERVICE_TOKEN ? { authorization: `Bearer ${env.AGENT_SERVICE_TOKEN}` } : {}),
 });
 
-async function agentFetch(url: string, request: AgentRequest, accept?: string): Promise<Response> {
+async function agentFetch(url: string, request: AgentRequest, accept?: string, signal?: AbortSignal): Promise<Response> {
   try {
     return await fetch(url, {
       method: "POST",
       headers: { ...agentHeaders(), ...(accept ? { accept } : {}) },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(150_000),
+      signal,
     });
   } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") throw new Error("Agent 超时了，请重试");
+    if (signal?.aborted || isTurnCancelled(error)) throw new TurnCancelledError();
     throw new Error("连不上 Agent 服务，请先运行 npm run dev:agent");
   }
 }
@@ -33,8 +34,8 @@ async function agentHttpError(response: Response): Promise<Error> {
   return new Error(typeof body?.error === "string" ? body.error : `Agent 服务出错（${response.status}）`);
 }
 
-async function runAgentJson(base: string, request: AgentRequest): Promise<AgentResult> {
-  const response = await agentFetch(`${base}/turn`, request);
+async function runAgentJson(base: string, request: AgentRequest, signal?: AbortSignal): Promise<AgentResult> {
+  const response = await agentFetch(`${base}/turn`, request, undefined, signal);
   if (!response.ok) throw await agentHttpError(response);
   return parseAgentResult(await response.json().catch(() => null));
 }
@@ -44,10 +45,11 @@ async function runAgentRemote(
   request: AgentRequest,
   onTrace?: (event: AgentTraceEvent) => void,
   onProgress?: (event: AgentTransientEvent) => void,
+  signal?: AbortSignal,
 ): Promise<AgentResult> {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await agentFetch(`${base}/turn/stream`, request, "application/x-ndjson");
-  if (response.status === 404) return runAgentJson(base, request);
+  const response = await agentFetch(`${base}/turn/stream`, request, "application/x-ndjson", signal);
+  if (response.status === 404) return runAgentJson(base, request, signal);
   if (!response.ok) throw await agentHttpError(response);
   if (!response.body) throw new Error("Agent 服务没有返回数据流");
 
@@ -102,11 +104,14 @@ export function todayInShanghai(date = new Date()): string {
 export function runtimeDeps(
   emitTrace?: (event: AgentTraceEvent) => void,
   emitProgress?: (event: AgentTransientEvent) => void,
+  signal?: AbortSignal,
 ): TurnDeps {
   return {
     store: createD1Store(getDbBinding()),
-    runAgent: runAgentRemote,
+    runAgent: (request, onTrace, onProgress) =>
+      runAgentRemote(request, onTrace, onProgress, signal),
     today: todayInShanghai(),
+    signal,
     emitTrace,
     emitProgress,
   };

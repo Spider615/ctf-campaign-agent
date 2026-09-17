@@ -1,3 +1,4 @@
+import { isTurnCancelled, relayAbort } from "../../../../lib/cancellation.ts";
 import { errorResponse, publicTurnError, runtimeDeps } from "../../../../lib/server/runtime.ts";
 import { runTurn } from "../../../../lib/server/turns.ts";
 
@@ -8,6 +9,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (request.headers.get("accept")?.includes("application/x-ndjson")) {
       const encoder = new TextEncoder();
       let active = true;
+      const turnController = new AbortController();
+      const stopRelaying = relayAbort(request.signal, turnController);
+      const abortTurn = () => {
+        active = false;
+        if (!turnController.signal.aborted) turnController.abort();
+      };
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           const emit = (event: unknown) => {
@@ -15,7 +22,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             try {
               controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
             } catch {
-              active = false;
+              abortTurn();
             }
           };
           void runTurn(
@@ -24,18 +31,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             runtimeDeps(
               (event) => emit({ type: "trace", event }),
               (event) => emit(event),
+              turnController.signal,
             ),
           )
             .then((snapshot) => emit({ type: "snapshot", snapshot }))
-            .catch((error) => emit({ type: "error", error: publicTurnError(error) }))
+            .catch((error) => {
+              if (isTurnCancelled(error) || turnController.signal.aborted) return;
+              emit({ type: "error", error: publicTurnError(error) });
+            })
             .finally(() => {
+              stopRelaying();
               if (!active) return;
               active = false;
               controller.close();
             });
         },
         cancel() {
-          active = false;
+          abortTurn();
         },
       });
       return new Response(stream, {
@@ -45,7 +57,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         },
       });
     }
-    return Response.json(await runTurn(id, body, runtimeDeps()));
+    return Response.json(await runTurn(id, body, runtimeDeps(undefined, undefined, request.signal)));
   } catch (error) {
     return errorResponse(error, "没保存成功，可以重试");
   }
