@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
-import { createMemoryStore, type TurnWrite } from "../app/lib/server/session-store.ts";
+import { createCampaignDraft } from "../app/lib/campaign/workspace.ts";
+import { createD1Store, createMemoryStore, type TurnWrite } from "../app/lib/server/session-store.ts";
 
 const NOW = "2026-09-16T08:00:00.000Z";
 
@@ -16,6 +17,48 @@ function newSession(id: string, title: string): TurnWrite {
     version: { id: `${id}-v1`, seq: 1, draft: createEmptyDraft(`${id}-d1`, title), sheet: null, createdBy: "human", patch: null },
     messages: [{ id: `${id}-m1`, role: "user", content: { v: 2, kind: "user_text", text: title }, producedVersionId: `${id}-v1` }],
   };
+}
+
+type BoundStatement = {
+  sql: string;
+  args: unknown[];
+  bind: (...args: unknown[]) => BoundStatement;
+  first: <T>() => Promise<T | null>;
+  all: <T>() => Promise<{ results: T[] }>;
+};
+
+function fakeD1(input?: {
+  session?: Record<string, unknown>;
+  messages?: Array<Record<string, unknown>>;
+  versions?: Array<Record<string, unknown>>;
+}) {
+  const batched: BoundStatement[][] = [];
+  const db = {
+    prepare(sql: string): BoundStatement {
+      const statement: BoundStatement = {
+        sql,
+        args: [],
+        bind(...args: unknown[]) {
+          statement.args = args;
+          return statement;
+        },
+        async first<T>() {
+          return (input?.session ?? null) as T | null;
+        },
+        async all<T>() {
+          if (sql.includes("FROM message")) return { results: (input?.messages ?? []) as T[] };
+          if (sql.includes("FROM draft_version")) return { results: (input?.versions ?? []) as T[] };
+          return { results: [] as T[] };
+        },
+      };
+      return statement;
+    },
+    async batch(statements: BoundStatement[]) {
+      batched.push(statements);
+      return [];
+    },
+  };
+  return { db: db as unknown as D1Database, batched };
 }
 
 test("remove deletes one session and leaves the others alone", async () => {
@@ -56,4 +99,58 @@ test("message occurrence time is stored independently from commit time", async (
   await store.commit(write);
 
   assert.equal((await store.load("timed"))?.messages[0].createdAt, "2026-09-16T07:59:57.000Z");
+});
+
+test("legacy ics1811 versions are normalized to a stable campaign parent when written", async () => {
+  const store = createMemoryStore();
+  const write = newSession("legacy", "钻石九折");
+  const legacyDraft = write.version?.draft;
+
+  await store.commit(write);
+
+  const loaded = await store.load("legacy");
+  assert.equal(loaded?.legacy, false);
+  assert.equal(loaded?.versions[0].draft.schema, "campaign/v1");
+  assert.equal(loaded?.versions[0].draft.id, "campaign:legacy-d1");
+  assert.deepEqual(loaded?.versions[0].draft.ics1811, legacyDraft);
+});
+
+test("D1 adapts every legacy and current version independently in a mixed history", async () => {
+  const legacy = createEmptyDraft("legacy-child", "钻石类打9折");
+  const current = createCampaignDraft("campaign-current", "策划会员私域活动");
+  const { db } = fakeD1({
+    session: {
+      id: "mixed",
+      title: "混合版本",
+      entry_mode: "new",
+      status: "collecting",
+      created_at: NOW,
+      updated_at: NOW,
+    },
+    versions: [
+      { id: "v1", seq: 1, brief_json: JSON.stringify(legacy), ics_orders_json: "null", created_by: "ai", created_at: NOW },
+      { id: "v2", seq: 2, brief_json: JSON.stringify(current), ics_orders_json: "null", created_by: "human", created_at: NOW },
+    ],
+  });
+
+  const loaded = await createD1Store(db).load("mixed");
+
+  assert.equal(loaded?.legacy, false, "新旧版本混存不能让整条会话变成 legacy");
+  assert.deepEqual(loaded?.versions.map((version) => version.draft.schema), ["campaign/v1", "campaign/v1"]);
+  assert.equal(loaded?.versions[0].draft.id, "campaign:legacy-child");
+  assert.deepEqual(loaded?.versions[0].draft.ics1811, legacy);
+  assert.deepEqual(loaded?.versions[1].draft, current);
+});
+
+test("D1 writes a normalized campaign document into the existing brief_json column", async () => {
+  const { db, batched } = fakeD1();
+
+  await createD1Store(db).commit(newSession("persisted", "钻石九折"));
+
+  const insert = batched[0].find((statement) => statement.sql.includes("INSERT INTO draft_version"));
+  assert.ok(insert, "应写入现有 draft_version 表");
+  const persisted = JSON.parse(String(insert.args[3]));
+  assert.equal(persisted.schema, "campaign/v1");
+  assert.equal(persisted.id, "campaign:persisted-d1");
+  assert.equal(persisted.ics1811.schema, "ics1811/v1");
 });

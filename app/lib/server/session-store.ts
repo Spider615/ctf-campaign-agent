@@ -1,10 +1,10 @@
 import type { FillSheet } from "../campaign/ics1811/fill-sheet.ts";
 import { decodeMessage, encodeMessage, type ChatMessage, type StoredMessage } from "../campaign/ics1811/messages.ts";
-import type { Ics1811Draft } from "../campaign/ics1811/types.ts";
-import { isIcs1811Draft } from "./request-validation.ts";
+import type { CampaignDraft } from "../campaign/types.ts";
+import { parseCampaignDocument, type CampaignDocument } from "./request-validation.ts";
 
-// 会话状态：collecting 还在补信息；confirmed 已建好（生成了填写值）；readback 只在旧会话里有（那时要先复述再确认）。
-export type SessionStatus = "collecting" | "readback" | "confirmed";
+// 新状态描述整场活动；后三项只为兼容旧会话，其中 confirmed 仅表示旧 1811 填写值已就绪。
+export type SessionStatus = "briefing" | "preparing" | "needs_confirmation" | "ics_ready" | "collecting" | "readback" | "confirmed";
 
 export type SessionRecord = {
   id: string;
@@ -15,11 +15,11 @@ export type SessionRecord = {
   updatedAt: string;
 };
 
-// draft 存事实层（brief_json 列），sheet 存确认时的填写值快照（ics_orders_json 列，没确认时为 null）。
+// draft 存活动父层（brief_json 列），sheet 继续存单份 1811 填写值快照（ics_orders_json 列）。
 export type VersionRecord = {
   id: string;
   seq: number;
-  draft: Ics1811Draft;
+  draft: CampaignDraft;
   sheet: FillSheet | null;
   createdBy: "ai" | "human" | "rollback";
   createdAt: string;
@@ -47,7 +47,10 @@ export type TurnWrite = {
   isNew: boolean;
   now: string;
   session: SessionRecord;
-  version: (Omit<VersionRecord, "createdAt"> & { patch: { id: string; ops: unknown; source: "ai" | "human"; reason: string } | null }) | null;
+  version: (Omit<VersionRecord, "createdAt" | "draft"> & {
+    draft: CampaignDocument;
+    patch: { id: string; ops: unknown; source: "ai" | "human"; reason: string } | null;
+  }) | null;
   messages: Array<{ id: string; role: "user" | "assistant"; content: StoredMessage; producedVersionId: string | null; createdAt?: string }>;
 };
 
@@ -73,6 +76,12 @@ function parseJson(raw: string): unknown {
   }
 }
 
+function normalizeStoredDraft(value: unknown): CampaignDraft {
+  const draft = parseCampaignDocument(value);
+  if (!draft) throw new Error("活动草稿结构不受支持");
+  return draft;
+}
+
 export function createD1Store(db: D1Database): SessionStore {
   return {
     async list() {
@@ -93,8 +102,8 @@ export function createD1Store(db: D1Database): SessionStore {
           .bind(id)
           .all<{ id: string; seq: number; brief_json: string; ics_orders_json: string; created_by: string; created_at: string }>(),
       ]);
-      const drafts = versions.results.map((version) => parseJson(version.brief_json));
-      const legacy = drafts.some((draft) => !isIcs1811Draft(draft));
+      const drafts = versions.results.map((version) => parseCampaignDocument(parseJson(version.brief_json)));
+      const legacy = drafts.some((draft) => draft === null);
       return {
         session: toSession(row),
         legacy,
@@ -108,7 +117,7 @@ export function createD1Store(db: D1Database): SessionStore {
         versions: legacy ? [] : versions.results.map((version, index) => ({
           id: version.id,
           seq: Number(version.seq),
-          draft: drafts[index] as Ics1811Draft,
+          draft: drafts[index] as CampaignDraft,
           sheet: (parseJson(version.ics_orders_json) as FillSheet | null) ?? null,
           createdBy: version.created_by === "ai" || version.created_by === "rollback" ? version.created_by : "human",
           createdAt: version.created_at,
@@ -127,12 +136,13 @@ export function createD1Store(db: D1Database): SessionStore {
           .bind(session.title, session.status, session.updatedAt, session.id));
       }
       if (version) {
+        const draft = normalizeStoredDraft(version.draft);
         if (version.patch) {
           statements.push(db.prepare("INSERT INTO patch (id, session_id, from_version, ops_json, source, reason, model, tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(version.patch.id, session.id, version.seq - 1, JSON.stringify(version.patch.ops), version.patch.source, version.patch.reason, null, null, now));
         }
         statements.push(db.prepare("INSERT INTO draft_version (id, session_id, seq, brief_json, ics_orders_json, created_by, patch_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-          .bind(version.id, session.id, version.seq, JSON.stringify(version.draft), JSON.stringify(version.sheet), version.createdBy, version.patch?.id ?? null, now));
+          .bind(version.id, session.id, version.seq, JSON.stringify(draft), JSON.stringify(version.sheet), version.createdBy, version.patch?.id ?? null, now));
       }
       for (const message of write.messages) {
         statements.push(db.prepare("INSERT INTO message (id, session_id, role, content, created_at, produced_version_id) VALUES (?, ?, ?, ?, ?, ?)")
@@ -169,7 +179,16 @@ export function createMemoryStore(): SessionStore {
     },
     async load(id) {
       const bundle = sessions.get(id);
-      return bundle ? structuredClone(bundle) : null;
+      if (!bundle) return null;
+      const copy = structuredClone(bundle);
+      const drafts = copy.versions.map((version) => parseCampaignDocument(version.draft));
+      const legacy = drafts.some((draft) => draft === null);
+      return {
+        ...copy,
+        legacy,
+        messages: legacy ? [] : copy.messages,
+        versions: legacy ? [] : copy.versions.map((version, index) => ({ ...version, draft: drafts[index] as CampaignDraft })),
+      };
     },
     async commit(write) {
       const existing = sessions.get(write.session.id);
@@ -181,7 +200,7 @@ export function createMemoryStore(): SessionStore {
       if (write.version) {
         const { patch: _patch, ...version } = write.version;
         void _patch;
-        bundle.versions.push(structuredClone({ ...version, createdAt: write.now }));
+        bundle.versions.push(structuredClone({ ...version, draft: normalizeStoredDraft(version.draft), createdAt: write.now }));
       }
       for (const message of write.messages) {
         bundle.messages.push(structuredClone({ ...message, createdAt: message.createdAt ?? write.now }));
