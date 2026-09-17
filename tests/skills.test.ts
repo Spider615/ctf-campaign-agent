@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -132,6 +133,8 @@ test("按知识请求保守选择基线 Skill，并保持基线顺序", () => {
     ["这个活动该选浮动还是固定，1811 怎么录", ["offer-entry-guide"]],
     ["先解释浮动和固定的区别，再告诉我这个活动怎么录", ["offer-entry-guide", "field-explainer"]],
     ["先解释区别，再告诉我这个活动怎么录", ["offer-entry-guide", "field-explainer"]],
+    ["这个活动怎么录，再解释区别", ["offer-entry-guide", "field-explainer"]],
+    ["区别解释怎么录", []],
     ["满减是什么意思", ["offer-entry-guide"]],
   ];
 
@@ -168,9 +171,31 @@ test("普通活动事实不因领域名词本身加载 Skill", () => {
     "10月1日到7日，7590店，钻石95折",
     "多店活动，门店是7590和7601",
     "让扣点2%，回款率98%",
+    "说明函已上传",
+    "结算说明函已经确认",
+    "标语是请到店参与活动",
   ]) {
     assert.deepEqual(requiredSkills(text), [], text);
   }
+});
+
+test("混合意图扫描对不完整的长输入保持线性", () => {
+  const moduleUrl = new URL("../agent/skills.ts", import.meta.url).href;
+  const script = `
+    const { requiredSkillsForTurn } = await import(${JSON.stringify(moduleUrl)});
+    const actual = requiredSkillsForTurn({
+      trigger: { kind: "user_message", text: "解释区别怎么".repeat(320) },
+    });
+    if (JSON.stringify(actual) !== "[]") process.exit(1);
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", script],
+    { encoding: "utf8", timeout: 1_000 },
+  );
+
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("路由只归一化空白和大小写，首轮消息也使用同一规则", () => {

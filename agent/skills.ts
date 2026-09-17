@@ -20,10 +20,35 @@ const OFFER_TOPIC = /折扣|打(?:\d+(?:\.\d+)?)?折|满减|克减|每克减|以
 const ENTRY_INTENT = /怎么录|如何录|怎样录|怎么填|如何填|怎样填|怎么建|如何建|怎样建|怎么创建|如何创建|该选|应该选|选哪个|怎么选|如何选择|是否支持|支不支持|能不能(?:做|录|建)|可以(?:做|录|建)吗|适不适用|怎么处理|如何处理/;
 const SUPPORT_INTENT = /是否支持|支不支持|支持.{0,12}吗|能不能|能(?:做|录|建)吗|可以吗|可不可以|适不适用|是不是超出|是否超出/;
 const SETTLEMENT_TOPIC = /结算说明函|说明函|跨区域|跨区|多门店|多家(?:门店|店)|两家(?:门店|店)|单店|文件命名|上传流程/;
-const SETTLEMENT_INTENT = /要不要|是否|需不需要|需要吗|怎么|如何|怎样|什么|规则|处理|命名|上传|确认|可以|能否/;
+const SETTLEMENT_INTENT = /要不要|是否|需不需要|需要吗|怎么|如何|怎样|是什么|指什么|什么(?:规则|要求|格式|内容)|规则(?:是什么|怎么|如何|怎样|呢|吗)|可以吗|能否|必须.{0,12}吗|是不是必须/;
 const PROMO_TOPIC = /宣传文案|活动文案|对外文案|推广文案|主标题|卖点|标语|宣传语/;
-const PROMO_INTENT = /帮我|请|起草|写一版|写个|改写|修改|润色|优化|评价|点评|看看|讨论|建议|怎么写|如何写|要不要|是否合适|怎么样/;
-const EXPLAIN_THEN_ENTER = /(?:(?:解释|说明).*(?:区别|差别).*(?:怎么|如何|怎样).*(?:录|填|建|创建)|(?:怎么|如何|怎样).*(?:录|填|建|创建).*(?:解释|说明).*(?:区别|差别))/;
+const PROMO_INTENT = /帮我|起草|写一版|写个|改写|修改|润色|优化|评价|点评|看看|讨论|建议|怎么写|如何写|要不要|是否合适|怎么样/;
+const EXPLAIN_TERMS = ["解释", "说明"] as const;
+const DIFFERENCE_TERMS = ["区别", "差别"] as const;
+const HOW_TERMS = ["怎么", "如何", "怎样"] as const;
+const ENTRY_ACTION_TERMS = ["录", "填", "建", "创建"] as const;
+const EXPLAIN_THEN_ENTER_ORDERS = [
+  [EXPLAIN_TERMS, DIFFERENCE_TERMS, HOW_TERMS, ENTRY_ACTION_TERMS],
+  [HOW_TERMS, ENTRY_ACTION_TERMS, EXPLAIN_TERMS, DIFFERENCE_TERMS],
+] as const;
+
+function hasTermsInOrder(text: string, groups: readonly (readonly string[])[]): boolean {
+  let cursor = 0;
+  for (const group of groups) {
+    let nextIndex = -1;
+    let nextCursor = -1;
+    for (const term of group) {
+      const index = text.indexOf(term, cursor);
+      if (index >= 0 && (nextIndex < 0 || index < nextIndex)) {
+        nextIndex = index;
+        nextCursor = index + term.length;
+      }
+    }
+    if (nextIndex < 0) return false;
+    cursor = nextCursor;
+  }
+  return true;
+}
 
 export function requiredSkillsForTurn(
   request: Pick<AgentRequest, "trigger">,
@@ -34,7 +59,9 @@ export function requiredSkillsForTurn(
   const explanation = EXPLAIN_INTENT.test(text);
   const offerTopic = OFFER_TOPIC.test(text);
   const entry = ENTRY_INTENT.test(text);
-  const explainThenEnter = EXPLAIN_THEN_ENTER.test(text);
+  const explainThenEnter = EXPLAIN_THEN_ENTER_ORDERS.some(
+    (groups) => hasTermsInOrder(text, groups),
+  );
 
   if ((fieldTopic && explanation) || explainThenEnter) required.add("field-explainer");
   if (
