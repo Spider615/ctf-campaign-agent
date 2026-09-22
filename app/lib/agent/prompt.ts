@@ -76,20 +76,22 @@ const CAMPAIGN_BRIEF_GUIDE: Record<CampaignBriefKey, string> = {
   audience: "要影响的目标人群",
   theme: "用户给出的主题，或用户明确同意的创意提议",
   channels: "门店、微信、电商、社媒、会员触达或活动现场等渠道",
-  timing: "活动时机或档期；没有明确日期时照原话记，不自行换算",
-  scope: "地域、门店、线上范围或商品系列等活动范围",
+  timing: "活动时机或档期；没有明确日期时照原话记，不自行换算，不许扩大到用户没说的时间范围",
+  scope: "地域、门店、线上范围或商品系列等活动范围；不许扩大到用户没说的范围",
 };
 
 function buildToolApiContract(hasIcs1811: boolean): string {
   const shared = [
     "## 本轮工具 API 合同",
-    "- update_campaign_brief：writes 是 [{key, value?, quote}]。quote 必须逐字取自用户这一轮原话；文本值由代码采用 quote，渠道由代码从 quote 识别。可用 key：",
+    "- update_campaign_brief：writes 是 [{key, value?, quote}]。quote 必须逐字取自用户这一轮原话，作为可追溯的依据。value 填你的分析结论，不是摘抄：结合整段对话把用户的说法归纳成这个字段该有的短语，用行业说法，改掉错别字。例如「希望是能拉到一些新的用户」→「拉新」，「主要是年轻人情侣结婚」→「年轻备婚情侣」，「年轻课群吧」→「年轻客群」。三条硬规矩：不超过 20 个字；里面出现的数字必须是用户说过的；timing 和 scope 说的是活动实际做到哪，只能忠实于原话，不许把「十月」写成「全年」、「深圳」写成「全国」。越界代码会丢掉你的 value，只按 quote 剥掉口语壳。渠道由代码从 quote 识别，不用填 value。可用 key：",
     CAMPAIGN_BRIEF_KEYS.map((key) => `  - ${key}：${CAMPAIGN_BRIEF_GUIDE[key]}`).join("\n"),
     "- analyze_campaign_plan：运行确定性的多轨路由、Brief 缺项、执行轨和上线门禁分析；它返回的状态是整体活动真相。",
   ];
   if (!hasIcs1811) {
     return [...shared,
       "- 当前没有 1811 子流程，不要调用 1811 字段、代码表、追问或填写值工具。",
+      "- 但不要把这条路堵死：本工具的交付物就是能直接填进系统的 1811 配置，说「不涉及优惠配置，这块不用再走流程」等于把配置工作退回给用户人工做。Brief 的必填项齐了之后，只要这个活动还没有成交优惠，就主动问一次：这次活动要不要带成交优惠（每克减、满减、打折、以旧换新、工费优惠都算）；说明带了你就能直接给出 1811 的逐项填写值，不带的话门店得自己去系统里建。",
+      "- 用户说要带优惠时，请他讲清具体玩法和力度——优惠方式和数值只能由用户自己说，你不能替他定。他一说出来，下一轮就会有 1811 子流程，那时再按 1811 的工具走。",
       "- draft_promo_copy：Brief 齐备后起草传播方案；参数包含 concept（headline、subheadline、coreMessage）、channelOutputs（只为已确认渠道填写 channel、format、copy、cta）和 visualDirection。还必须在同一回合成功加载 promo-copy-guide，并服从工具的渠道、数字、权益和人群守卫。",
       "- undo_campaign_change：只撤销上一次修改，不和其他修改工具混用。",
     ].join("\n");

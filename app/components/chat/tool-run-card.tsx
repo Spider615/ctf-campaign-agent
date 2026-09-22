@@ -47,7 +47,7 @@ export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
         <Sparkles className="relative size-3.5" aria-hidden="true" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-semibold text-[#20314d]">{live ? "AI 正在搭建活动" : "AI 工具执行记录"}</p>
+        <p className="truncate text-[13px] font-semibold text-[#20314d]">{live ? "小福正在思考" : "AI 工具执行记录"}</p>
         <p className={`truncate text-[11px] ${storedSummary?.tone === "failed" ? "text-[#c2413b]" : storedSummary?.tone === "warning" ? "text-[#a86510]" : "text-[#6c82a0]"}`}>
           {live ? `${steps.filter((step) => step.status !== "started").length} 步已完成 · 总用时 ${formatDuration(durationMs)}` : storedSummary?.label}
         </p>

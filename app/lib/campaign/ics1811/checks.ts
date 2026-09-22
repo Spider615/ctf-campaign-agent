@@ -1,6 +1,6 @@
 // 提交前校验（设计文档第 7 节）：全部由代码判定，不交给模型（§9(三) 末行）。
 
-import { categoryByCode, CODEBOOK, storeByCode } from "./codebook.ts";
+import { categoryByCode, CODEBOOK, discountFloorOf, storeByCode } from "./codebook.ts";
 import { FIXED_ONLY_PATTERNS, OFFER_TYPES, paramProblem } from "./offer-spec.ts";
 import type { Check, FillModel, Ics1811Draft } from "./types.ts";
 
@@ -88,6 +88,17 @@ export function checkDraft(draft: Ics1811Draft, fill: FillModel, today: string):
     }
     for (const rate of [detail.concessionRate, detail.collectionRate]) {
       if (rate.value !== null && (rate.value < 0 || rate.value > 1)) add("V-D11", "blocker", `${label}：让扣点、回款率要填 0 到 1 之间的小数，2% 填 0.02`, "§3(三)3、§7、§9(三)");
+    }
+    // 超限促销：售价折扣不能低于活动覆盖区域的最低折扣率。只有「打折」玩法能直接比——
+    // 每克减、满减换算成折扣率要有金价或客单价，这里都没有，不做假校验。换购类的开单折扣是换购口径，也不比。
+    // 判 warning 不判 blocker：下限是编造的演示值，且行业里超限的处理是报总部批准，不是不许填。
+    if (offer?.pattern === "discount") {
+      const rate = detail.params.find((param) => param.key === "billingDiscount" || param.key === "discount")?.value.value;
+      const { floor, regions } = discountFloorOf(f.stores?.value ?? []);
+      if (rate !== null && rate !== undefined && floor !== null && rate < floor) {
+        const names = regions.map((code) => CODEBOOK.regions.find((entry) => entry.code === code)?.label ?? code).join("、");
+        add("V-D12", "warning", `${label}：折扣 ${rate} 低于${names}的最低折扣率 ${floor}，属超限促销，需总部批准`, "行业实践（编造下限）");
+      }
     }
     for (const restriction of detail.restrictions) {
       const value = restriction.value.value;

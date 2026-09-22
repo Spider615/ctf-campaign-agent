@@ -68,6 +68,15 @@ const businessCategoryOverrides: Array<{ offerType: string; category: string; va
   { offerType: "钻石以小换大", category: "不适用", value: "镶嵌类", origin: "编造", evidence: "05c 页面填的是「钻石」" },
 ];
 
+// 区域最低折扣率（「不得超限促销」的下限）。行业里这是总部按区域定的指导参数，不是运营每场活动填的，
+// 所以放代码表、不做人定字段。数值全部编造：依据是周六福招股书披露的「加盟商折扣浮动一般不超过 25%」，
+// 取 0.75 作为通用下限，个别区域按演示需要微调。换成真实数据时只改这里。
+const discountFloors: Record<string, number> = {
+  "209": 0.8,
+  "214": 0.75,
+};
+const DEFAULT_DISCOUNT_FLOOR = 0.75;
+
 const brand = (label: string, approvalFlow: string): BrandEntry => ({ code: label, label, display: label, approvalFlow, origin: "编造", evidence: "由审批流名称对应" });
 
 export const CODEBOOK = {
@@ -127,4 +136,14 @@ export function categoryByCode(code: string): CategoryEntry | undefined {
 
 export function byCode<T extends Entry>(entries: readonly T[], code: string): T | undefined {
   return entries.find((entry) => entry.code === code);
+}
+
+// 活动覆盖多个区域时取最严（最高）的下限：一份活动只有一个折扣，必须同时满足所有区域的政策。
+// 有门店不在代码表里就返回 null——不猜，这种情况另有 V-A12 在管。
+export function discountFloorOf(storeCodes: readonly string[]): { floor: number | null; regions: string[] } {
+  const entries = storeCodes.map(storeByCode);
+  if (!storeCodes.length || entries.some((entry) => !entry)) return { floor: null, regions: [] };
+  const regionCodes = [...new Set(entries.map((entry) => entry!.region))];
+  const floor = Math.max(...regionCodes.map((code) => discountFloors[code] ?? DEFAULT_DISCOUNT_FLOOR));
+  return { floor, regions: regionCodes };
 }

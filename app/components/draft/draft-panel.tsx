@@ -345,11 +345,11 @@ export function DraftPanel(props: DraftPanelProps) {
 
       <Tabs value={tab} onValueChange={onTabChange} className="flex min-h-0 flex-1 flex-col">
         <TabsList variant="line" className="flex w-full shrink-0 justify-start overflow-x-auto border-b border-[#e4d8cf] bg-[#fffdf9] px-3">
-          <TabsTrigger value="brief" className="flex-none px-2.5">Brief</TabsTrigger>
+          <TabsTrigger value="brief" className="flex-none px-2.5">活动概览</TabsTrigger>
           <TabsTrigger value="execution" className="flex-none px-2.5">执行</TabsTrigger>
           <TabsTrigger value="readiness" className="flex-none px-2.5">上线检查</TabsTrigger>
           <TabsTrigger value="communications" className="flex-none px-2.5">传播方案</TabsTrigger>
-          <TabsTrigger value="1811" className="flex-none px-2.5">1811</TabsTrigger>
+          <TabsTrigger value="1811" className="flex-none px-2.5">优惠配置</TabsTrigger>
         </TabsList>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">

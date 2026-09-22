@@ -42,13 +42,21 @@ function hasTransactionSignal(text: string): boolean {
   return detected !== null && detected.unsupportedType !== "积分加倍";
 }
 
-export function ensureIcs1811Child(draft: CampaignDraft, text: string, newId: () => string): CampaignDraft {
-  if (draft.ics1811 || !hasTransactionSignal(text)) return draft;
-  return { ...draft, ics1811: createEmptyDraft(newId(), text) };
-}
-
+// 判「要不要 1811」和判「走不走优惠轨」必须用同一套输入，否则会出现路由说要配 1811、子草稿却建不出来，
+// 执行轨、上线检查和 1811 页签三处互相打架，而且用户没有任何入口把它建起来。
+// 所以这里和 routeCampaign 一样读首句 + 已记下的 Brief 原话，再加上用户当前这一轮的话。
 function briefQuotes(draft: CampaignDraft): string {
   return BRIEF_KEYS.flatMap((key) => draft.brief[key]?.quote ?? []).join("。 ");
+}
+
+function icsSignalText(draft: CampaignDraft, text: string): string {
+  return [draft.requestText, briefQuotes(draft), text].filter(Boolean).join("。 ");
+}
+
+export function ensureIcs1811Child(draft: CampaignDraft, text: string, newId: () => string): CampaignDraft {
+  if (draft.ics1811 || !hasTransactionSignal(icsSignalText(draft, text))) return draft;
+  // 子草稿的 requestText 用用户这一轮的话；这一轮没话（模型刚写完 Brief）就退回首句。
+  return { ...draft, ics1811: createEmptyDraft(newId(), text || draft.requestText) };
 }
 
 export function createCampaignDraft(id: string, requestText: string): CampaignDraft {

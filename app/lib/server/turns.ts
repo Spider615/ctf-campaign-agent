@@ -657,6 +657,9 @@ export async function runTurn(sessionId: string, body: unknown, deps: TurnDeps):
         ics1811: result.draft,
         communication: result.communication !== undefined ? result.communication : next.communication,
       };
+      // 模型这一轮刚写进 Brief 的优惠说法，回合开始时还看不到。合并完再判一次，
+      // 免得「路由说要配 1811、子草稿却不存在」这个矛盾状态从这里漏出去。
+      next = ensureIcs1811Child(next, trigger?.text ?? "", newId);
       if (result.briefApplied?.length || result.applied.length || result.dropped.length) {
         patch = {
           ops: {

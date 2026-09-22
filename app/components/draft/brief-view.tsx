@@ -62,7 +62,8 @@ export function BriefView({ workspace }: { workspace: CampaignWorkspace }) {
               </div>
               <div className="min-w-0">
                 <p className={`break-words text-[13px] leading-5 ${item.value ? "text-[#32272a]" : "text-[#a37869]"}`}>{item.value ?? "待补充"}</p>
-                {item.quote ? (
+                {/* 依据和值一字不差时那行就是噪音，只在原话比值多出东西时才显示出处。 */}
+                {item.quote && item.quote !== item.value ? (
                   <p className="mt-1.5 flex items-start gap-1.5 text-[10px] leading-4 text-[#9a8884]">
                     <Quote className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
                     <span className="line-clamp-2">{item.key === "channels" ? "最近变更依据" : "依据"}：{item.quote}</span>

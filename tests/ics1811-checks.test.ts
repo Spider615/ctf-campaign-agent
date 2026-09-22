@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { applyCardAnswers } from "../app/lib/campaign/ics1811/card.ts";
 import { checkDraft } from "../app/lib/campaign/ics1811/checks.ts";
+import { discountFloorOf } from "../app/lib/campaign/ics1811/codebook.ts";
 import { deriveFill } from "../app/lib/campaign/ics1811/derive.ts";
 import { EXAMPLE_TODAY, EXAMPLES } from "../app/lib/campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
@@ -128,4 +129,28 @@ test("the self-check list reflects failing checks", () => {
   const sheet = renderFillSheet(fill, checkDraft(draft, fill, today));
   assert.equal(sheet.selfCheck.find((item) => item.item === "活动名称")?.status, "不通过");
   assert.equal(sheet.selfCheck.find((item) => item.item === "特殊活动分组")?.status, "不适用");
+});
+
+test("售价折扣低于所在区域最低折扣率时提示超限促销", () => {
+  // T10 是 95 折，闽深区下限 0.75，不该提示。
+  assert.ok(!found(completed("T10")).includes("warning:V-D12"));
+  // T7 是 7 折，低于下限，提示超限但不阻断提交——下限是编造值，且行业里超限的处理是报总部批准。
+  const over = found(completed("T7"));
+  assert.ok(over.includes("warning:V-D12"));
+  assert.ok(!over.includes("blocker:V-D12"));
+});
+
+test("每克减这类换算不出折扣率的玩法不触发下限校验", () => {
+  assert.ok(!found(completed("T1")).includes("warning:V-D12"));
+  assert.ok(!found(completed("T6")).includes("warning:V-D12"));
+});
+
+test("跨区域的活动按最严的下限判", () => {
+  assert.equal(discountFloorOf(["7590"]).floor, 0.75);
+  // 7590 在闽深区(214)、5021 在沪浙区(209)，取两者中更严的一个。
+  const across = discountFloorOf(["7590", "5021"]);
+  assert.equal(across.floor, Math.max(discountFloorOf(["7590"]).floor!, discountFloorOf(["5021"]).floor!));
+  assert.equal(across.regions.length, 2);
+  // 门店不在代码表里时不猜，返回 null。
+  assert.equal(discountFloorOf(["9999"]).floor, null);
 });

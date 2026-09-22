@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { applyCampaignBriefWrites, createEmptyCampaignBrief } from "../app/lib/campaign/brief.ts";
 import type { CampaignDraft } from "../app/lib/campaign/types.ts";
-import { buildCampaignWorkspace, createCampaignDraft, normalizeCampaignDraft, routeCampaign } from "../app/lib/campaign/workspace.ts";
+import { buildCampaignWorkspace, createCampaignDraft, ensureIcs1811Child, normalizeCampaignDraft, routeCampaign } from "../app/lib/campaign/workspace.ts";
 import { EXAMPLES, EXAMPLE_TODAY } from "../app/lib/campaign/ics1811/examples.ts";
 import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/facts.ts";
 
@@ -87,11 +87,14 @@ test("vague requests stay at needs_confirmation and do not default to 1811", () 
 test("campaign brief writes require current-message quotes and derive channels from the quote", () => {
   const text = "活动叫传福新章，目标是提升新品认知，面向年轻情侣，主题是福启新章，投放门店和微信，时间是十月，范围是深圳。";
   const result = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
-    { key: "name", quote: "传福新章", value: "别的名字" },
+    // 描述类：模型可以归纳措辞，但数字必须是用户说过的。
+    { key: "name", quote: "传福新章", value: "传福新章" },
     { key: "objective", quote: "提升新品认知", value: "提升销量100%" },
-    { key: "audience", quote: "年轻情侣", value: "所有消费者" },
-    { key: "theme", quote: "福启新章", value: "别的主题" },
+    { key: "audience", quote: "年轻情侣", value: "年轻备婚情侣" },
+    { key: "theme", quote: "福启新章", value: "福启新章" },
+    // 渠道由代码从原话识别，不看 value。
     { key: "channels", quote: "门店和微信", value: ["ecommerce"] },
+    // 边界类：改写等于偷偷改执行范围，一律拒绝。
     { key: "timing", quote: "十月", value: "全年" },
     { key: "scope", quote: "深圳", value: "全国" },
   ], { text });
@@ -99,12 +102,12 @@ test("campaign brief writes require current-message quotes and derive channels f
   assert.deepEqual(result.applied, ["name", "objective", "audience", "theme", "channels", "timing", "scope"]);
   assert.deepEqual(result.dropped, []);
   assert.equal(result.brief.name?.value, "传福新章");
-  assert.equal(result.brief.objective?.value, "提升新品认知");
-  assert.equal(result.brief.audience?.value, "年轻情侣");
+  assert.equal(result.brief.objective?.value, "提升新品认知", "100 不在原话里，整个 value 作废");
+  assert.equal(result.brief.audience?.value, "年轻备婚情侣");
   assert.equal(result.brief.theme?.value, "福启新章");
   assert.deepEqual(result.brief.channels?.value, ["store", "wechat"]);
-  assert.equal(result.brief.timing?.value, "十月");
-  assert.equal(result.brief.scope?.value, "深圳");
+  assert.equal(result.brief.timing?.value, "十月", "边界类不许改写");
+  assert.equal(result.brief.scope?.value, "深圳", "边界类不许改写");
 });
 
 test("campaign brief drops invented quotes and unsupported channel claims", () => {
@@ -582,4 +585,107 @@ test("a transaction campaign exposes the communication track once communication 
   assert.equal(communicationsTrack?.status, "needs_confirmation");
   assert.equal(communicationsGate?.status, "needs_confirmation");
   assert.equal(workspace.artifacts.communications.status, "needs_review");
+});
+
+test("Brief 文本值从原话里剥掉口语壳，依据仍保留整句", () => {
+  const text = "我觉得国潮与家国情怀这条路线吧，主要是回馈老会员，受众就是现有会员";
+  const result = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "theme", quote: "我觉得国潮与家国情怀这条路线吧" },
+    { key: "objective", quote: "主要是回馈老会员" },
+    { key: "audience", quote: "现有会员" },
+  ], { text });
+
+  assert.equal(result.brief.theme?.value, "国潮与家国情怀");
+  assert.equal(result.brief.theme?.quote, "我觉得国潮与家国情怀这条路线吧");
+  assert.equal(result.brief.objective?.value, "回馈老会员");
+  // 本来就没有口语壳的照原样，不能越剥越短。
+  assert.equal(result.brief.audience?.value, "现有会员");
+});
+
+test("剥到空或只剩一个字时退回原话，宁可啰嗦也不能丢内容", () => {
+  const text = "就这样吧，主题是新中式";
+  const result = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "scope", quote: "就这样吧" },
+  ], { text });
+  assert.equal(result.brief.scope?.value, "就这样吧");
+});
+
+test("模型整理过的值可以改错别字，原话仍留作依据", () => {
+  const text = "1. 主要是品牌曝光 2. 年轻课群吧 3. 门店";
+  const result = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "audience", quote: "年轻课群吧", value: "年轻客群" },
+  ], { text });
+  assert.equal(result.brief.audience?.value, "年轻客群");
+  assert.equal(result.brief.audience?.quote, "年轻课群吧");
+});
+
+test("模型可以结合上下文改写措辞，用原话里没有的行业词", () => {
+  const text = "1. 希望是能拉到一些新的用户 2. 主要是年轻人情侣结婚 4. 门店";
+  const result = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "objective", quote: "希望是能拉到一些新的用户", value: "拉新" },
+    { key: "audience", quote: "主要是年轻人情侣结婚", value: "年轻备婚情侣" },
+  ], { text });
+  assert.equal(result.brief.objective?.value, "拉新");
+  assert.equal(result.brief.audience?.value, "年轻备婚情侣");
+});
+
+test("模型不能把用户没说过的数字洗进 Brief", () => {
+  const text = "希望是能拉到一些新的用户";
+  const invented = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "objective", quote: "希望是能拉到一些新的用户", value: "拉新5000人" },
+  ], { text });
+  assert.equal(invented.brief.objective?.value, "拉到一些新的用户");
+
+  // 用户自己说过的数字可以带上。
+  const said = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "objective", quote: "想拉到5000个新用户", value: "拉新5000人" },
+  ], { text: "想拉到5000个新用户" });
+  assert.equal(said.brief.objective?.value, "拉新5000人");
+});
+
+test("Brief 值是短语不是段落，超长退回剥壳", () => {
+  const text = "受众是年轻人";
+  const result = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "audience", quote: "年轻人", value: "一二线城市二十五到三十五岁有稳定收入的年轻女性白领群体" },
+  ], { text });
+  assert.equal(result.brief.audience?.value, "年轻人");
+});
+
+test("模型原样回传整句时按剥壳处理，不退化成原话", () => {
+  const text = "我觉得国潮与家国情怀这条路线吧";
+  const result = applyCampaignBriefWrites(createEmptyCampaignBrief(), [
+    { key: "theme", quote: "我觉得国潮与家国情怀这条路线吧", value: "我觉得国潮与家国情怀这条路线吧" },
+  ], { text });
+  assert.equal(result.brief.theme?.value, "国潮与家国情怀");
+});
+
+test("Brief 原话里出现优惠玩法时就补建 1811，不用等用户再说一遍", () => {
+  const draft = createCampaignDraft("guide", "国庆想做个婚嫁体验活动");
+  assert.equal(draft.ics1811, null, "首句没提优惠，一开始不建");
+
+  draft.brief.objective = { value: "满2000减300拉新", quote: "满2000减300拉新", via: "text" };
+  // 当前这一轮用户只是点头，原话里没有优惠词——旧实现在这里建不出来。
+  const ensured = ensureIcs1811Child(draft, "对", () => "ics-1");
+  assert.ok(ensured.ics1811, "Brief 里已经有优惠说法，应该补建子草稿");
+});
+
+test("判出优惠轨和有没有 1811 子草稿不再自相矛盾", () => {
+  const draft = createCampaignDraft("consistent", "国庆想做个婚嫁体验活动");
+  draft.brief.objective = { value: "满2000减300拉新", quote: "满2000减300拉新", via: "text" };
+  const ensured = ensureIcs1811Child(draft, "", () => "ics-2");
+
+  const routed = routeCampaign(ensured).tracks.includes("transaction_offer");
+  const hasChild = ensured.ics1811 !== null;
+  assert.equal(routed, hasChild, "判出优惠轨就必须有子草稿，反之亦然");
+
+  const ws = buildCampaignWorkspace(ensured, EXAMPLE_TODAY);
+  assert.notEqual(ws.artifacts.ics1811.status, "not_applicable", "不能一边说要配 1811 一边说本活动不需要");
+});
+
+test("纯品牌活动仍然不建 1811", () => {
+  const draft = createCampaignDraft("brand", "国庆做个新品发布的品牌传播");
+  draft.brief.theme = { value: "国潮新品", quote: "国潮新品", via: "text" };
+  const ensured = ensureIcs1811Child(draft, "对 跟着品牌发布走", () => "ics-3");
+  assert.equal(ensured.ics1811, null);
+  assert.ok(!routeCampaign(ensured).tracks.includes("transaction_offer"));
 });
