@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpenText, CircleHelp, Menu, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { Menu, Plus, Sparkles, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -126,11 +126,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const referenceLinks = [
-    { href: "/codes", label: "代码表", icon: BookOpenText },
-    { href: "/open-questions", label: "待确认清单", icon: CircleHelp },
-  ];
-
   return (
     <div className="min-h-screen text-[#17243a]">
       <header className="sticky top-0 z-40 flex h-16 items-center border-b border-[#d9e7f6] bg-white/85 px-4 shadow-[0_6px_20px_rgba(58,104,154,0.06)] backdrop-blur-xl md:hidden">
@@ -192,19 +187,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <p className="px-3 py-2 text-[13px] text-[#91a4bb]">还没有活动</p>
               )}
             </div>
-
-            <p className="px-3 pb-2 pt-5 text-[11px] font-semibold tracking-[0.14em] text-[#8aa0b9]">规则资料</p>
-            {referenceLinks.map(({ href, label, icon: Icon }) => (
-              <Link
-                key={href}
-                href={href}
-                onClick={close}
-                className={`mb-1 flex h-11 items-center gap-3 rounded-xl border px-3 text-sm transition ${pathname === href ? "border-[#c7ddff] bg-[#eaf4ff] font-medium text-[#174e96]" : "border-transparent text-[#58708d] hover:border-[#e1ecf8] hover:bg-[#f5f9ff] hover:text-[#234d82]"}`}
-              >
-                <Icon className={`size-4 ${pathname === href ? "text-[#247cff]" : "text-[#7f94ad]"}`} />
-                {label}
-              </Link>
-            ))}
           </nav>
 
           <div className="m-3 rounded-2xl border border-[#d6e6f8] bg-[linear-gradient(145deg,#f8fbff,#eaf4ff)] p-4 shadow-[0_10px_28px_rgba(43,94,151,0.07)]">
