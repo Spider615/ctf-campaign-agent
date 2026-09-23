@@ -64,7 +64,9 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 ## 部署
 
-Agent 服务要单独运行在有 Node.js 和可写磁盘的环境。Workers 配置 `AGENT_SERVICE_URL`，两边配置相同的 `AGENT_SERVICE_TOKEN`。
+容器部署（butler）用仓库根目录的 `Dockerfile`：一个容器里同时跑页面（wrangler 本地模式，含 D1）和 Agent 服务，入口是 `scripts/start-container.mjs`。页面对外监听 `PORT`（默认 8787），Agent 只听容器内回环地址；启动时自动应用 D1 迁移。只需要配置 `DEEPSEEK_API_KEY`，其余变量见 `.env.example`；`/data` 要设成持久目录，否则重新部署会丢会话。
+
+也可以把 Agent 服务单独跑在有 Node.js 和可写磁盘的环境，页面放在 Workers 上。只有这种分开部署才需要：Workers 配置 `AGENT_SERVICE_URL`，两边配置相同的 `AGENT_SERVICE_TOKEN`。
 
 部署产物必须包含：
 

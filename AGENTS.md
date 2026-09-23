@@ -44,7 +44,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 改表结构：改 `db/schema.ts` → `npm run db:generate` → 用上面的命令应用新 SQL → 同步改 `app/lib/server/session-store.ts`。运行时查询是手写 SQL，drizzle 只用来生成迁移。`draft_version.brief_json` 现在保存 `campaign/v1` 父文档；`ics_orders_json` 继续保存可选单一 1811 填写值快照，不需要为父层另加表。
 
-部署时 Agent 服务单独运行在有 Node.js 和可写磁盘的环境；Workers 配 `AGENT_SERVICE_URL`，两边配相同的 `AGENT_SERVICE_TOKEN`。Agent 部署产物必须包含：
+容器部署（butler）用根目录 `Dockerfile`，单容器运行页面（wrangler 本地模式 + 本地 D1，数据在 `D1_PERSIST_DIR`，默认 `/data/d1`）和 Agent 服务，入口 `scripts/start-container.mjs` 负责迁移、进程联动，并把 Agent 固定在容器内回环地址，只需配置 `DEEPSEEK_API_KEY`（契约见 `.env.example`）。分开部署时 Agent 服务单独运行在有 Node.js 和可写磁盘的环境；只有这时 Workers 才配 `AGENT_SERVICE_URL`，两边配相同的 `AGENT_SERVICE_TOKEN`。Agent 部署产物必须包含：
 
 ```text
 agent/plugin/.claude-plugin/plugin.json

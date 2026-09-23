@@ -33,7 +33,7 @@ const runAgentTurn = createAgentRunner({
 const server = createServer(createAgentHttpHandler({ runAgentTurn, token: TOKEN, model: MODEL }));
 
 if (!API_KEY) {
-  console.error("缺少 DEEPSEEK_API_KEY：在仓库根目录的 .dev.vars 里填写。");
+  console.error("缺少 DEEPSEEK_API_KEY：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。");
   process.exit(1);
 }
 server.listen(PORT, HOST, () => console.log(`Agent 服务已启动：http://${HOST}:${PORT}（模型 ${MODEL}）`));

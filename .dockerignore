@@ -1,0 +1,28 @@
+# 本机依赖是 macOS 的原生包，镜像里必须重装
+node_modules
+agent/node_modules
+agent/.claude-runtime
+
+# 构建产物和本地状态
+dist
+.next
+.vinext
+.wrangler
+.sites-runtime
+*.tsbuildinfo
+
+# 密钥不进镜像，示例文件保留
+.env*
+.dev.vars*
+!.env.example
+!.dev.vars.example
+
+# 与运行无关的本地目录
+.git
+.worktrees
+.playwright-mcp
+.superpowers
+.agents
+.codex
+outputs
+work
