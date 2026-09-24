@@ -34,6 +34,15 @@ test("streaming turns expose a real stop control and keep the wave below tool tr
   assert.match(globalsSource, /@keyframes thinking-wave/);
 });
 
+test("对话滚动区是定位容器，思考中的读屏文字不会把整页撑高", () => {
+  // 思考圆点旁的 sr-only 是绝对定位；滚动区不定位时它的包含块落到 body，不被裁剪，
+  // 整页被撑到对话内容那么高，滚轮滚到底后会把整个工作台滚出视口。
+  const scroller = conversationSource.match(/className="([^"]*\boverflow-y-auto\b[^"]*)"/);
+  assert.ok(scroller, "找不到对话滚动区");
+  assert.match(scroller[1], /(^|\s)relative(\s|$)/);
+  assert.match(thinkingSource, /sr-only/);
+});
+
 test("成功回合与 409 对账会清掉首次理解的停止状态", () => {
   const loadSource = conversationSource.slice(conversationSource.indexOf("const load ="), conversationSource.indexOf("  useEffect(() => {\n    let cancelled"));
   const sendSource = conversationSource.slice(conversationSource.indexOf("const send ="), conversationSource.indexOf("const sendRef ="));

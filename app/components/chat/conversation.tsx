@@ -437,7 +437,9 @@ export function Conversation({ sessionId }: { sessionId: string }) {
         </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-7 md:px-8">
+      {/* relative 不能省：滚动区得是绝对定位后代的包含块。否则思考圆点的读屏文字（sr-only）逃出裁剪，
+          整页被撑到对话内容那么高，滚轮滚到底会把整个工作台滚出视口。 */}
+      <div className="relative min-h-0 flex-1 overflow-y-auto px-4 py-7 md:px-8">
         <div className="mx-auto flex max-w-[780px] flex-col gap-5">
           <MessageList snapshot={snapshot} actions={actions} />
           {pendingText ? (
