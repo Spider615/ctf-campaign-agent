@@ -102,7 +102,7 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 - `lookup_ics_reference` 只查 demo 代码表并返回来源；`analyze_campaign_state` 复用 `deriveFill`、`checkDraft` 和 `planNext`，返回缺项（带题号）和 `complete`，两者都不写草稿。
 - `draft_campaign_copy`：名称不超过 13 个字，名称和内容只允许汉字、字母、数字、小数点和百分号，数字必须来自事实层。
 - `generate_ics1811_sheet` 齐了才成功，不需要确认；最终填写值仍由 Workers 重新生成。
-- `finishAgentTurn` 删掉「提升 X%」这类预估，超长回复在句末截断。问句不删，追问由模型在回复里自己问。
+- `finishAgentTurn` 删掉「提升 X%」这类预估，超长回复在句末截断。问句不删，追问由模型在回复里自己问。提到底层模型、厂商或框架名字的句子整句删掉，删的是自我介绍时补一句小福的身份（`reply-stream.ts`，流式预览同样生效）。
 
 改工具要同时改三处：`tools.ts`（`AGENT_TOOL_NAMES`、`runAgentTool`）、`agent/run-turn.ts`（zod 入参和 `tool(...)` 注册）、`prompt.ts`（系统提示词里的工具说明）。
 
@@ -127,6 +127,7 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 
 ## 必须守住的约束
 
+- **对外人设固定**：Agent 叫小福，身份是「周大福专属智能营销助手Agent」（`app/lib/agent/persona.ts`，写进用户提示词的「当前业务」；系统提示词保持通用）。回复和报错都不能出现底层模型、厂商、框架或 SDK 的名字——SDK 会往系统提示词前加自己的身份句，模型也知道自己是谁，所以靠 `reply-stream.ts` 和 `agent/http-handler.ts` 的清洗兜底，不能只靠提示词。
 - **人定字段不能默认**：日期、门店、优惠、货类、让扣点回款率、提成口径、结算说明函、标语只来自用户说过的话、面板修改，或用户点头同意的 Agent 提议（`proposals.ts`）。缺项只来自 `questions.ts` 的目录，模型不能加项；优惠方式和力度、标语原文、法务确认不能提议。缺项没齐或有阻断时不生成填写值。
 - **数值只认原话**：quote 不在用户这一轮的话里就丢弃。不要为了让模型更顺而放宽 `facts.ts` / `phrases.ts` 的守卫；新说法在 `phrases.ts` 补换算并加用例。「不知道」不等于「没有」，让扣点不能因此填 0。
 - **代码表只在 `codebook.ts` 编造**，并标明来源；标语只能是用户给的、法务确认过的原文，模型不写。

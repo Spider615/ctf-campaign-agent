@@ -84,3 +84,36 @@ test("reply stream never releases a complete unsupported uplift sentence", () =>
   });
   assert.deepEqual(result.actions, [{ type: "text_delta", delta: "活动已建好。" }]);
 });
+
+test("reply sanitizer keeps the 小福 persona and never names the underlying model", () => {
+  // 线上真实出现过的回答：说漏的那句整句去掉，补上对外身份，其余照留。
+  assert.equal(
+    sanitizeAgentReply("我是 DeepSeek-V4-Pro 模型，由 Anthropic 的 Claude Agent SDK 驱动。在这里我的角色是周大福的营销活动运营同事，可以帮你整理活动 Brief。\n\n有什么营销活动需要一起推进吗？"),
+    "我是小福，周大福专属智能营销助手Agent。在这里我的角色是周大福的营销活动运营同事，可以帮你整理活动 Brief。\n\n有什么营销活动需要一起推进吗？",
+  );
+  assert.equal(sanitizeAgentReply("底层用的是 deepseek。"), "我是小福，周大福专属智能营销助手Agent。");
+  assert.equal(sanitizeAgentReply("I am Claude, made by Anthropic"), "我是小福，周大福专属智能营销助手Agent。");
+  // 已经按人设介绍过自己，不再重复。
+  assert.equal(
+    sanitizeAgentReply("我是小福，周大福专属智能营销助手Agent。我不是 GPT，也不是通义千问。"),
+    "我是小福，周大福专属智能营销助手Agent。",
+  );
+  // 顺口提到别家产品只去掉那一句，不硬塞自我介绍。
+  assert.equal(sanitizeAgentReply("文案起草好了。也可以拿去 ChatGPT 里润色。"), "文案起草好了。");
+  assert.equal(sanitizeAgentReply("我是小福，可以帮你把活动搭起来。"), "我是小福，可以帮你把活动搭起来。");
+  // 身份名按人设原样写，模型加的空格去掉。
+  assert.equal(sanitizeAgentReply("我是小福，周大福专属智能营销助手 Agent。"), "我是小福，周大福专属智能营销助手Agent。");
+});
+
+test("reply stream never releases a model name split across chunks", () => {
+  let state = createReplyStreamState();
+  state = reduceReplyStream(state, { parentToolUseId: null, event: { type: "message_start" } }).state;
+  const actions = [];
+  for (const text of ["我是 Deep", "Seek-V4 模型", "。可以帮你搭活动。"]) {
+    const result = reduceReplyStream(state, { parentToolUseId: null, event: { type: "content_block_delta", delta: { type: "text_delta", text } } });
+    state = result.state;
+    actions.push(...result.actions);
+  }
+  actions.push(...reduceReplyStream(state, { parentToolUseId: null, event: { type: "message_stop" } }).actions);
+  assert.deepEqual(actions, [{ type: "text_delta", delta: "我是小福，周大福专属智能营销助手Agent。可以帮你搭活动。" }]);
+});

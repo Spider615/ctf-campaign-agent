@@ -178,3 +178,29 @@ test("HTTP handler preserves validation, success and upstream failures and remov
   assert.equal(listenerCounts.length, 9);
   assert.ok(listenerCounts.every((counts) => counts.every((count) => count === 0)));
 });
+
+test("HTTP handler keeps underlying framework names out of client-facing errors", { timeout: 5000 }, async (t) => {
+  const { createAgentHttpHandler } = await import("../agent/http-handler.ts");
+  const errors: unknown[][] = [];
+  const handler = createAgentHttpHandler({
+    runAgentTurn: async () => { throw new Error("Claude Code process exited with code 1"); },
+    token: "", model: "test", logger: { log() {}, error: (...args) => errors.push(args) },
+  });
+  const server = createServer((request, response) => void handler(request, response));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const post = (path: string) => fetch(`http://127.0.0.1:${address.port}${path}`, { method: "POST", body: JSON.stringify(body) });
+
+  const json = await post("/turn");
+  assert.equal(json.status, 502);
+  assert.deepEqual(await json.json(), { error: "Agent 执行出错" });
+  const events = (await (await post("/turn/stream")).text()).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(events.at(-1).type, "error");
+  assert.equal(events.at(-1).error, "Agent 执行出错");
+  // 原文只进服务日志，排查时还看得到。
+  assert.equal(errors.length, 2);
+  assert.ok(errors.every((args) => String(args[0]).includes("Claude Code process exited with code 1")));
+});

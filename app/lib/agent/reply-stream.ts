@@ -1,6 +1,39 @@
+import { AGENT_IDENTITY, AGENT_NAME } from "./persona.ts";
+
 // Agent 对外回复的唯一清洗入口。流式预览和最终落库共用它，避免先展示、后删除。
 const UPLIFT_CLAIM = /[^。！？\n]*(提升|增长|增加)[^。，,]{0,6}\d+(?:\.\d+)?\s*%[^。！？\n]*[。！？]?/g;
 const MAX_REPLY = 800;
+
+// 底层模型、厂商和框架的名字一律不对外说。整句去掉而不是换词，换词会拼出「我是小福模型，由小福驱动」这种话。
+const UNDERLYING_MODEL = /deepseek|深度求索|claude|anthropic|openai|chatgpt|gpt|gemini|llama|qwen|通义千问|文心一言|agent\s*sdk/i;
+// 去掉的句子是在介绍自己时补一句对外身份，否则「你是什么模型」只剩答非所问。
+const SELF_REFERENCE = /我|本助手|底层|驱动|基于|模型/;
+const SELF_INTRO = `我是${AGENT_NAME}，${AGENT_IDENTITY}。`;
+// 模型爱在中英文之间加空格（「助手 Agent」），身份名按人设原样写。
+const LOOSE_IDENTITY = new RegExp(AGENT_IDENTITY.split("").join("\\s*"), "g");
+
+export function mentionsUnderlyingModel(text: string): boolean {
+  return UNDERLYING_MODEL.test(text);
+}
+
+function withoutUnderlyingModel(text: string): string {
+  if (!UNDERLYING_MODEL.test(text)) return text;
+  let introducedItself = false;
+  const lines: string[] = [];
+  for (const line of text.split("\n")) {
+    const sentences = line.match(/[^。！？!?；;]+[。！？!?；;]?/g) ?? [line];
+    const kept = sentences.filter((sentence) => {
+      if (!UNDERLYING_MODEL.test(sentence)) return true;
+      if (SELF_REFERENCE.test(sentence)) introducedItself = true;
+      return false;
+    });
+    if (kept.length === sentences.length) lines.push(line);
+    else if (kept.length) lines.push(kept.join("").trimStart());
+  }
+  const body = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!body) return SELF_INTRO;
+  return introducedItself && !body.includes(AGENT_NAME) && !body.includes(AGENT_IDENTITY) ? SELF_INTRO + body : body;
+}
 
 function trimReply(text: string): string {
   const kept: string[] = [];
@@ -25,7 +58,7 @@ function trimReply(text: string): string {
 }
 
 export function sanitizeAgentReply(reply: string | null): string {
-  return trimReply((reply ?? "").replace(UPLIFT_CLAIM, "").trim());
+  return trimReply(withoutUnderlyingModel((reply ?? "").replace(UPLIFT_CLAIM, "").trim()).replace(LOOSE_IDENTITY, AGENT_IDENTITY));
 }
 
 export type ReplyStreamAction =

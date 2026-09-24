@@ -911,6 +911,9 @@ test("system prompt is a generic marketing-agent contract and the user prompt ca
   assert.match(system, /业务工具完成前[^\n]*不要输出面向用户的铺垫/);
   assert.match(system, /只问[^\n]*工具返回的缺项/);
   assert.match(system, /简洁[^\n]*自然[^\n]*中文/);
+  // 名字和身份跟着业务走（写在用户提示词里），系统提示词只定「以它为准、不说底层模型」这条规矩。
+  assert.match(system, /名字和对外身份以本轮「当前业务」给出的为准/);
+  assert.match(system, /是什么模型[^\n]*身份名称原样说[^\n]*不提及、不猜测、不确认任何底层模型、厂商、框架或 SDK/);
   assert.doesNotMatch(system, /周大福|ICS-1811|extract_campaign_facts|ask_campaign_questions|Q1|FactKey|计折上折|结算说明函|浮动折扣/);
 
   const proposal = (checkProposal(draft, "Q5a", { none: true }) as { ok: true; proposal: Proposal }).proposal;
@@ -920,6 +923,7 @@ test("system prompt is a generic marketing-agent contract and the user prompt ca
   };
   const prompt = buildAgentUserPrompt(request);
   assert.match(prompt, /当前客户：周大福/);
+  assert.match(prompt, /你的名字：小福；对外身份：周大福专属智能营销助手Agent/);
   assert.match(prompt, /目标页面：ICS-1811/);
   assert.match(prompt, /extract_campaign_facts/);
   assert.match(prompt, /analyze_campaign_state/);

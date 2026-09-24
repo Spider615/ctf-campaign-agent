@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { isAgentRequest } from "../app/lib/agent/protocol.ts";
+import { mentionsUnderlyingModel } from "../app/lib/agent/reply-stream.ts";
 import { encodeAgentStreamEvent, type AgentStreamEvent } from "../app/lib/agent/stream.ts";
 import { isTurnCancelled, TurnCancelledError } from "../app/lib/cancellation.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
@@ -28,6 +29,11 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     chunks.push(chunk as Buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+// 报错原文会显示在对话里。SDK 进程出错时带着底层框架的名字（如 Claude Code），对外换成通用说法，原文只进日志。
+function publicError(message: string): string {
+  return mentionsUnderlyingModel(message) ? "Agent 执行出错" : message;
 }
 
 export function createAgentHttpHandler({ runAgentTurn, token, model, logger = console }: AgentHttpOptions) {
@@ -100,7 +106,7 @@ export function createAgentHttpHandler({ runAgentTurn, token, model, logger = co
               offsetMs: Math.max(0, event.startedAt - started),
               durationMs: event.durationMs ?? 0,
             })));
-          if (writeEvent({ type: "error", error: message, timing })) response.end();
+          if (writeEvent({ type: "error", error: publicError(message), timing })) response.end();
         }
         return;
       }
@@ -113,7 +119,7 @@ export function createAgentHttpHandler({ runAgentTurn, token, model, logger = co
         if (requestController.signal.aborted || isTurnCancelled(error)) return;
         const message = error instanceof Error && error.message ? error.message : "Agent 执行失败";
         logger.error(`[agent] ${body.trigger.kind} 失败（${Date.now() - started}ms）：${message}`);
-        send(response, 502, { error: message });
+        send(response, 502, { error: publicError(message) });
       }
     } finally {
       request.off("aborted", abortDisconnected);
