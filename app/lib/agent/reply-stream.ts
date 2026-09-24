@@ -1,4 +1,4 @@
-import { AGENT_IDENTITY, AGENT_NAME } from "./persona.ts";
+import { AGENT_IDENTITY, AGENT_IDENTITY_VARIANTS, AGENT_NAME } from "./persona.ts";
 
 // Agent 对外回复的唯一清洗入口。流式预览和最终落库共用它，避免先展示、后删除。
 const UPLIFT_CLAIM = /[^。！？\n]*(提升|增长|增加)[^。，,]{0,6}\d+(?:\.\d+)?\s*%[^。！？\n]*[。！？]?/g;
@@ -9,8 +9,6 @@ const UNDERLYING_MODEL = /deepseek|深度求索|claude|anthropic|openai|chatgpt|
 // 去掉的句子是在介绍自己时补一句对外身份，否则「你是什么模型」只剩答非所问。
 const SELF_REFERENCE = /我|本助手|底层|驱动|基于|模型/;
 const SELF_INTRO = `我是${AGENT_NAME}，${AGENT_IDENTITY}。`;
-// 模型爱在中英文之间加空格（「助手 Agent」），身份名按人设原样写。
-const LOOSE_IDENTITY = new RegExp(AGENT_IDENTITY.split("").join("\\s*"), "g");
 
 export function mentionsUnderlyingModel(text: string): boolean {
   return UNDERLYING_MODEL.test(text);
@@ -58,7 +56,8 @@ function trimReply(text: string): string {
 }
 
 export function sanitizeAgentReply(reply: string | null): string {
-  return trimReply(withoutUnderlyingModel((reply ?? "").replace(UPLIFT_CLAIM, "").trim()).replace(LOOSE_IDENTITY, AGENT_IDENTITY));
+  const text = (reply ?? "").replace(UPLIFT_CLAIM, "").replace(AGENT_IDENTITY_VARIANTS, AGENT_IDENTITY).trim();
+  return trimReply(withoutUnderlyingModel(text));
 }
 
 export type ReplyStreamAction =

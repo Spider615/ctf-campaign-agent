@@ -101,8 +101,10 @@ test("reply sanitizer keeps the 小福 persona and never names the underlying mo
   // 顺口提到别家产品只去掉那一句，不硬塞自我介绍。
   assert.equal(sanitizeAgentReply("文案起草好了。也可以拿去 ChatGPT 里润色。"), "文案起草好了。");
   assert.equal(sanitizeAgentReply("我是小福，可以帮你把活动搭起来。"), "我是小福，可以帮你把活动搭起来。");
-  // 身份名按人设原样写，模型加的空格去掉。
+  // 身份名按人设原样写：线上真实出现过加「的」加空格，也有漏掉 Agent 的。
   assert.equal(sanitizeAgentReply("我是小福，周大福专属智能营销助手 Agent。"), "我是小福，周大福专属智能营销助手Agent。");
+  assert.equal(sanitizeAgentReply("我是小福，周大福的专属智能营销助手 Agent。"), "我是小福，周大福专属智能营销助手Agent。");
+  assert.equal(sanitizeAgentReply("我是小福，周大福的专属智能营销助手，负责整理 Brief。"), "我是小福，周大福专属智能营销助手Agent，负责整理 Brief。");
 });
 
 test("reply stream never releases a model name split across chunks", () => {
