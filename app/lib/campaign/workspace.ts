@@ -2,6 +2,7 @@
 // 这些状态每轮从事实和 1811 确定性领域函数重算，不作为新的业务事实保存。
 
 import { createEmptyCampaignBrief } from "./brief.ts";
+import { isAnalyticsIntent } from "../analytics/intent.ts";
 import type {
   CampaignBriefItem,
   CampaignBriefKey,
@@ -37,6 +38,7 @@ const BRIEF_KEYS = Object.keys(BRIEF_LABEL) as CampaignBriefKey[];
 const REQUIRED_BRIEF_KEYS: readonly CampaignBriefKey[] = ["objective", "audience", "theme", "channels"];
 
 function hasTransactionSignal(text: string): boolean {
+  if (isAnalyticsIntent(text)) return false;
   if (TRANSACTION_PATTERN.test(text)) return true;
   const detected = detectPattern(text);
   return detected !== null && detected.unsupportedType !== "积分加倍";
@@ -86,6 +88,9 @@ export function routeCampaign(draft: CampaignDraft): CampaignRouting {
   const request = draft.requestText;
   const quotes = briefQuotes(draft);
   const combined = [request, quotes, draft.ics1811?.facts.offer?.quote ?? ""].filter(Boolean).join("。 ");
+  if (!draft.ics1811 && isAnalyticsIntent(combined)) {
+    return { tracks: [], status: "needs_confirmation", basis: ["这是经营数据分析问题，请在营销分析工作台选择数据集并进行复盘"] };
+  }
   const tracks: CampaignTrackKind[] = [];
   const basis: string[] = [];
 

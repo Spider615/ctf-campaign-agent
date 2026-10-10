@@ -84,3 +84,22 @@ export const codeTable = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.fieldKey, table.value] })],
 );
+
+// 首期只保存有容量限制的导入快照，浏览器访问标识隔离经营数据。
+export const analyticsDatasets = sqliteTable("analytics_dataset", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  version: text("version").notNull(),
+  summaryJson: text("summary_json").notNull(),
+  snapshotJson: text("snapshot_json").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_analytics_dataset_owner").on(table.ownerId, table.createdAt)]);
+
+export const analyticsReports = sqliteTable("analytics_report", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  datasetId: text("dataset_id").notNull().references(() => analyticsDatasets.id),
+  summaryJson: text("summary_json").notNull(),
+  reportJson: text("report_json").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("idx_analytics_report_owner").on(table.ownerId, table.createdAt)]);

@@ -4,6 +4,14 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## 项目
 
+2026-10-10 起增加营销分析 P0：`/analysis` 为历史经营数据复盘工作台，`/campaign/new` 保留活动执行。分析使用独立数据快照、报告和只读工具；不得把历史优惠或会员分组直接写成执行事实。实施依据为 `docs/superpowers/plans/2026-10-10-marketing-analysis-p0.md`。
+
+分析领域位于 `app/lib/analytics/`；D1 与访问隔离位于 `app/lib/server/analytics-*.ts`。所有分析 API 通过 `analyticsResponse` 使用浏览器访问标识，写入检查同源。金额按分计算，数据缺失不填零，原报告与数据版本保持不可变。明确标识的分析模拟快照不属于 ICS 内部代码表。
+
+分析 Agent 使用 `agent/analytics-run-turn.ts` 和 `agent/analytics-plugin/`，每回合先成功加载 `analytics:analysis-review`。它只读取本次已计算报告，返回合法洞察 ID 和已有维度；取消可打断挂起的 SDK next。执行继续使用原 ics1811 插件，不混用两个 Skill 门禁。
+
+部署须携带两个插件及 Skill。本地已有 D1 需应用 `drizzle/0001_foamy_shaman.sql`；保留旧数据，不重建或清空原数据库。
+
 这是周大福营销活动编排 Agent 的产品 demo。运营用对话提出活动想法，Agent 先形成 `campaign/v1` 活动 Brief，再根据事实动态选择品牌传播、成交优惠、会员触达、内容传播和门店准备等执行轨。ICS-1811 是成交优惠活动才会创建的可选叶子流程；一场 Campaign 当前只允许 0 或 1 张 1811 子单。
 
 Harness 负责读取 Skill、选择工具和组织对话；TypeScript 负责事实证据、动态路由、状态聚合、1811 字段换算、传播守卫、上线门禁和落库。系统不连接周大福生产 1811/1815/1816、OA、CRM、投放、库存或门店系统，代码表包含演示编造项。代码注释、界面文案和错误信息都用中文，新增内容保持一致。
@@ -66,7 +74,7 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 - **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。服务不存数据，只接收当前父文档与最近对话，返回本回合经工具修改的受控字段。
 - **协议**：`app/lib/agent/protocol.ts` 定义 `AgentRequest` / `AgentResult`，分别携带整体 `campaignStage` 和可空的 `ics1811Phase`。Workers 和 Agent 都不设置应用层墙钟总时限，取消从浏览器经 Workers 传递到 Agent SDK；`maxTurns = 12` 仍是逻辑循环上限。
 
-Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开放 `Skill`；活动读写由本地 MCP server 的 11 个确定性工具完成。`settingSources: []` 隔离个人和项目 Claude 配置，运行时只允许校验通过的 `ics1811` 本地插件 Skill。所有模型回合必须先加载 `campaign-orchestrator`；只有交易优惠或 1811 语境才叠加 `campaign-sop`，其他专项 Skill 按意图加载。
+执行 Agent 通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开放 `Skill`；活动读写由本地 MCP server 的 11 个确定性工具完成。`settingSources: []` 隔离个人和项目 Claude 配置，执行运行时只允许校验通过的 `ics1811` 插件 Skill。执行类模型回合必须先加载 `campaign-orchestrator`；交易优惠或 1811 语境叠加 `campaign-sop`，其他专项 Skill 按意图加载。
 
 浏览器对话使用 NDJSON 接收正文增量、Skill/工具事件和最终 Snapshot。轨迹只保存公开动作、执行方、状态、数量摘要与真实耗时，不保存隐藏思维、系统提示词、完整工具入参、密钥或内部堆栈。Workers 用本机单调时钟汇总编排器耗时，Agent 服务汇总模型等待与 Skill/工具耗时，不能跨机器直接相减墙钟。消息使用实际 `createdAt` 显示时间，正文保持可选择、可复制。
 

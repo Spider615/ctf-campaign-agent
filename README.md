@@ -1,4 +1,27 @@
-# 周大福营销活动编排 Agent Demo
+# 周大福营销分析与活动执行 Demo
+
+首页优先进入经营分析，`/analysis` 支持导入销售明细和可选活动规则，选择日期、比较期及分组范围，保存复盘报告、读取对应证据和导出明细。`/campaign/new` 继续提供原有活动创建；分析不自动写入 1811。
+
+## 营销分析 P0
+
+- 支持 CSV 和 JSON 对象数组，提供字段映射及模板；最多 2000 条明细，单文件最多 1 MiB，保存快照最多 1.5 MiB。
+- 必填为明细 ID、日期、门店、货类、净销售额和件数。日期使用 YYYY-MM-DD 或 YYYY/MM/DD；金额为明细合计 CNY 元，成本为明细净销售成本，退款和对应成本用负数。
+- 计算净销售额、净件数、可用毛利和比较期变化；检查区域、城市、门店、货类、商品、会员分组及交叉分组。缺少成本或会员标签时不补造指标。
+- 活动规则按编号附加，不用多条规则复制销售明细。缺少规则时可以看销售差异，无法解释具体机制和力度。
+- 每条洞察保留数据版本、范围、样本和对照，可读取原明细；筛选变化生成新报告，旧报告不被覆盖。
+- 虚构示例走相同导入与计算路径。用户上传模拟文件时也可勾选模拟标识；模拟报告不能证明客户效果。
+- 小福通过独立 analytics 插件读取已计算报告，选择已有洞察和可用维度；不能生成新的经营数字、预测或执行配置。AI 服务不可用时，计算结果和证据仍可使用。
+- 当前访问按浏览器 HttpOnly cookie 隔离；清除访问 cookie 后需重新导入。正式多人部署需接入企业身份和数据源权限。
+
+首期支持历史复盘与分组差异，最优优惠力度推荐、收益预测及生产系统操作需后续验证。尚未接入周大福真实经营数据。
+
+已有本地 D1 需在构建后应用新增迁移：
+
+```bash
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_foamy_shaman.sql
+```
+
+新数据库先按下方命令应用 0000，再执行 0001。容器入口会自动应用全部尚未执行的迁移。
 
 运营用自然语言提出活动想法，Agent 先把需求整理成 `campaign/v1` 活动 Brief，再根据事实动态选择品牌传播、成交优惠、会员触达、内容传播和门店准备等执行轨。ICS-1811 只是成交优惠活动才会创建的可选子流程；一场 Campaign 当前最多包含一张 1811 子单。
 
@@ -73,6 +96,8 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 ```text
 agent/plugin/.claude-plugin/plugin.json
 agent/plugin/skills/*/SKILL.md
+agent/analytics-plugin/.claude-plugin/plugin.json
+agent/analytics-plugin/skills/analysis-review/SKILL.md
 ```
 
 运行时不需要打包 `docs/` 或 `references/`。发布前可检查产物：

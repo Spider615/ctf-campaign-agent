@@ -9,6 +9,24 @@ import { applyFactWrites, createEmptyDraft } from "../app/lib/campaign/ics1811/f
 
 const T1 = EXAMPLES.find((example) => example.id === "T1")!;
 
+test("历史优惠比较和会员复盘不会创建执行轨或 1811", () => {
+  for (const text of ["请分析去年国庆黄金每克减40元和50元哪个更有效，先不要创建活动。", "复盘今年七夕活动，看看新老会员效果差异。", "不需要创建活动，只比较去年黄金每克减40元和50元的销售效果"] ) {
+    const draft = createCampaignDraft("analysis", text);
+    assert.equal(draft.ics1811, null);
+    assert.deepEqual(routeCampaign(draft).tracks, []);
+  }
+});
+
+test("当前活动创建包含后续复盘要求时仍保留优惠执行轨", () => {
+  for (const text of ["国庆做一场黄金每克减40元的活动，结束后复盘销售效果", "按这个方案创建活动，黄金每克减40元，后续分析效果"]) {
+    const draft = createCampaignDraft("execution", text);
+    assert.ok(draft.ics1811);
+    assert.ok(routeCampaign(draft).tracks.includes("transaction_offer"));
+  }
+  const past = createCampaignDraft("history", "比较去年做的一场黄金每克减40元的活动和今年的效果，先不要创建活动");
+  assert.equal(past.ics1811, null);
+});
+
 function readyIcs1811() {
   return applyFactWrites(createEmptyDraft("legacy-1811", T1.first), T1.firstWrites, {
     text: T1.first,

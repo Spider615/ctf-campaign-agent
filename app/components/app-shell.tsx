@@ -17,6 +17,8 @@ import { sessionStatusLabel } from "../lib/client/campaign-workspace";
 import type { SessionListItem } from "../lib/server/session-store";
 import { CAMPAIGN_TOOL_NAMES } from "../lib/tool-trace";
 import { registerCampaignTools } from "../lib/webmcp";
+import { ANALYTICS_CHANGED } from "../lib/client/analytics";
+import type { ReportSummary } from "../lib/server/analytics-store";
 
 function Brand() {
   return (
@@ -26,7 +28,7 @@ function Brand() {
       </span>
       <div>
         <p className="text-sm font-semibold tracking-wide text-[#17243a]">周大福</p>
-        <p className="text-[11px] text-[#7186a1]">营销活动 AI 工作台</p>
+        <p className="text-[11px] text-[#7186a1]">营销分析与活动执行</p>
       </div>
     </div>
   );
@@ -36,6 +38,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
+  const [reports, setReports] = useState<ReportSummary[]>([]);
   const [mobileNav, setMobileNav] = useState(false);
   const activeId = pathname.startsWith("/c/") ? decodeURIComponent(pathname.slice(3).split("/")[0]) : null;
   const locationRef = useRef({ activeId, router });
@@ -45,6 +48,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .then((response) => (response.ok ? (response.json() as Promise<{ sessions?: SessionListItem[] }>) : { sessions: [] }))
       .then((body) => setSessions(body.sessions ?? []))
       .catch(() => undefined);
+    void fetch("/api/analytics/reports")
+      .then((response) => response.ok ? response.json() as Promise<{ reports: ReportSummary[] }> : { reports: [] })
+      .then((body) => setReports(body.reports))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -53,7 +60,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     window.addEventListener(SESSIONS_CHANGED, refresh);
-    return () => window.removeEventListener(SESSIONS_CHANGED, refresh);
+    window.addEventListener(ANALYTICS_CHANGED, refresh);
+    return () => { window.removeEventListener(SESSIONS_CHANGED, refresh); window.removeEventListener(ANALYTICS_CHANGED, refresh); };
   }, [refresh]);
 
   useEffect(() => {
@@ -64,7 +72,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     startCampaign: async ({ mode, prompt }) => {
       const { router: navigate } = locationRef.current;
       if (mode === "blank" && !prompt) {
-        navigate.push("/");
+        navigate.push("/campaign/new");
         return "已打开新建活动页面。";
       }
       const snapshot = await createSessionRequest(mode === "example" ? { entryMode: "example" } : { entryMode: "new", text: prompt ?? "" });
@@ -148,16 +156,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="px-3 pt-4.5">
             <Link
-              href="/"
+              href="/analysis"
               onClick={close}
               className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#247cff] text-sm font-semibold text-white shadow-[0_10px_24px_rgba(36,124,255,0.24)] transition hover:-translate-y-0.5 hover:bg-[#176bea] hover:shadow-[0_14px_28px_rgba(36,124,255,0.28)]"
             >
               <Plus className="size-4" />
-              新建营销活动
+              营销分析
             </Link>
+            <Link href="/campaign/new" onClick={close} className="mt-2 flex min-h-11 items-center justify-center rounded-xl border border-border text-sm hover:bg-secondary">创建执行活动</Link>
           </div>
 
           <nav className="flex min-h-0 flex-1 flex-col px-3 pb-3" aria-label="主导航">
+            {reports.length ? <section className="pt-4"><p className="px-3 pb-2 text-[11px] font-semibold text-[#8aa0b9]">最近分析</p>{reports.slice(0, 5).map((report) => <Link key={report.id} href={`/analysis/${report.id}`} onClick={close} className={`mb-1 block rounded-xl px-3 py-2 text-sm ${pathname === `/analysis/${report.id}` ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-secondary"}`}><span className="line-clamp-1">{report.provenance === "sample" ? "[示例] " : ""}{report.datasetName}</span><span className="mt-1 block text-[11px]">{report.query.period.start} 至 {report.query.period.end}</span></Link>)}</section> : null}
             <p className="px-3 pb-2 pt-5 text-[11px] font-semibold tracking-[0.14em] text-[#8aa0b9]">最近活动</p>
             <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
               {sessions.length ? (
@@ -195,13 +205,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#20a674]/35 motion-reduce:animate-none" />
                 <span className="relative inline-flex size-2.5 rounded-full bg-[#20a674]" />
               </span>
-              AI Agent 已连接
+              业务计算与规则复核
             </div>
             <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-[#247cff]">
               <Sparkles className="size-3.5" />
-              {CAMPAIGN_TOOL_NAMES.length} 个业务工具 · 实时规则复核
+              {CAMPAIGN_TOOL_NAMES.length} 个活动执行工具
             </div>
-            <p className="mt-2 text-[11px] leading-5 text-[#6f85a0]">活动类型判断、Brief 整理、业务规则和产物生成都会留下可展开的执行记录。</p>
+            <p className="mt-2 text-[11px] leading-5 text-[#6f85a0]">经营分析保留数据版本与明细依据，活动执行保留规则校验与版本记录。</p>
           </div>
         </aside>
 

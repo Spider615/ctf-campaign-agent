@@ -6,16 +6,21 @@ import { advanceAgentStreamLifecycle, decodeAgentStreamLine, type AgentStreamLif
 import { isTurnCancelled, TurnCancelledError } from "../cancellation.ts";
 import type { AgentTraceEvent, ToolTraceTiming } from "../tool-trace.ts";
 import { createD1Store } from "./session-store.ts";
+import { ANALYTICS_TOOLS, validateExplanation } from "../analytics/explain.ts";
+import type { AnalyticsExplainRequest } from "../analytics/types.ts";
 import { TurnError, type AgentTransientEvent, type TurnDeps } from "./turns.ts";
 
 const DEFAULT_AGENT_URL = "http://127.0.0.1:8788";
+
+// 仍由这个模块维护唯一 Workers 环境入口，分析领域与存储不读取环境。
+export function analyticsDbBinding() { return getDbBinding(); }
 
 const agentHeaders = () => ({
   "content-type": "application/json",
   ...(env.AGENT_SERVICE_TOKEN ? { authorization: `Bearer ${env.AGENT_SERVICE_TOKEN}` } : {}),
 });
 
-async function agentFetch(url: string, request: AgentRequest, accept?: string, signal?: AbortSignal): Promise<Response> {
+async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest, accept?: string, signal?: AbortSignal): Promise<Response> {
   try {
     return await fetch(url, {
       method: "POST",
@@ -27,6 +32,16 @@ async function agentFetch(url: string, request: AgentRequest, accept?: string, s
     if (signal?.aborted || isTurnCancelled(error)) throw new TurnCancelledError();
     throw new Error("连不上 Agent 服务，请先运行 npm run dev:agent");
   }
+}
+
+export async function explainAnalytics(request: AnalyticsExplainRequest, signal?: AbortSignal) {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const response = await agentFetch(`${base}/analytics/explain`, request, undefined, signal);
+  if (!response.ok) throw await agentHttpError(response);
+  const body = await response.json() as { tools?: unknown };
+  const result = validateExplanation(request.report, body);
+  result.tools = Array.isArray(body.tools) ? body.tools.filter((t): t is string => typeof t === "string" && ANALYTICS_TOOLS.includes(t as typeof ANALYTICS_TOOLS[number])) : [];
+  return result;
 }
 
 async function agentHttpError(response: Response): Promise<Error> {

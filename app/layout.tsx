@@ -4,8 +4,8 @@ import { AppShell } from "./components/app-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "周大福营销活动 AI 工作台",
-  description: "从开放式对话整理营销活动 Brief、编排执行流程，并按需准备系统配置和对外传播内容",
+  title: "周大福营销决策工作台",
+  description: "基于经营数据复盘历史活动，查看分组差异和数据依据，并衔接活动执行、优惠配置和传播方案",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

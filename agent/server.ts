@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { createAgentHttpHandler } from "./http-handler.ts";
 import { createAgentRunner } from "./run-turn.ts";
+import { createAnalyticsRunner } from "./analytics-run-turn.ts";
 
 const envFile = fileURLToPath(new URL("../.dev.vars", import.meta.url));
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -30,7 +31,9 @@ const runAgentTurn = createAgentRunner({
   debug: DEBUG,
 });
 
-const server = createServer(createAgentHttpHandler({ runAgentTurn, token: TOKEN, model: MODEL }));
+const runAnalyticsTurn = createAnalyticsRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR,
+  pluginDir: fileURLToPath(new URL("./analytics-plugin/", import.meta.url)) });
+const server = createServer(createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, token: TOKEN, model: MODEL }));
 
 if (!API_KEY) {
   console.error("缺少 DEEPSEEK_API_KEY：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。");

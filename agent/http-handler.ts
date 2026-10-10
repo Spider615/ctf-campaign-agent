@@ -6,9 +6,12 @@ import { encodeAgentStreamEvent, type AgentStreamEvent } from "../app/lib/agent/
 import { isTurnCancelled, TurnCancelledError } from "../app/lib/cancellation.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
 import type { AgentTurnRunner } from "./run-turn.ts";
+import { isAnalyticsExplainRequest } from "../app/lib/analytics/explain.ts";
+import type { AnalyticsRunner } from "./analytics-run-turn.ts";
 
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
+  runAnalyticsTurn?: AnalyticsRunner;
   token: string;
   model: string;
   logger?: Pick<Console, "log" | "error">;
@@ -36,12 +39,13 @@ function publicError(message: string): string {
   return mentionsUnderlyingModel(message) ? "Agent 执行出错" : message;
 }
 
-export function createAgentHttpHandler({ runAgentTurn, token, model, logger = console }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, token, model, logger = console }: AgentHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
     const isTurn = request.method === "POST" && request.url === "/turn";
     const isStream = request.method === "POST" && request.url === "/turn/stream";
-    if (!isTurn && !isStream) return send(response, 404, { error: "没有这个接口" });
+    const isAnalytics = request.method === "POST" && request.url === "/analytics/explain";
+    if (!isTurn && !isStream && !isAnalytics) return send(response, 404, { error: "没有这个接口" });
     if (token && request.headers.authorization !== `Bearer ${token}`) return send(response, 401, { error: "Agent 服务鉴权失败" });
 
     // 读请求体之前接上取消链路，同时覆盖绑定监听前已经断开的连接。
@@ -63,6 +67,17 @@ export function createAgentHttpHandler({ runAgentTurn, token, model, logger = co
         return send(response, 400, { error: "请求不是有效的 JSON" });
       }
       if (requestController.signal.aborted) return;
+      if (isAnalytics) {
+        if (!isAnalyticsExplainRequest(body)) return send(response, 400, { error: "分析请求内容不完整" });
+        if (!runAnalyticsTurn) return send(response, 503, { error: "营销分析解读服务尚未启动" });
+        try {
+          const result = await runAnalyticsTurn(body, requestController.signal);
+          if (!requestController.signal.aborted) send(response, 200, result);
+        } catch (error) {
+          if (!requestController.signal.aborted && !isTurnCancelled(error)) send(response, 502, { error: publicError(error instanceof Error ? error.message : "AI 解读失败") });
+        }
+        return;
+      }
       if (!isAgentRequest(body)) return send(response, 400, { error: "请求内容不完整" });
 
       const started = Date.now();
