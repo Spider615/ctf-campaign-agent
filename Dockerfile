@@ -5,6 +5,32 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
+# 文档转换与中文识别随镜像交付；解析进程使用内核文件隔离和禁网规则。
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates \
+    && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+    python3 python3-venv libarchive13 libreoffice-writer libreoffice-calc libreoffice-impress \
+    poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+COPY agent/attachments/requirements.txt /tmp/attachment-requirements.txt
+RUN python3 -m venv /opt/attachment-python \
+    && /opt/attachment-python/bin/pip install --no-cache-dir -r /tmp/attachment-requirements.txt \
+    && rm /tmp/attachment-requirements.txt
+COPY agent/attachments/office-socket.c /tmp/attachment-office-socket.c
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get -o Acquire::Retries=3 update \
+    && apt-get -o Acquire::Retries=3 install -y --no-install-recommends gcc libc6-dev \
+    && cc -shared -fPIC -O2 /tmp/attachment-office-socket.c \
+       -o /opt/attachment-python/lib/python3.11/site-packages/attachment_office_socket.so -ldl \
+    && apt-get purge -y --auto-remove gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/* /tmp/attachment-office-socket.c
+ENV ATTACHMENTS_PYTHON=/opt/attachment-python/bin/python3
+ENV ATTACHMENTS_DIR=/data/attachments
+
 # 先装依赖再拷源码，只改代码时不用重装。根目录和 agent/ 是两套独立依赖；
 # wrangler 在 devDependencies 里，但运行时要用，所以不裁剪开发依赖。
 COPY package.json package-lock.json .npmrc ./

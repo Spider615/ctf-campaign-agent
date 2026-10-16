@@ -6,6 +6,10 @@ export async function analyticsResponse(request: Request, action: (owner: string
   try {
     const { owner, cookie } = analyticsAccess(request, options.bootstrap);
     const result = await action(owner, createAnalyticsStore(analyticsDbBinding()));
+    if (result instanceof Response) {
+      const headers = new Headers(result.headers); headers.set("cache-control", "no-store"); if (cookie) headers.set("set-cookie", cookie);
+      return new Response(result.body, { status: result.status, headers });
+    }
     return Response.json(result, { status: options.status ?? 200, headers: { "cache-control": "no-store", ...(cookie ? { "set-cookie": cookie } : {}) } });
   } catch (error) {
     const databaseError = error instanceof Error && /D1|SQLITE|no such table|constraint failed/i.test(error.message);

@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { visualizationCapability } from "../analytics/visualization.ts";
 
 import { getDbBinding } from "../../../db/index.ts";
 import { parseAgentResult, type AgentRequest, type AgentResult } from "../agent/protocol.ts";
@@ -6,9 +7,11 @@ import { advanceAgentStreamLifecycle, decodeAgentStreamLine, type AgentStreamLif
 import { isTurnCancelled, TurnCancelledError } from "../cancellation.ts";
 import type { AgentTraceEvent, ToolTraceTiming } from "../tool-trace.ts";
 import { createD1Store } from "./session-store.ts";
-import { ANALYTICS_TOOLS, validateExplanation } from "../analytics/explain.ts";
 import type { AnalyticsExplainRequest } from "../analytics/types.ts";
+import type { DatabaseExplainRequest, DatabaseSummary } from "../analytics/database.ts";
+import { consumeAnalyticsStream, normalizeAnalyticsAnswerSchema, validateAnalyticsAnswerResult, type AnalyticsProgressEvent } from "../analytics/stream.ts";
 import { TurnError, type AgentTransientEvent, type TurnDeps } from "./turns.ts";
+import type { ConversationRequest } from "../attachments/types.ts";
 
 const DEFAULT_AGENT_URL = "http://127.0.0.1:8788";
 
@@ -20,11 +23,26 @@ const agentHeaders = () => ({
   ...(env.AGENT_SERVICE_TOKEN ? { authorization: `Bearer ${env.AGENT_SERVICE_TOKEN}` } : {}),
 });
 
-async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest, accept?: string, signal?: AbortSignal): Promise<Response> {
+// 文件字节单独流式转发，身份只来自已验证的浏览器 cookie。
+export async function forwardAttachmentRequest(request: Request, owner: string, body?: ConversationRequest) {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const url = new URL(request.url); const suffix = body ? "/answer/stream" : url.pathname.slice("/api/analytics/attachments".length);
+  if (!body && !/^\/(?:[0-9a-f-]{36}(?:\/(?:content|preview|retry|image\/i\d+))?)?$/.test(suffix || "/")) throw new Error("附件接口路径无效");
+  const headers = new Headers(agentHeaders()); headers.set("x-attachments-owner", owner);
+  headers.set("content-type", body ? "application/json" : request.headers.get("content-type") ?? "application/octet-stream");
+  if (body) headers.set("X-Conversation-Answer-Schema", "conversation-answer/v1");
+  const visuals = visualizationCapability(request.headers.get("X-Analytics-Visuals")); if (body && visuals) headers.set("X-Analytics-Visuals", visuals);
+  const query = body ? `?conversationId=${encodeURIComponent(body.conversationId)}` : url.search;
+  const response = await fetch(`${base}/attachments${suffix}${query}`, { method: body ? "POST" : request.method, headers, body: body ? JSON.stringify(body) : ["GET", "HEAD"].includes(request.method) ? undefined : request.body, signal: request.signal });
+  const outgoing = new Headers(response.headers); outgoing.set("cache-control", "no-store"); outgoing.set("x-content-type-options", "nosniff");
+  return new Response(response.body, { status: response.status, headers: outgoing });
+}
+
+async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest | DatabaseExplainRequest, accept?: string, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string): Promise<Response> {
   try {
     return await fetch(url, {
       method: "POST",
-      headers: { ...agentHeaders(), ...(accept ? { accept } : {}) },
+      headers: { ...agentHeaders(), ...(accept ? { accept } : {}), ...(normalizeAnalyticsAnswerSchema(answerSchema) ? { "X-Analytics-Answer-Schema": normalizeAnalyticsAnswerSchema(answerSchema)! } : {}), ...(visualizationCapability(visualizationSchema) ? { "X-Analytics-Visuals": visualizationCapability(visualizationSchema)! } : {}) },
       body: JSON.stringify(request),
       signal,
     });
@@ -34,14 +52,31 @@ async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainR
   }
 }
 
-export async function explainAnalytics(request: AnalyticsExplainRequest, signal?: AbortSignal) {
+export async function explainAnalytics(request: AnalyticsExplainRequest, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string) {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await agentFetch(`${base}/analytics/explain`, request, undefined, signal);
+  const response = await agentFetch(`${base}/analytics/explain`, request, undefined, signal, answerSchema, visualizationSchema);
   if (!response.ok) throw await agentHttpError(response);
-  const body = await response.json() as { tools?: unknown };
-  const result = validateExplanation(request.report, body);
-  result.tools = Array.isArray(body.tools) ? body.tools.filter((t): t is string => typeof t === "string" && ANALYTICS_TOOLS.includes(t as typeof ANALYTICS_TOOLS[number])) : [];
-  return result;
+  return validateAnalyticsAnswerResult(await response.json(), request.report);
+}
+
+export async function inspectHistoryDatabase(signal?: AbortSignal): Promise<DatabaseSummary> {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const response = await fetch(`${base}/analytics/database`, { headers: agentHeaders(), signal });
+  if (!response.ok) throw await agentHttpError(response);
+  return await response.json() as DatabaseSummary;
+}
+export async function explainHistoryDatabase(request: DatabaseExplainRequest, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string) {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const response = await agentFetch(`${base}/analytics/database/explain`, request, undefined, signal, answerSchema, visualizationSchema);
+  if (!response.ok) throw await agentHttpError(response);
+  return validateAnalyticsAnswerResult(await response.json());
+}
+
+export async function explainHistoryDatabaseStream(request: DatabaseExplainRequest, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string) {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const response = await agentFetch(`${base}/analytics/database/explain/stream`, request, "application/x-ndjson", signal, answerSchema, visualizationSchema);
+  if (!response.ok) throw await agentHttpError(response);
+  return consumeAnalyticsStream(response, onProgress, signal);
 }
 
 async function agentHttpError(response: Response): Promise<Error> {

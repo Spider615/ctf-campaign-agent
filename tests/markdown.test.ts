@@ -63,3 +63,19 @@ test("plain text without markers is a single paragraph", () => {
   assert.equal(blocks.length, 1);
   assert.equal(blocks[0].kind, "para");
 });
+
+test("回答中的 Markdown 标题保留层次，复制时不带标题标记", () => {
+  const blocks = parseChatMarkdown("## 先看结论\n\n当前差异需要继续核对。\n\n### **下一步**\n- 比较可比门店");
+  assert.equal(blocks[0].kind, "heading");
+  assert.equal(blocks[0].kind === "heading" && blocks[0].level, 2);
+  assert.equal(blocks[2].kind, "heading");
+  assert.deepEqual(blocks[2].kind === "heading" ? blocks[2].inline : null, [{ kind: "bold", text: "下一步" }]);
+  assert.equal(plainText("## 先看结论\n\n### **下一步**\n- 比较可比门店"), "先看结论\n下一步\n· 比较可比门店");
+});
+
+test("不完整标题和普通句中的井号保持原文", () => {
+  for (const text of ["#", "##下一步", "话题 #新品", "####### 过深标题"]) {
+    const blocks = parseChatMarkdown(text);
+    assert.deepEqual(blocks, [{ kind: "para", inline: [{ kind: "text", text }] }]);
+  }
+});

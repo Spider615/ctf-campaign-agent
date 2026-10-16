@@ -8,7 +8,21 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 分析领域位于 `app/lib/analytics/`；D1 与访问隔离位于 `app/lib/server/analytics-*.ts`。所有分析 API 通过 `analyticsResponse` 使用浏览器访问标识，写入检查同源。金额按分计算，数据缺失不填零，原报告与数据版本保持不可变。明确标识的分析模拟快照不属于 ICS 内部代码表。
 
-分析 Agent 使用 `agent/analytics-run-turn.ts` 和 `agent/analytics-plugin/`，每回合先成功加载 `analytics:analysis-review`。它只读取本次已计算报告，返回合法洞察 ID 和已有维度；取消可打断挂起的 SDK next。执行继续使用原 ics1811 插件，不混用两个 Skill 门禁。
+启用私有 `CTF_MYSQL_*` 配置后，首页和 `/analysis` 默认进入连续营销对话。客户重点是历史数据支持的建议、洞察和创新角度，不要求填写分析或活动表单。`agent/analytics-database.ts` 负责固定参数化只读查询与私有证据记录；模型不接收SQL、连接凭据或任意表名。销售、净销售、回收候选及订单成交部分分布口径明确区分，核对币种后聚合。对话保留用户持续要求与来源范围，记录只在当前浏览器会话恢复；明确要求执行时才衔接原活动入口。
+
+客户首页不展示连接状态、明细条数、日期覆盖、数据导入或旧活动工作台。资料准备在后台完成，首页直接可提问；访问标识仅在提交时初始化，数据口径与限制通过回答角标查看。内部导入维护位于 `/internal/analysis`，不从客户首页提供链接。
+
+分析 Agent 使用 `agent/analytics-run-turn.ts` 和 `agent/analytics-plugin/`。寒暄、致谢、能力介绍与无业务筛选上下文的明确月份总额由代码直接处理，不加载 Skill。需要 Agent 解读条件的查数直接使用受控工具，不要求加载 Skill；复盘、原因分析和营销建议只加载 `analytics:ctf-marketing-advisor`，无需先加载 `analytics:analysis-review`。数据授权、只读权限、范围、口径和数字引用由代码校验。它可在同版本授权快照内受控重算，按需读取 `ANALYTICS_HISTORY_DIR` 的历史案例或参数化只读数据库；数字由代码按已读取证据生成。页面角标展开来源的周期、口径、版本及结果。原报告不变，取消可打断挂起的 SDK next。营销对话复用原布局、消息、输入框与过程卡片，NDJSON只传真实公开过程和核验后的最终答案。执行继续使用原 ics1811 插件，不混用两个 Skill 门禁。具体合同见 `docs/superpowers/specs/2026-10-13-marketing-advisor-integration-design.md`。
+
+新客户端以 `X-Analytics-Answer-Schema: analysis-answer/v2` 启用 `agent/general-analytics-run-turn.ts`，缺少该头仍兼容原合同。通用任务按原问题语义区分查数与分析，五种确定性方法在同一只读快照内执行。数据版本授权不可扩大；报告筛选属于业务范围，修正日期继承旧筛选，解除须明确原话。每条结论、正文和数字引用接受硬核验，再由独立上下文按实际天数、控制层、完整贡献和能力边界复核。主分析和复核均可按真实进展续接逻辑窗口，重复查询、读取和改模式不算进展。原始数字、全量证据及业务复核记录存仓库外，不保存隐藏思维。合同及业务验收见 `docs/superpowers/specs/2026-10-13-general-analytics-agent-design.md`。
+
+分析回答开头直接给出判断、建议及成立条件；历史范围不能写成今年现状。`calculate_analysis` 只对已读、同范围同对象的真实依据和显式假设做受控四则运算，不查库；情景参数及派生结果保留假设身份，不能标为历史观察。可计算的保本条件、成本或风险先算，再提出与真实对象及验收条件相连的建议，不套用固定试点天数。分析复核必须提交 `decisionQuality` 的直接回答、证据适用性与行动价值检查；工具注册和 SDK 授权共用同一来源，图表与计算不能只注册未授权。
+
+`simulate_analysis` 以已读、未分组的 sales 总体 amount 事实绑定当前快照及范围；按能力声明执行按克、按件、按单、实收比例或订单成交部分门槛的完整额外让利，逐计算单位到分并以原实收封顶。人民币情景使用 BigInt 十进制，缺失或非正单位不发布部分收入；订单门槛不是完整订单资格。规则、净增、固定结构及排除成交挪动保留假设身份，计算基线重核一致。`scenario` 图表来源使用代码核验的情景父链与数值横轴，展示持平参照，不能冒充日期趋势。Skill 方法并入现有五章，不开放 Python、SQL 或任意文件读取；模型按判断读取全量计算的分页证据。
+
+对话附件通过 `/api/analytics/attachments` 和 `/api/analytics/conversation` 转交 Node 的 `agent/attachments/`。`conversation-answer/v1` 按实际读取的位置引用文件；每段数字经过来源核验及独立语义复核。表格计算由全量结构化数据执行，不从预览心算；缺失不补零，歧义数字、表头和数值合并单元格不擅自汇总。Word 修订按最终稿保留插入、排除删除。压缩包失败成员必须进入部分覆盖提示和可展开清单。文件内容不能反写 Campaign 事实；混合经营分析须保留用户持续原话与既有数据授权合同。
+
+附件按浏览器身份与对话双重隔离，原件及解析产物存放于仓库外 `ATTACHMENTS_DIR`；本地默认用户应用数据目录，容器为 `/data/attachments`。默认每文件 25 MiB、每次 10 个且共 100 MiB、每会话 500 MiB，闲置 30 天失效。失效引用恢复时重验，删除接口幂等。解析进程不接收业务凭据、不得联网或读取其他用户文件：macOS 使用 Seatbelt，Linux 使用 Landlock ABI 6 与 seccomp；隔离器不可用就明确失败。Office 本地管道仅在独立任务临时目录创建；Linux 的 `office-socket.c` 探测适配组件须随解析依赖构建。
 
 部署须携带两个插件及 Skill。本地已有 D1 需应用 `drizzle/0001_foamy_shaman.sql`；保留旧数据，不重建或清空原数据库。
 
@@ -25,6 +39,8 @@ Harness 负责读取 Skill、选择工具和组织对话；TypeScript 负责事�
 ```bash
 npm run install:ci               # 根目录依赖
 npm run install:agent            # agent/ 的独立依赖（Claude Agent SDK、zod v4）
+npm run install:attachments      # 私有 Python 解析环境；Linux 另需 cc 构建 Office 管道适配组件
+npm run check:attachments        # 检查解析依赖、转换器与真实受限 CSV，不调用模型
 cp .dev.vars.example .dev.vars   # 填 DEEPSEEK_API_KEY；页面和 Agent 服务读同一个文件
 npm run dev:all                  # 同时起 Agent 服务（8788）和页面（5173），一个退出另一个也停
 npm run dev                      # 只起页面（vinext + Cloudflare Workers + 本地 D1）
@@ -71,7 +87,7 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 两个进程共用同一份 Campaign 和 1811 领域逻辑：
 
 - **页面和数据（Workers）**：`app/api/sessions/**` → `app/lib/server/turns.ts`（`createSession` / `runTurn`）→ `SessionStore`。会话、消息、版本和落库都在这一侧，一个回合一次 `db.batch`。`app/lib/server/runtime.ts` 是唯一接 `cloudflare:workers` 的地方。
-- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。服务不存数据，只接收当前父文档与最近对话，返回本回合经工具修改的受控字段。
+- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。Campaign 会话数据仍由 Workers 保存；Node 另负责仓库外的私有附件与解析缓存。
 - **协议**：`app/lib/agent/protocol.ts` 定义 `AgentRequest` / `AgentResult`，分别携带整体 `campaignStage` 和可空的 `ics1811Phase`。Workers 和 Agent 都不设置应用层墙钟总时限，取消从浏览器经 Workers 传递到 Agent SDK；`maxTurns = 12` 仍是逻辑循环上限。
 
 执行 Agent 通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开放 `Skill`；活动读写由本地 MCP server 的 11 个确定性工具完成。`settingSources: []` 隔离个人和项目 Claude 配置，执行运行时只允许校验通过的 `ics1811` 插件 Skill。执行类模型回合必须先加载 `campaign-orchestrator`；交易优惠或 1811 语境叠加 `campaign-sop`，其他专项 Skill 按意图加载。
@@ -128,12 +144,14 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 ## 维护运行时 Skills
 
 - 业务 Skill 位于 `agent/plugin/skills/<name>/SKILL.md`，只整理仓库已有、能在 `出处` 中定位的规则。
-- 每份 Skill 只允许 `name`、`description` 两个 frontmatter 字段；正文依次包含 `适用场景`、`回答原则`、`业务知识`、`不能做什么`、`冲突处理`、`出处`，前五节每条规则都引用 `[S#]`。
+- 执行插件的每份 Skill 只允许 `name`、`description` 两个 frontmatter 字段；正文依次包含 `适用场景`、`回答原则`、`业务知识`、`不能做什么`、`冲突处理`、`出处`，前五节每条规则都引用 `[S#]`。
 - `BASELINE_SKILL_NAMES` 是受管 Skill 的精确名单，不表示每份都在每回合加载。`campaign-orchestrator` 每回合必载；`campaign-sop` 仅交易/1811 条件加载；`offer-entry-guide`、`field-explainer`、`settlement-guide`、`promo-copy-guide` 按意图加载。改名或增删时同步常量和测试。
 - Skill 只放有出处的解释、编排和写作指导。字段映射、默认值、代码表、事实守卫、路由、缺项、校验、传播守卫和落库必须留在 TypeScript。
 - 修改后运行 `node --test --experimental-strip-types tests/skills.test.ts`、`npx tsc --noEmit`、`npx tsc -p agent/tsconfig.json`，再通过 Git diff 和代码评审合入。
 
 `tests/skills.test.ts` 会调用 `validateSkillSources`，确认每个 `[S#]` 引用都能定位到仓库已有出处。
+
+营销分析插件的 `analysis-review` 仅保留为规则参考文档，保留出处合同，不作为运行时工具前置依赖；`ctf-marketing-advisor` 按用户要求仅保留前五章，不包含编写出处或 `[S#]`。这不放宽执行插件校验。客户数据、历史证据JSON和连接凭据不放入仓库或默认镜像，外挂目录由运行环境提供。
 
 ## 界面 `app/components/`
 

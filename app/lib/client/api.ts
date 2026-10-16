@@ -38,8 +38,8 @@ export function fetchSnapshot(id: string, signal?: AbortSignal): Promise<Snapsho
   return request<Snapshot>(`/api/sessions/${encodeURIComponent(id)}`, { signal });
 }
 
-export function createSessionRequest(body: { entryMode: "new"; text: string } | { entryMode: "example" }): Promise<Snapshot> {
-  return request<Snapshot>("/api/sessions", json(body));
+export function createSessionRequest(body: { entryMode: "new"; text: string } | { entryMode: "example" }, signal?: AbortSignal): Promise<Snapshot> {
+  return request<Snapshot>("/api/sessions", { ...json(body), signal });
 }
 
 export function postTurn(id: string, body: TurnRequestBody): Promise<Snapshot> {

@@ -1,8 +1,8 @@
 // 对话气泡里的极简 Markdown。放开模型表达后它会自然用 **小标题** 和分点来组织
 // 四百多字的长回答，界面不渲染就会漏出满屏星号。
 //
-// 只认三样：加粗、有序/无序分点、段落。不支持 # 标题、表格和代码块——那是写文档的
-// 排版，聊天里出现就不像人说话了（prompt.ts 里也这么要求模型，两头保持一致）。
+// 支持标题、加粗、有序/无序分点和段落，长回答可以保留内容层次。
+// 数据对比表由已核验的结构化证据渲染，不让模型用 Markdown 表格补经营数字。
 //
 // 解析成结构后由组件构造 React 元素，不走 dangerouslySetInnerHTML：模型输出里
 // 混进 HTML 也只会被当字符显示。
@@ -11,6 +11,7 @@ export type InlineNode = { kind: "text"; text: string } | { kind: "bold"; text: 
 
 export type Block =
   | { kind: "para"; inline: InlineNode[] }
+  | { kind: "heading"; level: number; inline: InlineNode[] }
   | { kind: "list"; ordered: boolean; items: InlineNode[][] };
 
 // 必须成对闭合、且不跨行：回复有 800 字截断，模型的话被从中间切开时会留下半个 **，
@@ -18,6 +19,7 @@ export type Block =
 const BOLD = /\*\*([^*\n]+)\*\*/g;
 const ORDERED = /^(\d+)[.、)]\s+(.*)$/;
 const BULLET = /^[-*•]\s+(.*)$/;
+const HEADING = /^(#{1,6})\s+(.+)$/;
 
 export function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
@@ -39,7 +41,7 @@ export function parseInline(text: string): InlineNode[] {
 export function plainText(text: string): string {
   return parseChatMarkdown(text)
     .map((block) =>
-      block.kind === "para"
+      block.kind !== "list"
         ? block.inline.map((node) => node.text).join("")
         : block.items
             .map((item, index) => `${block.ordered ? `${index + 1}. ` : "· "}${item.map((node) => node.text).join("")}`)
@@ -70,6 +72,13 @@ export function parseChatMarkdown(text: string): Block[] {
     if (!line) {
       flushPara();
       flushList();
+      continue;
+    }
+    const heading = HEADING.exec(line);
+    if (heading) {
+      flushPara();
+      flushList();
+      blocks.push({ kind: "heading", level: heading[1].length, inline: parseInline(heading[2]) });
       continue;
     }
     const ordered = ORDERED.exec(line);

@@ -9,7 +9,7 @@ const STATUS_COPY = {
   failed: "失败",
 } as const;
 
-export function ToolStep({ event, live, showSupplement = false }: { event: AgentTraceEvent; live: boolean; showSupplement?: boolean }) {
+export function ToolStep({ event, live, showSupplement = false, showToolNames = true }: { event: AgentTraceEvent; live: boolean; showSupplement?: boolean; showToolNames?: boolean }) {
   const Icon = event.status === "started" ? Loader2 : event.status === "completed" ? CheckCircle2 : event.status === "warning" ? TriangleAlert : XCircle;
   const tone = event.status === "failed"
     ? "text-[#c2413b]"
@@ -26,9 +26,9 @@ export function ToolStep({ event, live, showSupplement = false }: { event: Agent
       <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span className="text-[13px] font-semibold text-[#22314a]">{event.title}</span>
-          <code className="max-w-full truncate rounded-md bg-[#eff6ff] px-1.5 py-0.5 font-mono text-[10px] text-[#47709f]">{event.tool}</code>
-          {showSupplement ? <span className="select-none rounded-full bg-[#fff4dc] px-1.5 py-0.5 text-[10px] font-medium text-[#9a620d]">系统补跑</span> : null}
-          {event.initiatedBy === "orchestrator" && !showSupplement ? <span className="select-none rounded-full bg-[#eef5ff] px-1.5 py-0.5 text-[10px] font-medium text-[#4f72a1]">确定性执行</span> : null}
+          {showToolNames ? <code className="max-w-full truncate rounded-md bg-[#eff6ff] px-1.5 py-0.5 font-mono text-[10px] text-[#47709f]">{event.tool}</code> : null}
+          {showToolNames && showSupplement ? <span className="select-none rounded-full bg-[#fff4dc] px-1.5 py-0.5 text-[10px] font-medium text-[#9a620d]">系统补跑</span> : null}
+          {showToolNames && event.initiatedBy === "orchestrator" && !showSupplement ? <span className="select-none rounded-full bg-[#eef5ff] px-1.5 py-0.5 text-[10px] font-medium text-[#4f72a1]">确定性执行</span> : null}
         </div>
         <p className={`mt-1 text-[12px] leading-5 ${event.summary ? "text-[#61728a]" : "text-[#8aa0bb]"}`}>
           {event.summary ?? (event.status === "started" ? "正在调用并核验结果…" : STATUS_COPY[event.status])}

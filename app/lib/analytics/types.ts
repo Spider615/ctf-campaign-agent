@@ -1,3 +1,5 @@
+import type { ToolTrace } from "../tool-trace.ts";
+
 export const MAX_IMPORT_BYTES = 1024 * 1024;
 export const MAX_SALES_ROWS = 2000;
 export const MAX_SNAPSHOT_BYTES = 1536 * 1024;
@@ -42,5 +44,20 @@ export type AnalysisReport = {
   salesChangePercent: number | null; availableDimensions: Dimension[]; groups: AnalysisGroup[]; insights: AnalysisInsight[]; limitations: string[];
 };
 export type EvidenceResult = { datasetVersion: string; title: string; currentRows: SalesRow[]; baselineRows: SalesRow[]; rules: CampaignRule[]; query: AnalysisQuery };
-export type AnalyticsExplainRequest = { report: AnalysisReport; question: string };
-export type AnalyticsExplainResult = { insightIds: string[]; nextDimensions: Dimension[]; tools: string[] };
+export type AdvisorField = { label: string; value: string | number | null; unit?: string };
+export type AdvisorSource = {
+  id: string; kind: "report" | "snapshot" | "historical" | "database"; title: string;
+  provenance: "imported" | "sample"; datasetVersion: string; periodLabel: string;
+  scope: string; definition: string; recordId: string;
+  rows: Array<{ label: string; fields: AdvisorField[] }>;
+  statements: string[]; limitations: string[]; reportEvidenceId?: string; capturedAt?: string;
+};
+export type AdvisorItem = {
+  kind: "observation" | "hypothesis" | "recommendation" | "question"; text: string; evidenceIds: string[]; metricLabels?: string[];
+  target?: { sourceId: string; label: string };
+};
+export type AnalyticsExplainRequest = { report: AnalysisReport; question: string; dataset?: AnalyticsDataset };
+export type AnalyticsExplainResult = {
+  insightIds: string[]; nextDimensions: Dimension[]; tools: string[];
+  advice?: AdvisorItem[]; sources?: AdvisorSource[]; skills?: string[]; reply?: string; trace?: ToolTrace; partial?: boolean;
+};

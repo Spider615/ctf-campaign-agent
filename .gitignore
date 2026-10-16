@@ -58,3 +58,5 @@ dist/
 .worktrees/
 .playwright-mcp/
 agent/.claude-runtime/
+__pycache__/
+*.pyc

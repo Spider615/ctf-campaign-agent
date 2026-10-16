@@ -1,18 +1,28 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { DIMENSION_LABELS, type AnalysisReport, type AnalyticsExplainResult, type Dimension, type EvidenceResult } from "../../lib/analytics/types";
-import { analyticsRequest, downloadCsv } from "../../lib/client/analytics";
+import { DIMENSION_LABELS, type AnalysisReport, type Dimension, type EvidenceResult } from "../../lib/analytics/types";
+import { analyticsRequest, downloadCsv, explainAnalyticsReport } from "../../lib/client/analytics";
 import { selectedInsights } from "../../lib/analytics/explain";
+import { isAnalysisAnswer, type AnalyticsAnswerResult } from "../../lib/analytics/stream";
+import { AdvisorAnswer } from "./advisor-answer";
+import { AnalysisAnswerView } from "./analysis-answer";
+import { MarkdownText } from "../chat/markdown-text";
+import { isConversationAnswer } from "../../lib/attachments/answer";
 
 const number = (v: number | null, suffix = "") => v === null ? "未计算" : `${v.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}${suffix}`;
 
 export function ReportView({ report, dirty, question }: { report: AnalysisReport; dirty: boolean; question: string }) {
   const [dimension, setDimension] = useState<Dimension>(report.availableDimensions.includes("memberSegment") ? "memberSegment" : report.availableDimensions[0]);
   const [evidence, setEvidence] = useState<EvidenceResult | null>(null); const [error, setError] = useState("");
-  const [loadingEvidence, setLoadingEvidence] = useState(false); const [explaining, setExplaining] = useState(false); const [explanation, setExplanation] = useState<AnalyticsExplainResult | null>(null);
+  const [loadingEvidence, setLoadingEvidence] = useState(false); const [busyQuestion, setBusyQuestion] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<{ question: string; result: AnalyticsAnswerResult } | null>(null);
+  const explaining = !dirty && busyQuestion === question;
+  const explanation = !dirty && answer?.question === question ? answer.result : null;
+  const legacyExplanation = explanation && !isAnalysisAnswer(explanation) && !isConversationAnswer(explanation) ? explanation : null;
   const evidenceRequest = useRef<AbortController | null>(null); const explainRequest = useRef<AbortController | null>(null);
   useEffect(() => () => { evidenceRequest.current?.abort(); explainRequest.current?.abort(); }, []);
+  useEffect(() => { explainRequest.current?.abort(); }, [question, dirty]);
   const showEvidence = async (id: string) => {
     evidenceRequest.current?.abort(); const controller = new AbortController(); evidenceRequest.current = controller; setLoadingEvidence(true); setError("");
     try {
@@ -22,14 +32,15 @@ export function ReportView({ report, dirty, question }: { report: AnalysisReport
     finally { if (evidenceRequest.current === controller) setLoadingEvidence(false); }
   };
   const explain = async () => {
-    const controller = new AbortController(); explainRequest.current = controller; setExplaining(true); setError("");
+    explainRequest.current?.abort();
+    const controller = new AbortController(); explainRequest.current = controller; setBusyQuestion(question); setAnswer(null); setError("");
     try {
-      const result = await analyticsRequest<{ explanation: AnalyticsExplainResult }>(`/api/analytics/reports/${report.id}/explain`, { question }, controller.signal);
-      if (!controller.signal.aborted) setExplanation(result.explanation);
+      const result = await explainAnalyticsReport(report, question, controller.signal);
+      if (!controller.signal.aborted) setAnswer({ question, result });
     } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "AI 解读暂不可用；计算结果与明细仍可查看"); }
-    finally { if (explainRequest.current === controller) setExplaining(false); }
+    finally { if (explainRequest.current === controller) setBusyQuestion(null); }
   };
-  const highlighted = selectedInsights(report, explanation);
+  const highlighted = selectedInsights(report, legacyExplanation);
   return <article className="min-w-0 space-y-6" aria-labelledby="report-heading">
     <header className="border-b border-border pb-4">
       <div className="flex flex-wrap items-center gap-2"><span className="rounded-md bg-secondary px-2 py-1 text-xs text-secondary-foreground">{report.provenance === "sample" ? "模拟或示例数据，不能证明客户效果" : "用户导入数据"}</span><span className="text-xs text-muted-foreground">{new Date(report.createdAt).toLocaleString("zh-CN")}</span></div>
@@ -41,10 +52,15 @@ export function ReportView({ report, dirty, question }: { report: AnalysisReport
       {[["净销售额（元）", number(report.metrics.sales)], ["净件数", number(report.metrics.quantity)], ["毛利（元）", number(report.metrics.grossProfit)], ["销售变化", number(report.salesChangePercent, "%")]].map(([label, value]) => <div key={label} className="rounded-xl border border-border bg-card p-4"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-2 text-xl font-semibold tabular-nums">{value}</dd></div>)}
     </dl>
     <p className="text-xs text-muted-foreground">分析期 {report.metrics.rows} 条明细{report.baseline ? `，比较期 ${report.baseline.rows} 条` : ""}。退款已按导入负数扣减；毛利仅在成本完整时计算。</p>
+    <section aria-labelledby="advisor-heading">
+      <div className="flex flex-wrap items-center justify-between gap-3"><h3 id="advisor-heading" className="text-base font-semibold">营销分析与建议</h3><div className="flex gap-2"><button type="button" onClick={() => void explain()} disabled={explaining || dirty || !question.trim()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">{explaining ? "小福正在核对数据…" : "分析问题并给建议"}</button>{explaining ? <button type="button" onClick={() => { explainRequest.current?.abort(); setBusyQuestion(null); }} className="min-h-10 px-3 text-sm text-muted-foreground">停止</button> : null}</div></div>
+      <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">关注问题：{question}</p>
+      {explanation && isAnalysisAnswer(explanation) ? <div className="mt-4"><AnalysisAnswerView answer={explanation} /></div> : legacyExplanation?.reply ? <div className="mt-4"><MarkdownText text={legacyExplanation.reply} /></div> : legacyExplanation ? <AdvisorAnswer explanation={legacyExplanation} onRows={(id) => void showEvidence(id)} /> : <p className="mt-2 text-xs leading-6 text-muted-foreground">小福会核对当前数据，必要时重新比较或读取已启用的历史资料。回答中的数字角标可展开周期、口径与证据。</p>}
+    </section>
     <section aria-labelledby="insights-heading">
-      <div className="flex flex-wrap items-center justify-between gap-3"><h3 id="insights-heading" className="text-base font-semibold">值得核对的差异</h3><div className="flex gap-2"><button type="button" onClick={() => void explain()} disabled={explaining || !report.insights.length} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">{explaining ? "AI 正在读取证据…" : "请小福挑选重点"}</button>{explaining ? <button type="button" onClick={() => { explainRequest.current?.abort(); setExplaining(false); }} className="min-h-10 px-3 text-sm text-muted-foreground">停止</button> : null}</div></div>
-      {highlighted.length ? <div className="mt-3 divide-y divide-border">{highlighted.map((insight) => <div key={insight.id} className="py-4"><h4 className="text-sm font-semibold">{insight.title}</h4><p className="mt-1 text-sm leading-6 text-muted-foreground">{insight.explanation}</p><button type="button" onClick={() => void showEvidence(insight.evidenceId)} className="mt-2 min-h-9 text-sm text-primary underline underline-offset-4">查看对应明细与活动规则</button></div>)}</div> : <p className="mt-3 text-sm leading-6 text-muted-foreground">{explanation ? "小福未找到能够回答当前问题的匹配洞察。可查看下方已计算的分组结果，或补充相应数据后再分析。" : "本范围未形成满足样本条件的分组洞察，可查看下方分组结果或扩大数据范围。"}</p>}
-      {explanation?.nextDimensions.length ? <p className="mt-2 text-sm text-muted-foreground">小福建议继续核对：{explanation.nextDimensions.map((d) => DIMENSION_LABELS[d]).join("、")}。这些是分析方向，尚未证明因果。</p> : null}
+      <h3 id="insights-heading" className="text-base font-semibold">值得核对的差异</h3>
+      {highlighted.length ? <div className="mt-3 divide-y divide-border">{highlighted.map((insight) => <div key={insight.id} className="py-4"><h4 className="text-sm font-semibold">{insight.title}</h4><p className="mt-1 text-sm leading-6 text-muted-foreground">{insight.explanation}</p><button type="button" onClick={() => void showEvidence(insight.evidenceId)} className="mt-2 min-h-9 text-sm text-primary underline underline-offset-4">查看对应明细与活动规则</button></div>)}</div> : <p className="mt-3 text-sm leading-6 text-muted-foreground">{explanation ? "原报告未选出与当前问题匹配的分组洞察；新增比较和历史参考见上方回答，也可核对下方分组结果。" : "本范围未形成满足样本条件的分组洞察，可查看下方分组结果或扩大数据范围。"}</p>}
+      {legacyExplanation?.nextDimensions.length ? <p className="mt-2 text-sm text-muted-foreground">小福建议继续核对：{legacyExplanation.nextDimensions.map((d) => DIMENSION_LABELS[d]).join("、")}。这些是分析方向，尚未证明因果。</p> : null}
     </section>
     <section aria-labelledby="groups-heading">
       <h3 id="groups-heading" className="text-base font-semibold">分组对比</h3>

@@ -31,10 +31,16 @@ import { mergeTraceEvent, type AgentTraceEvent } from "../../lib/tool-trace";
 import { createClientTurnLease } from "../../lib/turn-identity";
 import { DraftPanel, type PanelEdit } from "../draft/draft-panel";
 import { Composer } from "./composer";
-import { AgentRow, MessageList, MessageTimestamp, UserBubble } from "./message-view";
+import { AgentRow, MessageList, MessageTimestamp, UserBubble, type AdditionalChatMessage } from "./message-view";
 import { MarkdownText } from "./markdown-text";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { ToolRunCard } from "./tool-run-card";
+import type { AttachmentReference } from "../../lib/attachments/types";
+import { attachmentSubmission } from "../../lib/client/attachments";
+import { conversationRoute } from "../../lib/analytics/intent";
+import { useAttachmentDraft } from "../attachments/use-attachments";
+import { useAttachmentChat } from "../attachments/use-attachment-chat";
+import { HistoryMessageView } from "../analytics/history-message";
 
 type TurnKind = TurnBody["type"];
 
@@ -60,6 +66,7 @@ const WAITING_KINDS: readonly TurnKind[] = ["interpret", "text"];
 const XL = "(min-width: 1280px)";
 const SHEET_PANEL_ID = "sheet";
 const LAYOUT_KEY = "ics1811-panel-layout";
+const EMPTY_ADDITIONAL_MESSAGES: readonly AdditionalChatMessage[] = [];
 
 // 宽度自己存。不能用库的 useDefaultLayout / usePanelRef：它们是裸 hook，会在 RSC/SSR 渲染
 // 这个组件时执行，打到空的 React dispatcher，整个会话页 500（已用二分确认）。
@@ -84,7 +91,11 @@ function saveLayout(layout: Record<string, number>): void {
   }
 }
 
-export function Conversation({ sessionId }: { sessionId: string }) {
+export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSAGES, onExternalText, externalBusy = false, onExternalStop, onBusyChange, autoOpenPanel = true, composerMaxLength = 1000, attachmentConversationId }: {
+  sessionId: string; extraMessages?: readonly AdditionalChatMessage[]; onExternalText?: (text: string, snapshot: Snapshot, attachments?: AttachmentReference[]) => boolean;
+  externalBusy?: boolean; onExternalStop?: () => void; onBusyChange?: (busy: boolean) => void; autoOpenPanel?: boolean; composerMaxLength?: number;
+  attachmentConversationId?: string;
+}) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "legacy" | "error">("loading");
   const [busy, setBusy] = useState<TurnKind | null>(null);
@@ -103,6 +114,9 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const [livePhase, setLivePhase] = useState<"analyzing" | "writing" | null>(null);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [input, setInput] = useState("");
+  const attachments = useAttachmentDraft(attachmentConversationId ?? sessionId);
+  const fileChat = useAttachmentChat(sessionId);
+  const displayedExtraMessages = onExternalText ? extraMessages : [...extraMessages, ...fileChat.messages.map((message) => ({ id: message.id, role: message.role, createdAt: message.createdAt, afterMessageId: message.afterMessageId, content: <HistoryMessageView message={message} busy={fileChat.busy || busy !== null} onRetry={fileChat.retry} onFileDeleted={fileChat.deleted} /> }))];
   const submittedTextTurn = useRef(0);
   const [error, setError] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
@@ -187,10 +201,10 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     // 等卡片完成布局再滚到底，否则首次打开时最后一张卡会被截在视口外。
     const frame = requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end" }));
     return () => cancelAnimationFrame(frame);
-  }, [messageCount, busy, liveTrace.length, liveReply.text, loadState]);
+  }, [messageCount, busy, liveTrace.length, liveReply.text, loadState, extraMessages, fileChat.messages]);
 
   const send = async (body: TurnBody): Promise<{ snapshot: Snapshot; committed: boolean } | null> => {
-    if (!inFlightTurn.ownsSession(sessionOwner) || !snapshot || snapshot.session.id !== sessionId || busy) return null;
+    if (!inFlightTurn.ownsSession(sessionOwner) || !snapshot || snapshot.session.id !== sessionId || busy || externalBusy) return null;
     const streams = WAITING_KINDS.includes(body.type);
     const requestSessionId = sessionId;
     const controller = streams ? new AbortController() : null;
@@ -201,6 +215,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     const ownsUi = () => inFlightTurn.ownsTurn(turn);
     const isCurrent = () => inFlightTurn.isCurrent(turn);
     setBusy(body.type);
+    onBusyChange?.(true);
     setError("");
     if (body.type === "text") {
       setPendingText(body.text);
@@ -263,6 +278,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
         if (activeTurn.current?.owner.token === turn.token) activeTurn.current = null;
         setStopping(false);
         setBusy(null);
+        onBusyChange?.(false);
         setPendingText(null);
         setPendingAt(null);
         setLiveTrace([]);
@@ -283,6 +299,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     !interpretationStopped && snapshot?.session.id === sessionId && snapshot.flow.pendingInterpretation &&
     !snapshot.messages.some((message) => message.role === "assistant"),
   );
+  useEffect(() => { onBusyChange?.(busy !== null || needsInterpretation || fileChat.busy); }, [busy, needsInterpretation, onBusyChange, fileChat.busy]);
   const retryInterpretation = () => {
     if (!inFlightTurn.ownsSession(sessionOwner)) return;
     autoStarted.current = null;
@@ -312,10 +329,10 @@ export function Conversation({ sessionId }: { sessionId: string }) {
 
   // 桌面端默认就是三栏工作台；平板和手机仍然只在用户点「填写值」后打开抽屉。
   useEffect(() => {
-    if (loadState !== "ready" || !window.matchMedia(XL).matches) return;
+    if (!autoOpenPanel || loadState !== "ready" || !window.matchMedia(XL).matches) return;
     const frame = window.requestAnimationFrame(expandPanel);
     return () => window.cancelAnimationFrame(frame);
-  }, [expandPanel, loadState, sessionId]);
+  }, [autoOpenPanel, expandPanel, loadState, sessionId]);
 
   // 宽屏拉开右侧面板，窄屏改用抽屉；对话始终是主体，面板要用的时候才出现。
   const openPanel = (tab: string) => {
@@ -390,7 +407,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
     : undefined;
 
   const actions = {
-    busy: busy !== null,
+    busy: busy !== null || externalBusy,
     onUndo: (versionSeq: number) => void send({ type: "undo", versionSeq }),
     onRetry: (retry: RetryInput) => void send(retry.type === "text" ? { type: "text", text: retry.text } : { type: "interpret" }),
     onOpenPanel: openPanel,
@@ -404,7 +421,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
   const panel = (
     <DraftPanel
       snapshot={snapshot}
-      busy={busy !== null}
+      busy={busy !== null || externalBusy}
       tab={panelTab}
       onTabChange={setPanelTab}
       onEdit={async (edit: PanelEdit) => Boolean((await send({ type: "edit", origin: "panel", ...edit }))?.snapshot)}
@@ -441,7 +458,7 @@ export function Conversation({ sessionId }: { sessionId: string }) {
           整页被撑到对话内容那么高，滚轮滚到底会把整个工作台滚出视口。 */}
       <div className="relative min-h-0 flex-1 overflow-y-auto px-4 py-7 md:px-8">
         <div className="mx-auto flex max-w-[780px] flex-col gap-5">
-          <MessageList snapshot={snapshot} actions={actions} />
+          <MessageList snapshot={snapshot} actions={actions} extraMessages={displayedExtraMessages} />
           {pendingText ? (
             <div className="cursor-text select-text">
               <UserBubble text={pendingText} />
@@ -478,15 +495,21 @@ export function Conversation({ sessionId }: { sessionId: string }) {
           <Composer
             value={input}
             onChange={setInput}
-            busy={busy !== null || (pendingInterpretation && !interpretationStopped)}
-            stoppable={Boolean(busy && WAITING_KINDS.includes(busy))}
+            busy={busy !== null || externalBusy || fileChat.busy || (pendingInterpretation && !interpretationStopped)}
+            attachments={attachments}
+            maxLength={composerMaxLength}
+            stoppable={externalBusy || fileChat.busy || Boolean(busy && WAITING_KINDS.includes(busy))}
             stopping={stopping}
-            onStop={stopGeneration}
+            onStop={externalBusy ? onExternalStop : fileChat.busy ? fileChat.stop : stopGeneration}
             placeholder={placeholder}
             onSubmit={() => {
               if (!inFlightTurn.ownsSession(sessionOwner)) return;
-              const text = input.trim().slice(0, 1000);
+              if (attachments.files.length && !attachments.ready) return;
+              const files = attachments.references();
+              const text = files.length ? attachmentSubmission(input, files).question : input.trim().slice(0, 1000);
               if (!text) return;
+              if (snapshot && onExternalText?.(text, snapshot, files)) { setInput(""); attachments.clear(); return; }
+              if (snapshot && !onExternalText && (files.length || fileChat.hasFiles && conversationRoute(text, true, true) === "analysis" && !/(?:不要|不用|无需).*?(?:文件|附件|资料)/.test(text))) { fileChat.send(text, files, snapshot); setInput(""); attachments.clear(); return; }
               const textTurn = ++submittedTextTurn.current;
               setInput("");
               void send({ type: "text", text }).then((result) => {

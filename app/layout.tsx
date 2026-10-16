@@ -5,7 +5,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "周大福营销决策工作台",
-  description: "基于经营数据复盘历史活动，查看分组差异和数据依据，并衔接活动执行、优惠配置和传播方案",
+  description: "通过连续对话结合活动历史数据，提供有依据的营销建议、数据洞察与创新角度",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

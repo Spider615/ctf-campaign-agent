@@ -1,10 +1,12 @@
 "use client";
 
-import { ArrowUp, Square } from "lucide-react";
-import { useSyncExternalStore } from "react";
+import { ArrowUp, Paperclip, Square } from "lucide-react";
+import { useRef, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { DraftAttachmentCards } from "../attachments/attachment-cards";
+import type { AttachmentDraft } from "../attachments/use-attachments";
 
 type ComposerProps = {
   value: string;
@@ -15,6 +17,8 @@ type ComposerProps = {
   stoppable?: boolean;
   stopping?: boolean;
   placeholder: string;
+  maxLength?: number;
+  attachments?: AttachmentDraft;
 };
 
 // 水合与否之后不会再变，所以订阅是空实现：服务端直出和水合那一帧取 false，React 接管后取 true。
@@ -23,23 +27,30 @@ const hydratedOnClient = () => true;
 const hydratedOnServer = () => false;
 
 // 等待时仍能编辑下一句，发送按钮切换为停止当前生成。
-export function Composer({ value, onChange, onSubmit, onStop, busy, stoppable, stopping, placeholder }: ComposerProps) {
+export function Composer({ value, onChange, onSubmit, onStop, busy, stoppable, stopping, placeholder, maxLength = 1000, attachments }: ComposerProps) {
   // 服务端直出的这一版里 React 还没接管：原生 textarea 能打字，但 onChange 不会触发、
   // value 一直是空串，按 Enter 也没有处理函数。这段窗口要明说「正在载入」，
   // 否则界面看着能用、实际发不出去，会被当成功能坏了。
   const hydrated = useSyncExternalStore(subscribeHydration, hydratedOnClient, hydratedOnServer);
-  const canSend = hydrated && !busy && value.trim().length > 0;
+  const picker = useRef<HTMLInputElement>(null); const [dragging, setDragging] = useState(false);
+  const hasFiles = Boolean(attachments?.files.length);
+  const canSend = hydrated && !busy && (value.trim().length > 0 || Boolean(attachments?.ready)) && (!hasFiles || Boolean(attachments?.ready));
   const stopMode = busy && stoppable;
   const buttonDisabled = stopMode ? stopping : !canSend;
   return (
-    <div className="blue-focus rounded-[20px] border border-[#bfd6ee] bg-white/95 p-2 shadow-[0_18px_50px_rgba(43,94,151,0.10)] backdrop-blur-xl">
+    <div className={`blue-focus rounded-[20px] border bg-white/95 p-2 shadow-[0_18px_50px_rgba(43,94,151,0.10)] backdrop-blur-xl ${dragging ? "border-[#247cff] ring-2 ring-[#a5ccff]" : "border-[#bfd6ee]"}`}
+      onDragOver={(event) => { if (attachments && hydrated && event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(event) => { setDragging(false); if (attachments && hydrated && event.dataTransfer.files.length) { event.preventDefault(); attachments.select(Array.from(event.dataTransfer.files)); } }}>
+      {attachments ? <><input ref={picker} aria-label="选择上传文件" type="file" multiple className="hidden" disabled={!hydrated} onChange={(event) => { attachments.select(Array.from(event.target.files ?? [])); event.target.value = ""; }} /><DraftAttachmentCards draft={attachments} /></> : null}
       <Textarea
         aria-label="输入框"
         value={value}
-        maxLength={1000}
+        maxLength={maxLength}
         placeholder={placeholder}
         disabled={!hydrated}
         onChange={(event) => onChange(event.target.value)}
+        onPaste={(event) => { const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/")); if (attachments && images.length) { event.preventDefault(); attachments.select(images); } }}
         onKeyDown={(event) => {
           if (event.key !== "Enter" || event.shiftKey) return;
           if (event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -49,7 +60,7 @@ export function Composer({ value, onChange, onSubmit, onStop, busy, stoppable, s
         className="max-h-40 min-h-14 resize-none border-0 bg-transparent px-3 py-3 text-[15px] leading-6 text-[#21334d] shadow-none placeholder:text-[#9aadc3] focus-visible:ring-0"
       />
       <div className="flex items-center justify-between gap-3 px-2 pb-1.5">
-        <span className="text-[12px] text-[#8397af]">{hydrated ? "Enter 发送 · Shift + Enter 换行" : "正在载入…"}</span>
+        <div className="flex min-w-0 items-center gap-2">{attachments ? <button type="button" disabled={!hydrated} aria-label="上传文件" title="上传文件，也可以拖入文件或粘贴图片" onClick={() => picker.current?.click()} className="grid min-h-11 min-w-11 place-items-center rounded-xl text-[#54769a] transition hover:bg-[#edf5ff] hover:text-[#247cff] focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"><Paperclip aria-hidden="true" className="size-5" /></button> : null}<span className="text-[12px] leading-5 text-[#7187a1]">{hydrated ? dragging ? "松开即可上传" : "Enter 发送 · Shift + Enter 换行" : "正在载入…"}</span></div>
         <Button
           type="button"
           size="icon"

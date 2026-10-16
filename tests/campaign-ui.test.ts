@@ -27,7 +27,8 @@ test("streaming turns expose a real stop control and keep the wave below tool tr
   assert.match(conversationSource, /setInput\(\(current\)/);
   assert.match(conversationSource, /caught instanceof ApiError && caught\.status === 409/);
   assert.match(conversationSource, /trim\(\)\.slice\(0, 1000\)/);
-  assert.match(composerSource, /maxLength=\{1000\}/);
+  assert.match(composerSource, /maxLength = 1000/);
+  assert.match(composerSource, /maxLength=\{maxLength\}/);
   assert.match(conversationSource, /!stopping && !liveReply\.text && waiting/);
   assert.doesNotMatch(conversationSource, /!liveTrace\.length\s*&&\s*!liveReply\.text\s*&&\s*waiting/);
   assert.match(thinkingSource, /thinking-wave-dot/);
@@ -59,10 +60,9 @@ test("Conversation 在更新 UI 前获取当前会话租约并让对账携带回
   assert.match(conversationSource, /inFlightTurn\.visit\(sessionId\)/);
 });
 
-test("home separates经营分析与活动执行 and keeps conversations without a length gate", () => {
-  assert.match(emptyStateSource, /周大福营销决策工作台/);
-  assert.match(emptyStateSource, /分析经营数据/);
-  assert.match(emptyStateSource, /创建执行活动/);
+test("home uses a unified conversation and keeps conversations without a length gate", () => {
+  assert.match(emptyStateSource, /HistoryConversation/);
+  assert.doesNotMatch(emptyStateSource, /分析经营数据|创建执行活动|initialMode|setMode/);
   assert.doesNotMatch(emptyStateSource, /trim\(\)\.length\s*<\s*4/);
   assert.doesNotMatch(emptyStateSource, /请用一句话说明活动/);
   assert.match(composerSource, /value\.trim\(\)\.length\s*>\s*0/);

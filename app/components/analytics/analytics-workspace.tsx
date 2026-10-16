@@ -8,11 +8,21 @@ import { analyticsRequest, notifyAnalyticsChanged } from "../../lib/client/analy
 import type { ReportSummary } from "../../lib/server/analytics-store";
 import { DatasetImporter } from "./dataset-importer";
 import { ReportView } from "./report-view";
+import { HistoryConversation } from "./history-conversation";
+import { WorkspacePanel } from "../workspace/workspace-panel";
 
 const control = "mt-1 min-h-11 w-full rounded-lg border border-input bg-card px-3 text-sm";
 const emptyQuery: AnalysisQuery = { period: { start: "", end: "" }, comparison: null, filters: {} };
 
 export function AnalyticsWorkspace({ initialReportId }: { initialReportId?: string }) {
+  if (initialReportId) return <ImportedAnalyticsWorkspace initialReportId={initialReportId} />;
+  return <HistoryConversation />;
+}
+export function ImportedAnalyticsWorkspace({ initialReportId }: { initialReportId?: string }) {
+  return <WorkspacePanel key={initialReportId ?? "import"}><ImportedAnalyticsContent initialReportId={initialReportId} /></WorkspacePanel>;
+}
+
+function ImportedAnalyticsContent({ initialReportId }: { initialReportId?: string }) {
   const router = useRouter(); const [datasets, setDatasets] = useState<DatasetSummary[]>([]); const [history, setHistory] = useState<ReportSummary[]>([]);
   const [selected, setSelected] = useState<DatasetSummary | null>(null); const [query, setQuery] = useState<AnalysisQuery>(emptyQuery);
   const [report, setReport] = useState<AnalysisReport | null>(null); const [question, setQuestion] = useState("帮我找出值得核对的活动效果差异");
@@ -70,7 +80,7 @@ export function AnalyticsWorkspace({ initialReportId }: { initialReportId?: stri
           <button type="button" disabled={busy || !query.period.start || !query.period.end} onClick={() => void analyze()} className="mt-4 min-h-11 w-full rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy ? "正在计算并保存…" : "开始复盘"}</button>{busy ? <button type="button" onClick={() => { active.current?.abort(); setBusy(false); }} className="mt-2 min-h-10 w-full text-sm text-muted-foreground">停止等待</button> : null}</> : null}</section> : null}
         {history.length ? <section><h2 className="px-1 text-sm font-semibold">最近报告</h2><div className="mt-2 space-y-1">{history.slice(0, 8).map((h) => <Link key={h.id} href={`/analysis/${h.id}`} className="block rounded-lg border border-border bg-card p-3 text-sm hover:bg-secondary"><span className="line-clamp-1">{h.provenance === "sample" ? "[示例] " : ""}{h.datasetName}</span><span className="mt-1 block text-xs text-muted-foreground">{h.query.period.start} 至 {h.query.period.end}</span></Link>)}</div></section> : null}
       </aside>
-      <section className="min-w-0" aria-label="分析结果">{report ? <ReportView key={report.id} report={report} question={question} dirty={JSON.stringify(query) !== JSON.stringify(report.query)} /> : <div className="rounded-xl border border-border bg-card p-6 md:p-8"><h2 className="text-lg font-semibold">{booting ? "正在读取分析记录…" : selected ? "数据已保存，选择范围后开始复盘" : "先选择一份经营数据"}</h2><p className="mt-3 text-sm leading-7 text-muted-foreground">复盘会计算净销售额、件数及可用的毛利，比较区域、门店、货类和会员分组。缺少的成本或标签会明确标记，每条差异都可查看原始明细。</p><div className="mt-6 border-t border-border pt-4"><p className="text-sm font-medium">当前交付范围</p><p className="mt-2 text-sm leading-7 text-muted-foreground">本期提供历史数据复盘和可核对的分组洞察。活动机制推荐、收益预测和执行系统提交需要后续验证。</p></div></div>}</section>
+      <section className="min-w-0" aria-label="分析结果">{report ? <ReportView key={report.id} report={report} question={question} dirty={JSON.stringify(query) !== JSON.stringify(report.query)} /> : <div className="rounded-xl border border-border bg-card p-6 md:p-8"><h2 className="text-lg font-semibold">{booting ? "正在读取分析记录…" : selected ? "数据已保存，选择范围后开始复盘" : "先选择一份经营数据"}</h2><p className="mt-3 text-sm leading-7 text-muted-foreground">复盘会计算净销售额、件数及可用的毛利，比较区域、门店、货类和会员分组。缺少的成本或标签会明确标记，每条差异都可查看原始明细。</p><div className="mt-6 border-t border-border pt-4"><p className="text-sm font-medium">当前交付范围</p><p className="mt-2 text-sm leading-7 text-muted-foreground">提供经营快照复盘、候选解释和营销行动建议，回答可展开数据依据。外挂历史资料明确标记周期；收益预测和外部系统提交仍需进一步验证。</p></div></div>}</section>
     </div>
   </div>;
 }

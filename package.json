@@ -8,6 +8,8 @@
   "scripts": {
     "install:ci": "node scripts/install-ci.mjs",
     "install:agent": "npm install --prefix agent --no-audit --no-fund",
+    "install:attachments": "node scripts/install-attachments.mjs",
+    "check:attachments": "node --experimental-strip-types scripts/check-attachments.ts",
     "dev": "node scripts/run-framework.mjs dev",
     "dev:agent": "node --experimental-strip-types --disable-warning=ExperimentalWarning agent/server.ts",
     "dev:all": "node scripts/dev-all.mjs",
@@ -15,6 +17,7 @@
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
     "test:skills:live": "node --experimental-strip-types agent/skill-smoke.ts",
+    "test:analytics:live": "node --experimental-strip-types agent/analytics-evaluation.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

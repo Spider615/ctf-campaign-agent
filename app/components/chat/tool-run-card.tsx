@@ -11,9 +11,12 @@ type ToolRunCardProps = {
   trace: ToolTrace | AgentTraceEvent[];
   live: boolean;
   startedAt?: number | null;
+  showToolNames?: boolean;
+  title?: string;
+  summary?: string;
 };
 
-export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
+export function ToolRunCard({ trace, live, startedAt, showToolNames = true, title, summary }: ToolRunCardProps) {
   const steps = Array.isArray(trace) ? trace : trace.steps;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -34,6 +37,7 @@ export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
           key={event.id}
           event={event}
           live={live}
+          showToolNames={showToolNames}
           showSupplement={event.initiatedBy === "orchestrator" && modelTools.has(event.tool)}
         />
       ))}
@@ -47,9 +51,9 @@ export function ToolRunCard({ trace, live, startedAt }: ToolRunCardProps) {
         <Sparkles className="relative size-3.5" aria-hidden="true" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-semibold text-[#20314d]">{live ? "小福正在思考" : "AI 工具执行记录"}</p>
+        <p className="truncate text-[13px] font-semibold text-[#20314d]">{title ?? (live ? "小福正在思考" : "AI 工具执行记录")}</p>
         <p className={`truncate text-[11px] ${storedSummary?.tone === "failed" ? "text-[#c2413b]" : storedSummary?.tone === "warning" ? "text-[#a86510]" : "text-[#6c82a0]"}`}>
-          {live ? `${steps.filter((step) => step.status !== "started").length} 步已完成 · 总用时 ${formatDuration(durationMs)}` : storedSummary?.label}
+          {summary ?? (live ? `${steps.filter((step) => step.status !== "started").length} 步已完成 · 总用时 ${formatDuration(durationMs)}` : storedSummary?.label)}
         </p>
       </div>
       {!live ? <ChevronDown className="size-4 shrink-0 text-[#7590af] transition-transform group-open:rotate-180" aria-hidden="true" /> : null}

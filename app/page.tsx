@@ -1,5 +1,5 @@
-import { EmptyState } from "./components/chat/empty-state";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <EmptyState />;
+  redirect("/analysis");
 }

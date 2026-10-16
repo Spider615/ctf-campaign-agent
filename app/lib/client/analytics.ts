@@ -1,10 +1,33 @@
+import { VISUALIZATION_SCHEMA } from "../analytics/visualization-types.ts";
+import { ANALYSIS_ANSWER_SCHEMA } from "../analytics/analysis-v2-types.ts";
+import { consumeAnalyticsStream, validateAnalyticsAnswerResult } from "../analytics/stream.ts";
+import type { AnalysisReport } from "../analytics/types.ts";
+import { throwIfTurnCancelled } from "../cancellation.ts";
+
 export const ANALYTICS_CHANGED = "ctf:analytics-changed";
-export async function analyticsRequest<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(path, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", signal,
-    ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+async function fetchAnalyticsRequest(path: string, body?: unknown, signal?: AbortSignal, extraHeaders?: HeadersInit): Promise<Response> {
+  throwIfTurnCancelled(signal);
+  const headers = new Headers(extraHeaders); if (body !== undefined) headers.set("content-type", "application/json");
+  return fetch(path, { method: body === undefined ? "GET" : "POST", credentials: "same-origin", signal,
+    ...(body === undefined && extraHeaders === undefined ? {} : { headers }), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+}
+export async function analyticsRequest<T>(path: string, body?: unknown, signal?: AbortSignal, extraHeaders?: HeadersInit): Promise<T> {
+  const response = await fetchAnalyticsRequest(path, body, signal, extraHeaders);
   const result = await response.json().catch(() => null) as (T & { error?: unknown }) | null;
+  throwIfTurnCancelled(signal);
   if (!response.ok || !result) throw new Error(typeof result?.error === "string" ? result.error : "分析请求暂时无法完成，请重试");
   return result;
+}
+export async function explainAnalyticsReport(report: AnalysisReport, question: string, signal?: AbortSignal) {
+  const response = await fetchAnalyticsRequest(`/api/analytics/reports/${encodeURIComponent(report.id)}/explain`, { question }, signal, { "X-Analytics-Answer-Schema": ANALYSIS_ANSWER_SCHEMA, "X-Analytics-Visuals": VISUALIZATION_SCHEMA, accept: "application/x-ndjson" });
+  throwIfTurnCancelled(signal);
+  if (!response.ok) {
+    const result = await response.json().catch(() => null) as { error?: unknown } | null; throwIfTurnCancelled(signal);
+    throw new Error(typeof result?.error === "string" ? result.error : "报告分析暂未完成，可以重试");
+  }
+  if (response.headers.get("content-type")?.includes("application/x-ndjson")) return consumeAnalyticsStream(response, undefined, signal, report);
+  const result = await response.json() as { explanation?: unknown }; throwIfTurnCancelled(signal);
+  return validateAnalyticsAnswerResult(result.explanation, report);
 }
 export function notifyAnalyticsChanged() { window.dispatchEvent(new Event(ANALYTICS_CHANGED)); }
 export function downloadCsv(name: string, rows: Array<Array<string | number | null>>) {

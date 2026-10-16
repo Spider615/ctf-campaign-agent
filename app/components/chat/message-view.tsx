@@ -12,6 +12,9 @@ import { CopyButton } from "./copy-button";
 import { MarkdownText } from "./markdown-text";
 import { AgentAvatar } from "./agent-avatar";
 import { ToolRunCard } from "./tool-run-card";
+import { mergeConversationTimeline } from "../../lib/client/history-conversation";
+
+export type AdditionalChatMessage = { id: string; role: "user" | "assistant"; createdAt: string; afterMessageId?: string; content: React.ReactNode };
 
 export type MessageActions = {
   busy: boolean;
@@ -24,7 +27,7 @@ export type MessageActions = {
 export function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] cursor-text select-text whitespace-pre-wrap rounded-2xl rounded-br-md bg-[linear-gradient(135deg,#247cff,#397fdf)] px-4 py-2.5 text-[15px] leading-6 text-white shadow-[0_8px_20px_rgba(36,124,255,0.18)]">{text}</div>
+      <div className="user-message-text max-w-[85%] cursor-text select-text whitespace-pre-wrap rounded-2xl rounded-br-md bg-[linear-gradient(135deg,#247cff,#397fdf)] px-4 py-2.5 text-[15px] leading-6 text-white shadow-[0_8px_20px_rgba(36,124,255,0.18)]">{text}</div>
     </div>
   );
 }
@@ -294,12 +297,15 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
   }
 }
 
-export function MessageList({ snapshot, actions }: { snapshot: Snapshot; actions: MessageActions }) {
+export function MessageList({ snapshot, actions, extraMessages = [] }: { snapshot: Snapshot; actions: MessageActions; extraMessages?: readonly AdditionalChatMessage[] }) {
   const messages = snapshot.messages;
   const lastAgentIndex = messages.findLastIndex((message) => message.role === "assistant");
+  const timeline = mergeConversationTimeline(messages, extraMessages);
   return (
     <>
-      {messages.map((message, index) => {
+      {timeline.map((entry, position) => {
+        if (entry.kind === "extra") return <div key={entry.message.id}>{entry.message.content}</div>;
+        const message = entry.message; const index = messages.findIndex((item) => item.id === message.id);
         const isEvent = message.content.kind === "user_event" || message.content.kind === "user_edit";
         return (
           // scroll-mt 留出头部的高度，跳回来时不会被压在上面看不见。
@@ -309,7 +315,7 @@ export function MessageList({ snapshot, actions }: { snapshot: Snapshot; actions
               snapshot={snapshot}
               actions={actions}
               isLastAgent={index === lastAgentIndex}
-              continued={message.role === "assistant" && messages[index - 1]?.role === "assistant"}
+              continued={message.role === "assistant" && timeline[position - 1]?.message.role === "assistant"}
             />
             <div className={`mt-1 flex min-h-7 items-center gap-1 ${isEvent ? "justify-center" : message.role === "user" ? "justify-end" : "pl-11"}`}>
               <MessageTimestamp iso={message.createdAt} />

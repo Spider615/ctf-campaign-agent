@@ -3,7 +3,7 @@
 import { Menu, Plus, Sparkles, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import {
   createSessionRequest,
@@ -19,6 +19,7 @@ import { CAMPAIGN_TOOL_NAMES } from "../lib/tool-trace";
 import { registerCampaignTools } from "../lib/webmcp";
 import { ANALYTICS_CHANGED } from "../lib/client/analytics";
 import type { ReportSummary } from "../lib/server/analytics-store";
+import { historyConversation } from "../lib/client/history-conversation";
 
 function Brand() {
   return (
@@ -28,7 +29,7 @@ function Brand() {
       </span>
       <div>
         <p className="text-sm font-semibold tracking-wide text-[#17243a]">周大福</p>
-        <p className="text-[11px] text-[#7186a1]">营销分析与活动执行</p>
+        <p className="text-[11px] text-[#7186a1]">营销建议与数据洞察</p>
       </div>
     </div>
   );
@@ -36,14 +37,22 @@ function Brand() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  return <WorkspaceShell marketing={pathname === "/" || pathname === "/analysis" || pathname === "/campaign/new"}>{children}</WorkspaceShell>;
+}
+
+function WorkspaceShell({ children, marketing }: { children: React.ReactNode; marketing: boolean }) {
+  const pathname = usePathname() ?? "/";
   const router = useRouter();
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [mobileNav, setMobileNav] = useState(false);
   const activeId = pathname.startsWith("/c/") ? decodeURIComponent(pathname.slice(3).split("/")[0]) : null;
   const locationRef = useRef({ activeId, router });
+  const conversations = useSyncExternalStore(historyConversation.subscribe, historyConversation.threadsSnapshot, historyConversation.serverThreadsSnapshot);
+  const selectedConversation = useSyncExternalStore(historyConversation.subscribe, historyConversation.activeId, historyConversation.serverActiveId);
 
   const refresh = useCallback(() => {
+    if (marketing) return;
     void fetch("/api/sessions")
       .then((response) => (response.ok ? (response.json() as Promise<{ sessions?: SessionListItem[] }>) : { sessions: [] }))
       .then((body) => setSessions(body.sessions ?? []))
@@ -52,7 +61,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .then((response) => response.ok ? response.json() as Promise<{ reports: ReportSummary[] }> : { reports: [] })
       .then((body) => setReports(body.reports))
       .catch(() => undefined);
-  }, []);
+  }, [marketing]);
 
   useEffect(() => {
     refresh();
@@ -68,7 +77,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     locationRef.current = { activeId, router };
   });
 
-  useEffect(() => registerCampaignTools({
+  useEffect(() => {
+    if (marketing) return;
+    return registerCampaignTools({
     startCampaign: async ({ mode, prompt }) => {
       const { router: navigate } = locationRef.current;
       if (mode === "blank" && !prompt) {
@@ -117,7 +128,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         blockers: snapshot.latest.checks.filter((check) => check.severity === "blocker").map((check) => check.message),
       };
     },
-  }), []);
+    });
+  }, [marketing]);
 
   const close = () => setMobileNav(false);
 
@@ -155,20 +167,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="px-3 pt-4.5">
-            <Link
-              href="/analysis"
-              onClick={close}
-              className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#247cff] text-sm font-semibold text-white shadow-[0_10px_24px_rgba(36,124,255,0.24)] transition hover:-translate-y-0.5 hover:bg-[#176bea] hover:shadow-[0_14px_28px_rgba(36,124,255,0.28)]"
+            <button
+              type="button"
+              onClick={() => { historyConversation.newConversation(); close(); router.push("/analysis"); }}
+              className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#247cff] text-sm font-semibold text-white shadow-[0_10px_24px_rgba(36,124,255,0.24)] transition hover:-translate-y-0.5 hover:bg-[#176bea] hover:shadow-[0_14px_28px_rgba(36,124,255,0.28)]"
             >
               <Plus className="size-4" />
-              营销分析
-            </Link>
-            <Link href="/campaign/new" onClick={close} className="mt-2 flex min-h-11 items-center justify-center rounded-xl border border-border text-sm hover:bg-secondary">创建执行活动</Link>
+              新建对话
+            </button>
           </div>
 
           <nav className="flex min-h-0 flex-1 flex-col px-3 pb-3" aria-label="主导航">
+            {marketing ? <>
+              <p className="px-3 pb-2 pt-5 text-[11px] font-semibold tracking-[0.14em] text-[#8aa0b9]">最近对话</p>
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">{conversations.length ? conversations.map((conversation) => <button type="button" key={conversation.id} onClick={() => { historyConversation.selectConversation(conversation.id); close(); router.push("/analysis"); }} aria-current={conversation.id === selectedConversation ? "true" : undefined} className={`block w-full rounded-xl border px-3 py-2.5 text-left text-sm transition ${conversation.id === selectedConversation ? "border-[#c7ddff] bg-[#eaf4ff] text-[#174e96]" : "border-transparent text-[#4f6380] hover:border-[#e1ecf8] hover:bg-[#f5f9ff]"}`}><span className="line-clamp-2">{conversation.title}</span></button>) : <p className="px-3 py-2 text-[13px] leading-6 text-[#91a4bb]">从一个营销问题开始，<br />想换个角度，随时接着问。</p>}</div>
+            </> : <>
             {reports.length ? <section className="pt-4"><p className="px-3 pb-2 text-[11px] font-semibold text-[#8aa0b9]">最近分析</p>{reports.slice(0, 5).map((report) => <Link key={report.id} href={`/analysis/${report.id}`} onClick={close} className={`mb-1 block rounded-xl px-3 py-2 text-sm ${pathname === `/analysis/${report.id}` ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-secondary"}`}><span className="line-clamp-1">{report.provenance === "sample" ? "[示例] " : ""}{report.datasetName}</span><span className="mt-1 block text-[11px]">{report.query.period.start} 至 {report.query.period.end}</span></Link>)}</section> : null}
-            <p className="px-3 pb-2 pt-5 text-[11px] font-semibold tracking-[0.14em] text-[#8aa0b9]">最近活动</p>
+            <p className="px-3 pb-2 pt-5 text-[11px] font-semibold tracking-[0.14em] text-[#8aa0b9]">最近对话</p>
             <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
               {sessions.length ? (
                 sessions.map((session) => (
@@ -197,21 +212,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <p className="px-3 py-2 text-[13px] text-[#91a4bb]">还没有活动</p>
               )}
             </div>
+            </>}
           </nav>
 
           <div className="m-3 rounded-2xl border border-[#d6e6f8] bg-[linear-gradient(145deg,#f8fbff,#eaf4ff)] p-4 shadow-[0_10px_28px_rgba(43,94,151,0.07)]">
             <div className="flex items-center gap-2 text-sm font-semibold text-[#27415f]">
-              <span className="relative flex size-2.5">
+              {marketing ? <Sparkles className="size-4 text-[#247cff]" /> : <span className="relative flex size-2.5">
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#20a674]/35 motion-reduce:animate-none" />
                 <span className="relative inline-flex size-2.5 rounded-full bg-[#20a674]" />
-              </span>
-              业务计算与规则复核
+              </span>}
+              {marketing ? "用历史数据支持营销决策" : "业务计算与规则复核"}
             </div>
             <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-[#247cff]">
               <Sparkles className="size-3.5" />
-              {CAMPAIGN_TOOL_NAMES.length} 个活动执行工具
+              {marketing ? "连续对话 · 数据依据 · 候选建议" : `${CAMPAIGN_TOOL_NAMES.length} 个活动执行工具`}
             </div>
-            <p className="mt-2 text-[11px] leading-5 text-[#6f85a0]">经营分析保留数据版本与明细依据，活动执行保留规则校验与版本记录。</p>
+            <p className="mt-2 text-[11px] leading-5 text-[#6f85a0]">{marketing ? "从历史表现找到机会，验证后再行动。" : "经营分析保留数据版本与明细依据，活动执行保留规则校验与版本记录。"}</p>
           </div>
         </aside>
 

@@ -3,3 +3,24 @@ DEEPSEEK_API_KEY=
 AGENT_SERVICE_URL=
 # 可选：页面服务和 Agent 服务之间的共享口令，两边读同一个值
 AGENT_SERVICE_TOKEN=
+# 可选：外挂历史知识目录，包含observations-202508.json和evidence/，客户数据不放仓库
+ANALYTICS_HISTORY_DIR=
+# 可选：问题、计算、业务草稿与复核记录的私有目录，必须位于仓库之外
+ANALYTICS_AUDIT_DIR=
+# 可选：本地历史数据库，仅Agent读取；留空HOST时不启用
+CTF_MYSQL_HOST=
+CTF_MYSQL_PORT=3306
+CTF_MYSQL_USER=
+CTF_MYSQL_PASSWORD=
+CTF_MYSQL_DATABASE=
+CTF_MYSQL_TABLE=
+# 查询证据保存在仓库外的私有目录
+CTF_MYSQL_EVIDENCE_DIR=
+# 用户附件与解析产物必须存放仓库之外；留空使用用户应用数据目录
+ATTACHMENTS_DIR=
+# 可选：解析 Python；npm run install:attachments 安装后自动选用
+ATTACHMENTS_PYTHON=
+# 可选：LibreOffice 可执行文件；也自动识别私有 attachment-office 安装目录
+ATTACHMENTS_LIBREOFFICE=
+# 可选：图片读取模型，留空复用 DeepSeek Flash
+ATTACHMENTS_VISION_MODEL=

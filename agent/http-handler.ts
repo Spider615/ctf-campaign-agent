@@ -1,3 +1,4 @@
+import { visualizationCapability } from "../app/lib/analytics/visualization.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { isAgentRequest } from "../app/lib/agent/protocol.ts";
@@ -8,13 +9,20 @@ import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, type AgentTrac
 import type { AgentTurnRunner } from "./run-turn.ts";
 import { isAnalyticsExplainRequest } from "../app/lib/analytics/explain.ts";
 import type { AnalyticsRunner } from "./analytics-run-turn.ts";
+import type { GeneralAnalyticsRunner } from "./general-analytics-run-turn.ts";
+import { isDatabaseExplainRequest, type AnalyticsDatabase } from "../app/lib/analytics/database.ts";
+import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
+import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
 
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
   runAnalyticsTurn?: AnalyticsRunner;
+  runGeneralAnalyticsTurn?: GeneralAnalyticsRunner;
+  database?: AnalyticsDatabase;
   token: string;
   model: string;
   logger?: Pick<Console, "log" | "error">;
+  attachmentHandler?: (request: IncomingMessage, response: ServerResponse) => Promise<void>;
 };
 
 function send(response: ServerResponse, status: number, body: unknown) {
@@ -39,14 +47,19 @@ function publicError(message: string): string {
   return mentionsUnderlyingModel(message) ? "Agent 执行出错" : message;
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, token, model, logger = console }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runGeneralAnalyticsTurn, database, token, model, logger = console, attachmentHandler }: AgentHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
     const isTurn = request.method === "POST" && request.url === "/turn";
     const isStream = request.method === "POST" && request.url === "/turn/stream";
     const isAnalytics = request.method === "POST" && request.url === "/analytics/explain";
-    if (!isTurn && !isStream && !isAnalytics) return send(response, 404, { error: "没有这个接口" });
+    const isDatabase = request.method === "POST" && request.url === "/analytics/database/explain";
+    const isDatabaseStream = request.method === "POST" && request.url === "/analytics/database/explain/stream";
+    const isDatabaseInfo = request.method === "GET" && request.url === "/analytics/database";
+    const isAttachment = Boolean(attachmentHandler) && /^\/attachments(?:[/?]|$)/.test(request.url ?? "");
+    if (!isTurn && !isStream && !isAnalytics && !isDatabase && !isDatabaseStream && !isDatabaseInfo && !isAttachment) return send(response, 404, { error: "没有这个接口" });
     if (token && request.headers.authorization !== `Bearer ${token}`) return send(response, 401, { error: "Agent 服务鉴权失败" });
+    if (isAttachment) return attachmentHandler!(request, response);
 
     // 读请求体之前接上取消链路，同时覆盖绑定监听前已经断开的连接。
     const requestController = new AbortController();
@@ -59,6 +72,10 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, token, 
 
     try {
       if (requestController.signal.aborted) return;
+      if (isDatabaseInfo) {
+        try { return send(response, 200, database ? await database.inspect(requestController.signal) : { available: false, name: "周大福历史经营数据", limitations: ["历史数据库尚未配置"] }); }
+        catch (error) { if (!requestController.signal.aborted) return send(response, 502, { error: publicError(error instanceof Error ? error.message : "历史数据库暂不可用") }); return; }
+      }
       let body: unknown;
       try {
         body = await readJson(request);
@@ -67,11 +84,33 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, token, 
         return send(response, 400, { error: "请求不是有效的 JSON" });
       }
       if (requestController.signal.aborted) return;
-      if (isAnalytics) {
-        if (!isAnalyticsExplainRequest(body)) return send(response, 400, { error: "分析请求内容不完整" });
-        if (!runAnalyticsTurn) return send(response, 503, { error: "营销分析解读服务尚未启动" });
+      if (isAnalytics || isDatabase || isDatabaseStream) {
+        const schema = request.headers["x-analytics-answer-schema"];
+        if (schema !== undefined && schema !== "analysis-answer/v2") return send(response, 400, { error: "不支持这个分析回答版本" });
+        const runner = schema === "analysis-answer/v2" ? runGeneralAnalyticsTurn : runAnalyticsTurn;
+        if (!(isDatabase || isDatabaseStream ? isDatabaseExplainRequest(body) : isAnalyticsExplainRequest(body))) return send(response, 400, { error: "分析请求内容不完整" });
+        const analyticsRequest = body as Parameters<AnalyticsRunner>[0];
+        if ((isDatabase || isDatabaseStream) && !database && !quickAnalyticsReply(analyticsRequest.question)) return send(response, 503, { error: "历史数据库尚未启用" });
+        if (!runner) return send(response, 503, { error: "营销分析解读服务尚未启动" });
+        const started = performance.now();
+        if (isDatabaseStream) {
+          response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
+          response.flushHeaders();
+          const emit = (event: AnalyticsStreamEvent) => { if (!requestController.signal.aborted && !response.destroyed && !response.writableEnded) response.write(encodeAnalyticsStreamEvent(event)); };
+          try {
+            const result = await runner(analyticsRequest, requestController.signal, emit, visualizationCapability(typeof request.headers["x-analytics-visuals"] === "string" ? request.headers["x-analytics-visuals"] : undefined));
+            if (!requestController.signal.aborted) { emit({ type: "result", result }); response.end(); }
+          } catch (error) {
+            if (!requestController.signal.aborted && !isTurnCancelled(error)) {
+              const detail = error instanceof Error ? error.message : "本次分析暂未完成";
+              logger.error(`[analytics] 回答失败（${Math.round(performance.now() - started)}ms）：${publicError(detail)}`);
+              emit({ type: "error", error: /格式|候选|模型不能|证据生成/.test(detail) ? "这次回答未通过数据核验，你的问题已保留，可以重试。" : publicError(detail) }); response.end();
+            }
+          }
+          return;
+        }
         try {
-          const result = await runAnalyticsTurn(body, requestController.signal);
+          const result = await runner(analyticsRequest, requestController.signal, undefined, visualizationCapability(typeof request.headers["x-analytics-visuals"] === "string" ? request.headers["x-analytics-visuals"] : undefined));
           if (!requestController.signal.aborted) send(response, 200, result);
         } catch (error) {
           if (!requestController.signal.aborted && !isTurnCancelled(error)) send(response, 502, { error: publicError(error instanceof Error ? error.message : "AI 解读失败") });

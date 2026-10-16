@@ -92,6 +92,7 @@ body {
 button, input, textarea, select { font: inherit; }
 button, summary, a { -webkit-tap-highlight-color: transparent; }
 ::selection { background: rgb(36 124 255 / 22%); }
+.user-message-text::selection { background: #ffffff; color: #174e96; }
 
 :focus-visible {
   outline: 2px solid var(--ring);
