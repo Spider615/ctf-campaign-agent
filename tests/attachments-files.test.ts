@@ -18,8 +18,8 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
   t.after(async () => { await store.close(); await rm(directory, { recursive: true, force: true }); });
   const upload = async (name: string) => {
     const item = await store.upload(scope, { name, body: Readable.from([await readFile(join(fixtures, name))]) });
-    for (let n = 0; n < 300; n++) { const latest = await store.get(scope, item.id); if (!["queued", "processing"].includes(latest.status)) return latest; await new Promise((resolve) => setTimeout(resolve, 30)); }
-    throw new Error("合成附件解析没有结束");
+    await store.prepare(scope, [item.id]).catch(() => {});
+    return store.get(scope, item.id);
   };
   return { directory, store, upload };
 }
@@ -141,7 +141,7 @@ test("同名同内容可去重，不同文件名保留独立来源，过期后�
   const store = createAttachmentStore({ directory, clock: () => clock }); t.after(async () => { await store.close(); await rm(directory, { recursive: true, force: true }); });
   const upload = (name: string) => store.upload(scope, { name, body: Readable.from([Buffer.from("门店,实收\n甲,10\n")]) });
   const first = await upload("资料.csv"); const repeated = await upload("资料.csv"); const renamed = await upload("资料.txt");
-  assert.equal(first.id, repeated.id); assert.notEqual(first.id, renamed.id); assert.match(first.contentHash, /^[a-f0-9]{64}$/); assert.equal(first.parserVersion, "attachments/1");
+  assert.equal(first.id, repeated.id); assert.notEqual(first.id, renamed.id); assert.match(first.contentHash, /^[a-f0-9]{64}$/); assert.equal(first.parserVersion, "attachments/4");
   clock += 31 * 86400000; await assert.rejects(store.get(scope, first.id), /过期/);
   await assert.rejects(store.content(scope, first.id), /不存在|删除/); await store.remove(scope, first.id);
 });
@@ -151,6 +151,16 @@ test("真实高压缩率大成员在解包前受限，不能把压缩体积当�
   const packed = spawnSync(attachmentPython(), ["-c", "import io,sys,zipfile;b=io.BytesIO();z=zipfile.ZipFile(b,'w',zipfile.ZIP_DEFLATED);z.writestr('oversize.txt',b'x'*(100*1024*1024+1));z.close();sys.stdout.buffer.write(b.getvalue())"], { maxBuffer: 1024 * 1024 });
   assert.equal(packed.status, 0, packed.stderr.toString()); assert.ok(packed.stdout.length < 1024 * 1024);
   let item = await store.upload(scope, { name: "大成员.zip", body: Readable.from([packed.stdout]) });
-  for (let n = 0; n < 200 && ["queued", "processing"].includes(item.status); n++) { await new Promise((resolve) => setTimeout(resolve, 30)); item = await store.get(scope, item.id); }
+  await store.prepare(scope, [item.id]).catch(() => {}); item = await store.get(scope, item.id);
   assert.equal(item.status, "failed"); assert.match(item.error ?? "", /子文件大小超过限额/);
+});
+
+test("not_equals 筛选可以排除基线行", async () => {
+  const { createAttachmentTools } = await import("../agent/attachments/tools.ts");
+  const attachmentId = "11111111-1111-4111-8111-111111111111";
+  const summary = { id: attachmentId, version: "a".repeat(64), name: "活动.csv" };
+  const document = { tables: [{ id: "t", name: "活动", columns: ["类型", "贡献"], rows: [["无促销", "1000"], ["会员券", "10"], ["定价", "20"]], rowNumbers: [2, 3, 4], location: "表", warnings: [] }], blocks: [], images: [] };
+  const tools = createAttachmentTools({ document: async () => ({ summary, document }) } as never, { owner: attachmentId, conversationId: attachmentId }, [attachmentId]);
+  const total = await tools.calculate({ attachmentId, tableId: "t", operation: "sum", column: "贡献", filters: [{ column: "类型", operator: "not_equals", value: "无促销" }] });
+  assert.ok("value" in total); assert.equal(total.value, "30");
 });

@@ -2,7 +2,7 @@ import { visualizationCapability } from "../../app/lib/analytics/visualization.t
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { ATTACHMENT_LIMITS, validAttachmentId, type ConversationAnswer, type ConversationRequest } from "../../app/lib/attachments/types.ts";
+import { ATTACHMENT_LIMITS, attachmentTableRows, validAttachmentId, type ConversationAnswer, type ConversationRequest } from "../../app/lib/attachments/types.ts";
 import { validateConversationAnswer, validateConversationRequest } from "../../app/lib/attachments/answer.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsProgressEvent, type AnalyticsStreamEvent } from "../../app/lib/analytics/stream.ts";
 import type { AttachmentScope, AttachmentStore } from "./store.ts";
@@ -62,7 +62,7 @@ export function createAttachmentsHttpHandler({ store, runConversation }: { store
       if (parts[1] === "preview" && request.method === "GET") {
         const { summary, document } = await store.document(scope, attachmentId); const blockId = url.searchParams.get("blockId");
         const blocks = blockId ? document.blocks.filter((block) => block.id === blockId) : document.blocks.slice(0, 30);
-        return json(response, 200, { attachment: summary, blocks, tables: document.tables.map((table) => ({ id: table.id, name: table.name, columns: table.columns, rows: table.rows.length, location: table.location })), images: document.images });
+        return json(response, 200, { attachment: summary, blocks, tables: document.tables.map((table) => ({ id: table.id, name: table.name, columns: table.columns, rows: attachmentTableRows(table), location: table.location })), images: document.images });
       }
       if (request.method === "GET" && (parts[1] === "content" || parts[1] === "image")) {
         const image = parts[1] === "image" ? await store.image(scope, attachmentId, parts[2] ?? "") : null;

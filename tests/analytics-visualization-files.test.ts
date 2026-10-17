@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAttachmentTools } from "../agent/attachments/tools.ts";
 import type { AttachmentStore } from "../agent/attachments/store.ts";
-import { resolveAttachmentVisualization } from "../app/lib/analytics/visualization.ts";
+import { resolveAttachmentVisualization, visualizationText } from "../app/lib/analytics/visualization.ts";
 import { validateConversationAnswer, conversationAnswerText } from "../app/lib/attachments/answer.ts";
 import { createConversationRunner } from "../agent/attachments/run-turn.ts";
 import { Client } from "../agent/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js";
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentQuery } from "../agent/run-turn.ts";
 import type { SDKMessage } from "../agent/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts";
-import { visualizationSvg } from "../app/lib/analytics/visualization-html.ts";
+import { visualizationHtml, visualizationSvg } from "../app/lib/analytics/visualization-html.ts";
 import { simulatedAnswer } from "./helpers/analysis-v2-answer.ts";
 
 const attachmentId = "11111111-1111-4111-8111-111111111111";
@@ -137,4 +137,85 @@ test("混合文件回合只放置明确引用的经营图，最终段落复核�
   assert.match(conversationAnswerText(answer), /1234\.56/); assert.doesNotMatch(conversationAnswerText(answer), /成本 · 按门店/);
   const changed = structuredClone(answer); changed.visualizations!.items[0].selection = { mode: "top", limit: 1 };
   assert.throws(() => validateConversationAnswer(changed), /图表|引用|经营/);
+});
+
+test("文件高精度小数按精确值排序，图形使用受限近似坐标，提示表格和复制保留原值", async () => {
+  const summary = { id: attachmentId, version: "a".repeat(64), name: "合成公式缓存.csv" };
+  const rows = [["A低", "1234567.123456789001"], ["Z高", "1234567.123456789002"], ["M汇总", "0.100000000000000001"], ["M汇总", "0.200000000000000002"], ["A负低", "-1234567.123456789002"], ["Z负高", "-1234567.123456789001"], ["缺失", null]];
+  const document = { tables: [{ id: "table", columns: ["门店", "金额（元）"], rows, rowNumbers: rows.map((_, index) => index + 2), location: "完整表格", warnings: [] }], blocks: [], images: [] };
+  const store = { document: async () => ({ summary, document }) } as unknown as AttachmentStore;
+  const tools = createAttachmentTools(store, scope, [attachmentId], { captureCalculations: true });
+  const page = await tools.calculate({ attachmentId, tableId: "table", operation: "sum", column: "金额（元）", groupBy: ["门店"], limit: 1 });
+  const { calculations, sources } = tools.visualizationEvidence();
+  const spec = { id: "precise", revision: 1, kind: "bar" as const, renderer: "native" as const, afterBlockIndex: 0, source: { kind: "attachment" as const, calculationIds: [page.calculationId!] }, selection: { mode: "top" as const, limit: 6 } };
+  assert.equal(Number(rows[0][1]), Number(rows[1][1]), "两个精确值转换为坐标后重合，不能据此决定前列");
+  for (const renderer of ["native", "html"] as const) {
+    const chart = resolveAttachmentVisualization({ ...spec, renderer }, calculations, sources);
+    assert.deepEqual(chart.categories.map((category) => category.label), ["Z高", "A低", "M汇总", "Z负高", "A负低", "缺失"]);
+    assert.deepEqual(chart.series[0].values.map((value) => value.exact), ["1234567.123456789002", "1234567.123456789001", "0.300000000000000003", "-1234567.123456789001", "-1234567.123456789002", null]);
+    assert.equal(chart.series[0].values[0].value, Number("1234567.123456789002")); assert.equal(chart.series[0].values.at(-1)?.value, null);
+    assert.match(chart.limitations.join("；"), /近似/);
+    for (const output of [visualizationSvg(chart), visualizationHtml(chart), visualizationText(chart)]) for (const exact of ["1234567.123456789002", "0.300000000000000003"]) assert.ok(output.includes(exact), "绘图提示、数据表和复制不截断精确数值");
+  }
+  for (const unsafe of ["9007199254740991.1", "-9007199254740991.1", "1" + "0".repeat(400), "0." + "0".repeat(324) + "1"]) {
+    const changed = structuredClone(calculations); changed[0].groups[0].value = unsafe;
+    assert.throws(() => resolveAttachmentVisualization(spec, changed, sources), /范围|精度|可靠/);
+  }
+});
+
+test("Excel零点ISO月份按明确月度列绘图并补月空点，日期列仍按日且拒绝无效时间", async () => {
+  for (const column of ["月份", "年月", "月度", "日期"]) {
+    const summary = { id: attachmentId, version: "a".repeat(64), name: "合成月报.xlsx" };
+    const document = { tables: [{ id: "table", columns: [column, "净销售额_含税元"], rows: [["2025-01-01T00:00:00", "10"], ["2025-03-01T00:00:00", "30"]], rowNumbers: [2, 3], location: "月报", warnings: [] }], blocks: [], images: [] };
+    const store = { document: async () => ({ summary, document }) } as unknown as AttachmentStore;
+    const tools = createAttachmentTools(store, scope, [attachmentId], { captureCalculations: true });
+    const page = await tools.calculate({ attachmentId, tableId: "table", operation: "sum", column: "净销售额_含税元", groupBy: [column] });
+    const { calculations, sources } = tools.visualizationEvidence();
+    const spec = { id: "months", revision: 1, kind: "line" as const, renderer: "native" as const, afterBlockIndex: 0, source: { kind: "attachment" as const, calculationIds: [page.calculationId!] }, selection: { mode: "all" as const } };
+    const chart = resolveAttachmentVisualization(spec, calculations, sources);
+    assert.equal(chart.categories.length, column === "日期" ? 60 : 3, "不能靠月份间隔把日期列误当月度，也不能把月度数据补成逐日点");
+    if (column !== "日期") {
+      assert.deepEqual(chart.categories.map((item) => [item.key, item.label]), [["2025-01-01", "2025-01"], ["2025-02-01", "2025-02"], ["2025-03-01", "2025-03"]]);
+      assert.deepEqual(chart.series[0].values.map((item) => item.exact), ["10", null, "30"]);
+      assert.match(chart.limitations.join("；"), /缺失月份/); assert.doesNotMatch(chart.limitations.join("；"), /缺失日期/);
+    }
+    assert.deepEqual(chart.series[0].values[0].refIds, [calculations[0].groups[0].sourceId]);
+    for (const invalid of ["2025-02-30T00:00:00", "2025-01-01T12:00:00", "2025年第一季度"]) {
+      const changed = structuredClone(calculations); changed[0].groups[0].labels[0] = invalid;
+      assert.throws(() => resolveAttachmentVisualization(spec, changed, sources), /日期|时间/);
+    }
+    const duplicate = structuredClone(calculations); duplicate[0].groups[1].labels[0] = "2025-01-01";
+    assert.throws(() => resolveAttachmentVisualization(spec, duplicate, sources), /重复|歧义/);
+  }
+});
+
+test("比率图按百分数展示，标题去掉列名单位后缀，模型可给业务标题", async () => {
+  const tools = (() => {
+    const summary = { id: attachmentId, version: "a".repeat(64), name: "活动.csv" };
+    const document = { tables: [{ id: "table", name: "活动", columns: ["活动类型", "净毛利率", "扣营销费贡献_元"], rows: [["会员券", "0.34", "100"], ["定价", "0.26", "300"], ["每克立减", "0.09", "50"]], rowNumbers: [2, 3, 4], location: "活动表", warnings: [] }], blocks: [], images: [] };
+    return createAttachmentTools({ document: async () => ({ summary, document }) } as unknown as AttachmentStore, scope, [attachmentId], { captureCalculations: true });
+  })();
+  const rate = await tools.calculate({ attachmentId, tableId: "table", operation: "average", column: "净毛利率", groupBy: ["活动类型"] });
+  const { calculations, sources } = tools.visualizationEvidence();
+  const chart = resolveAttachmentVisualization({ id: "rate", revision: 1, kind: "bar", renderer: "native", afterBlockIndex: 0, source: { kind: "attachment", calculationIds: [rate.calculationId!] }, selection: { mode: "all" } }, calculations, sources);
+  assert.equal(chart.valueFormat, "percent"); assert.deepEqual(chart.categories.map((c) => c.label), ["会员券", "定价", "每克立减"]);
+  assert.match(visualizationSvg(chart), /34%/); assert.doesNotMatch(visualizationSvg(chart), />0\.34</);
+  const contribution = await tools.calculate({ attachmentId, tableId: "table", operation: "sum", column: "扣营销费贡献_元", groupBy: ["活动类型"] });
+  const named = resolveAttachmentVisualization({ id: "c", revision: 1, kind: "bar", renderer: "native", afterBlockIndex: 0, source: { kind: "attachment", calculationIds: [contribution.calculationId!] }, selection: { mode: "all" } }, tools.visualizationEvidence().calculations, tools.visualizationEvidence().sources);
+  assert.equal(named.title, "扣营销费贡献 · 按活动类型"); assert.equal(named.categories[0].label, "定价");
+  const titled = resolveAttachmentVisualization({ id: "c", revision: 1, kind: "bar", renderer: "native", afterBlockIndex: 0, title: "各类活动扣费贡献", source: { kind: "attachment", calculationIds: [contribution.calculationId!] }, selection: { mode: "all" } }, tools.visualizationEvidence().calculations, tools.visualizationEvidence().sources);
+  assert.equal(titled.title, "各类活动扣费贡献");
+});
+
+test("逐组派生的比率可以直接画图", async () => {
+  const summary = { id: attachmentId, version: "a".repeat(64), name: "活动.csv" };
+  const document = { tables: [{ id: "table", name: "活动", columns: ["活动类型", "净毛利_元", "净收入_元"], rows: [["会员券", "34", "100"], ["定价", "52", "200"]], rowNumbers: [2, 3], location: "活动表", warnings: [] }], blocks: [], images: [] };
+  const tools = createAttachmentTools({ document: async () => ({ summary, document }) } as unknown as AttachmentStore, scope, [attachmentId], { captureCalculations: true });
+  const profit = await tools.calculate({ attachmentId, tableId: "table", operation: "sum", column: "净毛利_元", groupBy: ["活动类型"] });
+  const revenue = await tools.calculate({ attachmentId, tableId: "table", operation: "sum", column: "净收入_元", groupBy: ["活动类型"] });
+  const margin = await tools.derive({ operation: "ratio", numeratorRef: profit.resultRef, denominatorRef: revenue.resultRef, label: "毛利率" });
+  assert.ok("groups" in margin && margin.calculationId); const marginId = (margin as { calculationId: string }).calculationId;
+  const { calculations, sources } = tools.visualizationEvidence();
+  const chart = resolveAttachmentVisualization({ id: "m", revision: 1, kind: "bar", renderer: "native", afterBlockIndex: 0, source: { kind: "attachment", calculationIds: [marginId] }, selection: { mode: "all" } }, calculations, sources);
+  assert.equal(chart.valueFormat, "percent"); assert.deepEqual(chart.categories.map((c) => c.label), ["会员券", "定价"]); assert.match(visualizationSvg(chart), /34%/);
 });

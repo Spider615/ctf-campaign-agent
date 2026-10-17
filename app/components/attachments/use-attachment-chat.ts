@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { attachmentReferences, postAttachmentStream, UnavailableAttachmentsError } from "../../lib/client/attachments";
-import { createHistoryConversationStore, historyMessageContext, type HistoryMessage } from "../../lib/client/history-conversation";
+import { attachmentReferences, postAttachmentStream, retryConversationAttachments, UnavailableAttachmentsError } from "../../lib/client/attachments";
+import { createHistoryConversationStore, historyMessageContext, replaceHistoryAttachment, type HistoryMessage } from "../../lib/client/history-conversation";
 import type { AttachmentReference, ConversationRequest } from "../../lib/attachments/types";
 import { reduceVisualizationProgress } from "../../lib/analytics/visualization-progress.ts";
 import { analyticsAnswerText } from "../../lib/analytics/stream";
@@ -19,11 +19,14 @@ export function useAttachmentChat(conversationId: string) {
   const markUnavailable = useCallback((ids: string[]) => store.update((messages) => messages.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => ids.includes(file.id) ? { ...file, unavailable: true } : file) } : {}) }))), [store]);
   useAttachmentAvailability(conversationId, messages, markUnavailable);
   useEffect(() => () => { active.current?.controller.abort(); }, [conversationId]);
-  const perform = async (request: ConversationRequest, id: string) => {
+  const perform = async (request: ConversationRequest, id: string, retryFiles = false) => {
     if (active.current) return;
     const controller = new AbortController(); const started = performance.now(); active.current = { controller, id, started }; setBusy(true);
     store.update((messages) => messages.map((message) => message.id === id ? { ...message, text: "", status: "running", trace: [], answer: undefined, visualizationState: undefined, startedAt: Date.now() } : message));
     try {
+      if (retryFiles) request = await retryConversationAttachments(request, (previousId, file) => {
+        if (active.current?.controller === controller && !controller.signal.aborted) store.update((messages) => replaceHistoryAttachment(messages, previousId, file));
+      }, controller.signal);
       const answer = await postAttachmentStream(request, (event) => {
         if (active.current?.controller !== controller || controller.signal.aborted) return;
         store.update((messages) => messages.map((message) => message.id !== id ? message : event.type === "trace" ? { ...message, trace: mergeTraceEvent(message.trace ?? [], event.event) } : event.type === "visualization" ? { ...message, visualizationState: reduceVisualizationProgress(message.visualizationState, event) } : { ...message, phase: event.phase }));
@@ -46,7 +49,7 @@ export function useAttachmentChat(conversationId: string) {
       void perform(request, id);
     },
     stop() { const turn = active.current; if (!turn) return; turn.controller.abort(); active.current = null; setBusy(false); store.update((messages) => messages.map((message) => message.id === turn.id ? { ...message, status: "cancelled", text: "已停止本次文件回答，可以继续追问。", durationMs: performance.now() - turn.started } : message)); },
-    retry(message: HistoryMessage) { if (message.request && "attachmentIds" in message.request) void perform(message.request, message.id); },
+    retry(message: HistoryMessage) { if (message.request && "attachmentIds" in message.request) void perform(message.request, message.id, true); },
     deleted(id: string) { store.update((messages) => messages.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => file.id === id ? { ...file, deleted: true } : file) } : {}) }))); },
   };
 }

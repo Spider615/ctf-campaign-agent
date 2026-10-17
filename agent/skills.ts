@@ -24,6 +24,8 @@ export type BaselineSkillName = typeof BASELINE_SKILL_NAMES[number];
 
 export type SkillRoutingContext = {
   hasIcs1811?: boolean;
+  /** 会话里已经有活动 Brief 或 1811 草稿，说明正在搭建活动。 */
+  building?: boolean;
   tracks?: readonly string[];
 };
 
@@ -64,12 +66,15 @@ function hasTermsInOrder(text: string, groups: readonly (readonly string[])[]): 
   return true;
 }
 
+// 「创建或修改活动」的说法：有了这些才需要编排规则；寒暄、问身份、问一般问题不强制加载。
+const CREATE_INTENT = /活动|策划|方案|上新|发布会|新品|会员(?:日|唤醒|招募|运营)|大促|节日|周年|开业|促销|门店(?:是|为|包括|有)|做一个|做一场|办一场|搞一个|帮我(?:建|做|搭|弄|策划)|创建|新建|继续|改成|改为|换成|修改|调整|删掉|去掉|撤销|生成|填写值|名称|内容|日期|时间|预算|渠道|人群|主题|目标/;
+
 export function requiredSkillsForTurn(
   request: Pick<AgentRequest, "trigger">,
   context: SkillRoutingContext = {},
 ): BaselineSkillName[] {
   const text = request.trigger.text.replace(/\s+/g, "").toLowerCase();
-  const required = new Set<BaselineSkillName>(["campaign-orchestrator"]);
+  const required = new Set<BaselineSkillName>();
   const fieldTopic = FIELD_TOPIC.test(text);
   const explanation = EXPLAIN_INTENT.test(text);
   const offerTopic = OFFER_TOPIC.test(text);
@@ -89,6 +94,9 @@ export function requiredSkillsForTurn(
     || offerGuidance
     || settlementGuidance;
 
+  // 正在搭建的活动里，用户的短回复（「行」「好的」）也是在推进活动，照样要加载。
+  const building = transactionContext || CREATE_INTENT.test(text) || (context.tracks?.length ?? 0) > 0 || context.building === true;
+  if (building) required.add("campaign-orchestrator");
   if (transactionContext) required.add("campaign-sop");
 
   if ((fieldTopic && explanation) || explainThenEnter) required.add("field-explainer");
@@ -101,6 +109,7 @@ export function requiredSkillsForTurn(
   if (PROMO_TOPIC.test(text) && PROMO_INTENT.test(text)) {
     required.add("promo-copy-guide");
   }
+  if (required.size) required.add("campaign-orchestrator");
 
   return BASELINE_SKILL_NAMES.filter((name) => required.has(name));
 }

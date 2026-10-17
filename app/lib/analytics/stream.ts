@@ -95,7 +95,10 @@ export async function consumeAnalyticsStream(response: Response, onProgress?: (e
   };
   try {
     while (true) {
-      const part = await reader.read(); throwIfTurnCancelled(signal);
+      let part: ReadableStreamReadResult<Uint8Array>;
+      try { part = await reader.read(); }
+      catch (error) { throw new Error("回答传输中断，你的问题已保留，可以重试本次回答。", { cause: error }); }
+      throwIfTurnCancelled(signal);
       if (part.done) break;
       buffer += decoder.decode(part.value, { stream: true });
       let newline = buffer.indexOf("\n");

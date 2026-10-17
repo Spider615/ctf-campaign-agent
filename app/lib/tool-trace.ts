@@ -1,5 +1,5 @@
 import { ALL_ANALYTICS_TRACE_TOOLS, ANALYTICS_SKILL_TRACE_TOOL } from "./analytics/tool-names.ts";
-import { ATTACHMENT_TOOLS } from "./attachments/types.ts";
+import { ATTACHMENT_PREPARATION_TRACE_TOOL, ATTACHMENT_TOOLS } from "./attachments/types.ts";
 
 export const CAMPAIGN_TOOL_NAMES = [
   "update_campaign_brief",
@@ -21,7 +21,7 @@ export type CampaignToolName = (typeof CAMPAIGN_TOOL_NAMES)[number];
 const LEGACY_TOOL_NAMES = ["build_campaign_readback", "confirm_campaign_readback"] as const;
 // 不是活动工具、但要记进执行记录的步骤：模型通过 SDK 的 Skill 工具加载业务规则技能。
 export const SKILL_TRACE_TOOL = "load_campaign_skill";
-export type TraceToolName = CampaignToolName | (typeof LEGACY_TOOL_NAMES)[number] | typeof SKILL_TRACE_TOOL | typeof ALL_ANALYTICS_TRACE_TOOLS[number] | typeof ANALYTICS_SKILL_TRACE_TOOL | typeof ATTACHMENT_TOOLS[number];
+export type TraceToolName = CampaignToolName | (typeof LEGACY_TOOL_NAMES)[number] | typeof SKILL_TRACE_TOOL | typeof ALL_ANALYTICS_TRACE_TOOLS[number] | typeof ANALYTICS_SKILL_TRACE_TOOL | typeof ATTACHMENT_TOOLS[number] | typeof ATTACHMENT_PREPARATION_TRACE_TOOL;
 export type ToolTraceStatus = "started" | "completed" | "warning" | "failed";
 export type ToolInitiator = "model" | "orchestrator";
 
@@ -68,7 +68,7 @@ type FinishTraceInput = {
   at: number;
 };
 
-const TOOL_NAME_SET = new Set<string>([...CAMPAIGN_TOOL_NAMES, ...LEGACY_TOOL_NAMES, SKILL_TRACE_TOOL, ...ALL_ANALYTICS_TRACE_TOOLS, ANALYTICS_SKILL_TRACE_TOOL, ...ATTACHMENT_TOOLS]);
+const TOOL_NAME_SET = new Set<string>([...CAMPAIGN_TOOL_NAMES, ...LEGACY_TOOL_NAMES, SKILL_TRACE_TOOL, ...ALL_ANALYTICS_TRACE_TOOLS, ANALYTICS_SKILL_TRACE_TOOL, ...ATTACHMENT_TOOLS, ATTACHMENT_PREPARATION_TRACE_TOOL]);
 const FINISHED_STATUS_SET = new Set<string>(["completed", "warning", "failed"]);
 const TRACE_STATUS_SET = new Set<string>(["started", ...FINISHED_STATUS_SET]);
 const INITIATOR_SET = new Set<string>(["model", "orchestrator"]);

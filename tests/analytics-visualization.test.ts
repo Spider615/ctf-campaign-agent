@@ -17,11 +17,11 @@ export function chartSpec(): VisualizationSpec {
   return { id: "chart", revision: 1, kind: "bar", renderer: "native", afterBlockIndex: 0, source: { kind: "analysis", operationId: "operation", metricId: "amount", dimension: "store" }, selection: { mode: "all" } };
 }
 
-test("图表从完整真实事实取值，缺失不补零，原生和 HTML 使用相同数据", () => {
+test("图表从完整真实事实取值，缺失不补零，单系列柱图按数值降序且缺失排末，原生和 HTML 使用相同数据", () => {
   const chart = resolveAnalysisVisualization(chartSpec(), chartEvidence());
-  assert.deepEqual(chart.series[0].values.map((v) => v.value), [120, null, -30]);
-  assert.deepEqual(chart.categories.map((v) => v.label), ["甲店", "乙店", "丙店"]);
-  assert.equal(chart.series[0].values[1].exact, null);
+  assert.deepEqual(chart.series[0].values.map((v) => v.value), [120, -30, null]);
+  assert.deepEqual(chart.categories.map((v) => v.label), ["甲店", "丙店", "乙店"]);
+  assert.equal(chart.series[0].values[2].exact, null);
   assert.ok(visualizationText(chart).includes("未提供"));
   assert.ok(visualizationHtml(chart).includes("甲店"));
   assert.ok(visualizationHtml(chart).includes("120"));

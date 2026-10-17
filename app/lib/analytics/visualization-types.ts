@@ -8,11 +8,11 @@ export type VisualizationSource =
   | { kind: "analysis"; operationId: string; metricId: string; dimension: AnalysisDimension | "period"; seriesDimension?: AnalysisDimension; frameIds?: string[] }
   | { kind: "scenario"; operationId: string; metricId: "scenario.revenue_change" | "scenario.revenue_after" }
   | { kind: "attachment"; calculationIds: string[]; dimensionIndex?: number; seriesIndex?: number };
-export type VisualizationSpec = { id: string; revision: number; kind: VisualizationKind; renderer: "native" | "html"; afterBlockIndex: number; source: VisualizationSource; selection: VisualizationSelection; conclusionId?: string };
+export type VisualizationSpec = { id: string; revision: number; kind: VisualizationKind; renderer: "native" | "html"; afterBlockIndex: number; source: VisualizationSource; selection: VisualizationSelection; conclusionId?: string; title?: string };
 export type Visualizations = { schema: typeof VISUALIZATION_SCHEMA; items: VisualizationSpec[] };
 export type AttachmentCalculation = {
   id: string; attachmentId: string; version: string; tableId: string; name: string; location: string;
-  operation: "sum" | "count" | "distinct" | "average" | "min" | "max"; column?: string; groupBy: string[]; unit: string;
+  operation: "sum" | "count" | "distinct" | "average" | "min" | "max" | "ratio" | "difference" | "change_rate"; column?: string; groupBy: string[]; unit: string;
   filters: Array<{ column: string; operator: string; value: string }>; groupCount: number;
   groups: Array<{ labels: string[]; value: string | null; sourceId: string; matchedRows: number; missingRows: number }>; warnings: string[];
 };
@@ -21,6 +21,8 @@ export type VisualizationValue = { value: number | null; exact: string | null; r
 export type ResolvedVisualization = {
   id: string; revision: number; kind: VisualizationKind; renderer: VisualizationSpec["renderer"]; afterBlockIndex: number;
   title: string; unit: string; scope: string; definition: string; limitations: string[]; selectionLabel: string;
+  // percent：原值是小数比率（0.26），展示时乘 100 写成 26%。
+  valueFormat?: "percent";
   categories: Array<{ key: string; label: string; numericValue?: number }>;
   xAxis?: { kind: "number"; label: string; unit: string };
   series: Array<{ key: string; label: string; values: VisualizationValue[] }>;

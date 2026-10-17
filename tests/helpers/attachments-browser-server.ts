@@ -38,8 +38,9 @@ const query: AgentQuery = async function* ({ options }) {
         let page = await call(client, "read_attachment", { attachmentId: file.id, limit: 40 });
         const content = page.blocks.filter((block: { sourceId?: string }) => block.sourceId);
         while (page.paging.nextOffset !== null) { page = await call(client, "read_attachment", { attachmentId: file.id, offset: page.paging.nextOffset, limit: 40 }); content.push(...page.blocks.filter((block: { sourceId?: string }) => block.sourceId)); }
-        const table = file.tables.find((table: { columns: string[] }) => table.columns.includes("实收"));
-        if (table) { const sum = await call(client, "calculate_attachment", { attachmentId: file.id, tableId: table.id, column: "实收", operation: "sum" }); blocks.push({ text: `文件中非空实收的合计为${sum.value}，缺失记录为${sum.missingRows}。`, sourceIds: [sum.sourceId] }); }
+        const amountColumn = (columns: string[]) => columns.find((column) => column === "实收" || column === "净销售额_含税元");
+        const table = file.tables.find((table: { columns: string[] }) => amountColumn(table.columns));
+        if (table) { const sum = await call(client, "calculate_attachment", { attachmentId: file.id, tableId: table.id, column: amountColumn(table.columns), operation: "sum" }); blocks.push({ text: `所选金额列的非空值合计为${sum.value}，缺失记录为${sum.missingRows}。`, sourceIds: [sum.sourceId] }); }
         else if (content.length) blocks.push({ text: `文件中记载：${content[0].text.slice(0, 500)}`, sourceIds: [content[0].sourceId] });
         else if (file.images.length) { const source = await call(client, "inspect_attachment_image", { attachmentId: file.id, imageId: file.images[0].id, question: "描述测试图片" }); blocks.push({ text: source.excerpt, sourceIds: [source.id] }); }
       }

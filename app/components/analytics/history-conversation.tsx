@@ -5,7 +5,7 @@ import { ChartNoAxesCombined, Lightbulb, MessageCircle } from "lucide-react";
 import { analyticsRequest } from "../../lib/client/analytics";
 import type { DatabaseExplainRequest } from "../../lib/analytics/database";
 import { conversationRoute } from "../../lib/analytics/intent";
-import { historyConversation, historyMessageContext, mergeConversationTimeline, type HistoryMessage } from "../../lib/client/history-conversation";
+import { historyConversation, historyMessageContext, mergeConversationTimeline, replaceHistoryAttachment, type HistoryMessage } from "../../lib/client/history-conversation";
 import { postHistoryStream } from "../../lib/client/history-stream";
 import { reduceVisualizationProgress } from "../../lib/analytics/visualization-progress";
 import { analyticsAnswerText } from "../../lib/analytics/stream";
@@ -20,7 +20,7 @@ import { ThinkingIndicator } from "../chat/thinking-indicator";
 import { HistoryMessageView } from "./history-message";
 import { WorkspacePanel } from "../workspace/workspace-panel";
 import type { AttachmentReference, ConversationRequest } from "../../lib/attachments/types";
-import { attachmentReferences, attachmentSubmission, postAttachmentStream, UnavailableAttachmentsError } from "../../lib/client/attachments";
+import { attachmentReferences, attachmentSubmission, postAttachmentStream, retryConversationAttachments, UnavailableAttachmentsError } from "../../lib/client/attachments";
 import { useAttachmentDraft } from "../attachments/use-attachments";
 import { useAttachmentAvailability } from "../attachments/use-attachment-availability";
 
@@ -55,12 +55,15 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
   useEffect(() => { if (last && followBottom.current) end.current?.scrollIntoView({ block: "end" }); }, [last]);
   const owns = (controller: AbortController) => active.current?.controller === controller && !controller.signal.aborted && historyConversation.activeId() === conversationId;
 
-  const perform = async (request: DatabaseExplainRequest | ConversationRequest, replyId: string) => {
+  const perform = async (request: DatabaseExplainRequest | ConversationRequest, replyId: string, retryFiles = false) => {
     if (active.current || executionLock.current || historyConversation.activeId() !== conversationId) return;
     const controller = new AbortController(); const clock = now(); active.current = { controller, replyId, clock }; setBusy(true); setError("");
     setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "running", text: "", answer: undefined, visualizationState: undefined, trace: [], phase: "analyzing", startedAt: Date.now(), durationMs: undefined } : m));
     try {
       await analyticsRequest("/api/analytics/access", undefined, controller.signal);
+      if (retryFiles && "attachmentIds" in request) request = await retryConversationAttachments(request, (previousId, file) => {
+        if (owns(controller)) setMessages((items) => replaceHistoryAttachment(items, previousId, file));
+      }, controller.signal);
       const progress: Parameters<typeof postHistoryStream>[1] = (event) => {
         if (!owns(controller)) return;
         setMessages((items) => items.map((m) => m.id !== replyId ? m : event.type === "trace" ? { ...m, trace: mergeTraceEvent(m.trace ?? [], event.event) } : event.type === "visualization" ? { ...m, visualizationState: reduceVisualizationProgress(m.visualizationState, event) } : { ...m, phase: event.phase }));
@@ -114,7 +117,7 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
     if (turn.replyId) setMessages((items) => items.map((m) => m.id === turn.replyId ? { ...m, status: "cancelled", text: "已停止本次回答，你可以继续追问。", durationMs: now() - turn.clock } : m));
     else { setInput((current) => current || pendingCreation || ""); setPendingCreation(null); }
   };
-  const retry = (message: HistoryMessage) => { if (message.request) { followBottom.current = true; void perform(message.request, message.id); } };
+  const retry = (message: HistoryMessage) => { if (message.request) { followBottom.current = true; void perform(message.request, message.id, true); } };
   const fileDeleted = (id: string) => setMessages((items) => items.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => file.id === id ? { ...file, deleted: true } : file) } : {}) })));
 
   if (campaignId) return <Conversation sessionId={campaignId} attachmentConversationId={conversationId} autoOpenPanel={false} composerMaxLength={500} externalBusy={busy} onExternalStop={stop} onBusyChange={executionBusyChanged}

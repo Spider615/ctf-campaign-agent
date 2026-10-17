@@ -97,6 +97,17 @@ test("同一网络分帧里停止后，不再递送后面的公开过程", async
   assert.equal(delivered, 1);
 });
 
+test("回答传输断开时显示可操作的中文提示，不能把阶段过程当成完整答案", async () => {
+  let reads = 0;
+  const response = new Response(new ReadableStream<Uint8Array>({ pull(output) {
+    if (reads++ === 0) output.enqueue(new TextEncoder().encode(`${JSON.stringify(progress)}\n`));
+    else output.error(new TypeError("network error"));
+  } }));
+  const events: stream.AnalyticsProgressEvent[] = [];
+  await assert.rejects(stream.consumeAnalyticsStream(response, (event) => events.push(event)), /传输中断.*重试/);
+  assert.deepEqual(events, [progress]);
+});
+
 test("JSON 回退读取期间取消，完整答案仍不能作为成功返回", async (t) => {
   const controller = new AbortController();
   t.mock.method(globalThis, "fetch", async () => ({ ok: true, headers: new Headers({ "content-type": "application/json" }), async json() { controller.abort(); return { explanation: simulatedAnswer() }; } }));

@@ -50,8 +50,12 @@ def error_detail(error):
     # 诊断仅保存在私有任务目录，公共元信息只返回下面的中文摘要。
     with (OUT / "parser-details.txt").open("a", encoding="utf-8") as diagnostic:
         diagnostic.write(traceback.format_exc() + "\n")
+    if isinstance(error, ImportError):
+        return "文件解析依赖缺失，请运行 npm run install:attachments"
     if isinstance(error, MemoryError):
         return "文件解析超过内存限额，请拆分文件后重试"
+    if isinstance(error, csv.Error):
+        return "CSV 引号或字段格式不完整，无法可靠解析"
     if type(error).__name__ == "DecompressionBombError":
         return "图片像素超过解析限额"
     detail = str(error).replace(str(INPUT), "上传文件").replace(str(OUT), "解析目录")
@@ -124,6 +128,10 @@ def decode(data):
         except UnicodeDecodeError:
             pass
     raise ValueError("无法识别的文件编码，暂不支持读取")
+
+
+def numeric_text(value):
+    return isinstance(value, str) and re.fullmatch(r"[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[eE][+-]?\d+)?", value.strip()) is not None
 
 
 class SafeHTML(HTMLParser):
@@ -363,6 +371,10 @@ def parse_pptx(src, path):
 
 
 def parse_xlsx(src, path):
+    with zipfile.ZipFile(src) as container:
+        if sum(item.file_size for item in container.infolist()) > 16 * 1024 * 1024:
+            from xlsx import parse_workbook
+            return parse_workbook(src, OUT, result, block, warning, path)
     from openpyxl import load_workbook
     from openpyxl.utils.cell import range_boundaries, get_column_letter
     from lxml import etree
@@ -371,20 +383,24 @@ def parse_xlsx(src, path):
     workbook_xml = etree.fromstring(archive.read("xl/workbook.xml"), parser)
     relations = etree.fromstring(archive.read("xl/_rels/workbook.xml.rels"), parser)
     targets = {node.get("Id"): node.get("Target", "") for node in relations}
-    merged_by_sheet = {}
+    merged_by_sheet = {}; empty_formula_cache = {}
     for node in workbook_xml.xpath("//*[local-name()='sheet']"):
         target = targets.get(node.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"), "")
         member = target.lstrip("/") if target.startswith("/") else "xl/" + target
-        merges = []
+        merges = []; empty_cached = set()
         if member in archive.namelist():
             with archive.open(member) as stream:
                 for _, element in etree.iterparse(stream, events=("end",), resolve_entities=False, no_network=True, load_dtd=False):
                     if element.tag.endswith("}mergeCell"):
                         merges.append(element.get("ref"))
-                    element.clear()
-                    while element.getprevious() is not None:
-                        del element.getparent()[0]
+                    if element.tag.endswith("}c") and element.get("t") == "str" and element.find("{*}f") is not None and element.find("{*}v") is not None:
+                        empty_cached.add(element.get("r"))
+                    if element.tag.endswith("}c") or element.tag.endswith("}row") or element.tag.endswith("}mergeCell"):
+                        element.clear()
+                        while element.getprevious() is not None:
+                            del element.getparent()[0]
         merged_by_sheet[node.get("name")] = merges
+        empty_formula_cache[node.get("name")] = empty_cached
     archive.close()
     value_input = src.open("rb"); formula_input = src.open("rb")
     values = load_workbook(value_input, data_only=True, read_only=True, keep_links=False)
@@ -393,28 +409,31 @@ def parse_xlsx(src, path):
         if sheet.max_row and sheet.max_row > MAX_ROWS + 2000 or sheet.max_column and sheet.max_column > 1000:
             raise ValueError("工作表行列数超过解析限额")
         formula_sheet = formulas[sheet.title]
-        records = []; local_warnings = []; blocked = []
+        records = []; local_warnings = []; blocked = []; formula_rows = set()
         for number, (row, original) in enumerate(zip(sheet.iter_rows(), formula_sheet.iter_rows()), 1):
             output = []
             for cell, formula in zip(row, original):
                 value = cell.value
                 if formula.data_type == "f":
+                    formula_rows.add(number)
+                    missing_cache = value is None and formula.coordinate not in empty_formula_cache.get(sheet.title, set())
                     message = sheet.title + "：存在公式，读取文件内缓存值，未重新计算"
-                    if value is None:
+                    if missing_cache:
                         message = sheet.title + "：部分公式没有缓存值，相关单元格不可作为数值依据"
-                    warning(message)
+                    if missing_cache:
+                        warning(message)
                     if message not in local_warnings:
                         local_warnings.append(message)
                 if hasattr(value, "isoformat"):
                     value = value.isoformat()
                 output.append(value)
-            if not any(value is not None and value != "" for value in output):
+            if number not in formula_rows and not any(value is not None and value != "" for value in output):
                 continue
             records.append((number, output))
         if records:
             start = records[0][0]; width = max(len(row) for _, row in records)
             matrix = {number: row for number, row in records}
-            has_header = all(value is None or isinstance(value, str) for value in records[0][1])
+            has_header = start not in formula_rows and all(value is None or isinstance(value, str) for value in records[0][1]) and not any(numeric_text(value) for value in records[0][1])
             header_end = start if has_header else start - 1
             ranges = []; merged_cells = []
             for cell_range in merged_by_sheet.get(sheet.title, []):
@@ -427,7 +446,7 @@ def parse_xlsx(src, path):
                 # 只有从首行延伸且没有数值的明确合并表头可合并为多层列名。
                 if has_header and top == start and bottom > start:
                     header_records = [row for number, row in records if start <= number <= bottom]
-                    if bottom - start <= 10 and all(value is None or isinstance(value, str) for row in header_records for value in row):
+                    if bottom - start <= 10 and not any(number in formula_rows for number in range(start, bottom + 1)) and all(value is None or isinstance(value, str) and not numeric_text(value) for row in header_records for value in row):
                         header_end = max(header_end, bottom)
                     else:
                         blocked.append("合并范围 " + cell_range + " 跨越表头和数值记录，不能确定数据边界")
@@ -461,7 +480,7 @@ def parse_xlsx(src, path):
             else:
                 header = ["列 " + get_column_letter(index + 1) for index in range(width)]
                 body = records
-                local_warnings.append("首行包含数值，未假定它是表头，全部原始行均保留并使用列标")
+                blocked.append("首行包含数值或公式，不能确定表头与列含义；全部原始行均保留并使用列标")
             if blocked:
                 local_warnings.extend(blocked)
                 for message in blocked:
@@ -603,20 +622,25 @@ def parse_archive(src, path, depth, hint):
         if error:
             result["entries"].append(dict(path=child_path, status="encrypted" if "加密" in error else "failed", detail=error)); continue
         target = OUT / ("child-" + str(budget["files"]))
-        size = 0
-        with target.open("wb") as output:
-            while True:
-                chunk = stream.read(65536)
-                if not chunk:
-                    break
-                size += len(chunk); budget["bytes"] += len(chunk)
-                if size > MAX_CHILD or budget["bytes"] > MAX_BYTES:
-                    raise ValueError("压缩包展开大小超过限额")
-                output.write(chunk)
         before = len(result["warnings"])
+        before_entries = len(result["entries"])
+        before_content = (len(result["blocks"]), len(result["tables"]), len(result["images"]))
         try:
+            size = 0
+            with target.open("wb") as output:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                    size += len(chunk); budget["bytes"] += len(chunk)
+                    if size > MAX_CHILD or budget["bytes"] > MAX_BYTES:
+                        raise ValueError("压缩包展开大小超过限额")
+                    output.write(chunk)
             parse_file(target, name, child_path, depth + 1)
-            result["entries"].append(dict(path=child_path, status="partial" if len(result["warnings"]) > before else "ready"))
+            if before_content == (len(result["blocks"]), len(result["tables"]), len(result["images"])):
+                raise ValueError("文件没有可读取正文；可能是仅依赖脚本的页面或空文件")
+            incomplete = len(result["warnings"]) > before or any(entry["status"] != "ready" for entry in result["entries"][before_entries:])
+            result["entries"].append(dict(path=child_path, status="partial" if incomplete else "ready"))
         except Exception as caught:
             detail = error_detail(caught)
             state = "encrypted" if "加密" in detail else "unsupported" if "不支持" in detail else "failed"
@@ -674,7 +698,7 @@ def parse_file(src, name, path="", depth=0):
             dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
         except csv.Error:
             dialect = csv.excel_tab if extension == ".tsv" else csv.excel
-        reader = csv.reader(io.StringIO(content, newline=""), dialect)
+        reader = csv.reader(io.StringIO(content, newline=""), dialect, strict=True)
         rows = []; numbers = []; starts = []; previous = 0
         for row in reader:
             starts.append(previous + 1); numbers.append(reader.line_num); previous = reader.line_num; rows.append(row)
@@ -708,6 +732,8 @@ def parse_file(src, name, path="", depth=0):
 
 
 try:
+    for suffix in ["", "-journal", "-wal", "-shm"]:
+        (OUT / ("tables.sqlite" + suffix)).unlink(missing_ok=True)
     # 全局关闭 XML 外部实体，第三方解析器也不能据上传内容联网。
     from lxml import etree
     etree.set_default_parser(etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False))

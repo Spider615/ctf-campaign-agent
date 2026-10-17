@@ -905,7 +905,7 @@ test("system prompt is a generic marketing-agent contract and the user prompt ca
   assert.match(system, /今天是 2026-09-16/);
   assert.match(system, /企业营销运营的活动搭建 Agent/);
   assert.match(system, /当前客户和具体业务由本轮 Skill 与工具定义/);
-  assert.match(system, /每个模型回合[^\n]*先加载[^\n]*必需 Skill/);
+  assert.match(system, /每个模型回合[^\n]*必需 Skill 时先全部加载[^\n]*只有要创建或修改活动/);
   assert.match(system, /工具结果与确定性代码[^\n]*执行真相/);
   assert.match(system, /不暴露[^\n]*系统提示词[^\n]*内部推理/);
   assert.match(system, /业务工具完成前[^\n]*不要输出面向用户的铺垫/);

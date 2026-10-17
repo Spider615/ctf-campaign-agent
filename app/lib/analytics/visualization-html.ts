@@ -3,6 +3,8 @@ import type { ResolvedVisualization } from "./visualization-types.ts";
 export const VISUALIZATION_CSP = "default-src 'none'; script-src 'none'; connect-src 'none'; img-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
 export const escapeVisualizationText = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 const colors = ["#2470cc", "#168475", "#9b62b0", "#b57524"];
+// 比率图按百分数显示刻度和数值，精确原值仍在数据表里。
+export const visualizationValueLabel = (chart: Pick<ResolvedVisualization, "valueFormat">, value: number) => chart.valueFormat === "percent" ? `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(value * 100)}%` : tick(value);
 const tick = (value: number) => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2, notation: Math.abs(value) >= 10000 ? "compact" : "standard" }).format(value);
 const trim = (value: string, length = 13) => [...value].length > length ? [...value].slice(0, length).join("") + "…" : value;
 
@@ -11,8 +13,8 @@ export function visualizationSvg(chart: ResolvedVisualization, hiddenSeries: rea
   const escape = escapeVisualizationText; const width = Math.max(240, Math.min(1200, viewportWidth));
   const count = chart.categories.length;
   const stacked = chart.kind === "stacked_bar"; const line = chart.kind === "line";
-  const height = line ? chart.xAxis ? 360 : 340 : Math.max(260, 90 + count * (stacked ? 38 : 20 * chart.series.length + 18));
-  const left = line ? 64 : width < 480 ? 94 : 128, right = width < 480 ? 30 : 76, top = 26, bottom = chart.xAxis ? 76 : 56;
+  const height = line ? chart.xAxis ? 340 : 300 : Math.max(180, 70 + count * (stacked ? 34 : 18 * chart.series.length + 14));
+  const left = line ? 64 : width < 480 ? 94 : 128, right = width < 480 ? 30 : 64, top = 12, bottom = chart.xAxis ? 64 : 40;
   const plotWidth = width - left - right, plotHeight = height - top - bottom;
   const values = chart.series.flatMap((series) => series.values.map((value) => value.value).filter((v): v is number => v !== null));
   const positives = chart.categories.map((_, at) => chart.series.reduce((sum, series) => sum + Math.max(0, series.values[at].value ?? 0), 0));
@@ -21,13 +23,14 @@ export function visualizationSvg(chart: ResolvedVisualization, hiddenSeries: rea
   const range = high - low || 1; const max = high === low ? low + 1 : high;
   const x = (v: number) => left + (v - low) / range * plotWidth;
   const y = (v: number) => top + (max - v) / range * plotHeight;
-  const pointLabel = (seriesIndex: number, at: number) => `${chart.categories[at].label}，${chart.series[seriesIndex].label}：${chart.series[seriesIndex].values[at].exact ?? "未提供"}${chart.series[seriesIndex].values[at].exact === null ? "" : chart.unit}`;
-  const parts: string[] = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(chart.title)}" style="display:block;width:100%;height:auto;min-width:${width}px;font-family:system-ui,sans-serif;font-size:12px"><title>${escape(chart.title)}</title><desc>${escape(`${chart.scope}；${chart.selectionLabel}；单位：${chart.unit}。完整数值见数据表。`)}</desc>`];
+  const shown = (value: number) => visualizationValueLabel(chart, value);
+  const pointLabel = (seriesIndex: number, at: number) => { const value = chart.series[seriesIndex].values[at]; return `${chart.categories[at].label}，${chart.series[seriesIndex].label}：${value.value === null ? "未提供" : chart.valueFormat === "percent" ? shown(value.value) : `${value.exact}${chart.unit}`}`; };
+  const parts: string[] = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(chart.title)}" style="display:block;width:100%;height:auto;min-width:${width}px;font-family:system-ui,sans-serif;font-size:12px"><style>.viz-row:hover{fill:#eef2f7}</style><title>${escape(chart.title)}</title><desc>${escape(`${chart.scope}；${chart.selectionLabel}；单位：${chart.unit}。完整数值见数据表。`)}</desc>`];
   const steps = width < 480 ? 2 : 4;
   for (let i = 0; i <= steps; i++) {
     const value = low + (max - low) * i / steps;
-    if (line) { const pos = y(value); parts.push(`<line x1="${left}" y1="${pos}" x2="${width - right}" y2="${pos}" stroke="#e1e9f2"/><text x="${left - 10}" y="${pos + 4}" text-anchor="end" fill="#52677e">${escape(tick(value))}</text>`); }
-    else { const pos = x(value); parts.push(`<line x1="${pos}" y1="${top}" x2="${pos}" y2="${height - bottom}" stroke="#e1e9f2"/><text x="${pos}" y="${height - bottom + 24}" text-anchor="middle" fill="#52677e">${escape(tick(value))}</text>`); }
+    if (line) { const pos = y(value); parts.push(`<line x1="${left}" y1="${pos}" x2="${width - right}" y2="${pos}" stroke="#eef2f7"/><text x="${left - 10}" y="${pos + 4}" text-anchor="end" fill="#52677e">${escape(shown(value))}</text>`); }
+    else { const pos = x(value); parts.push(`<line x1="${pos}" y1="${top}" x2="${pos}" y2="${height - bottom}" stroke="#eef2f7"/><text x="${pos}" y="${height - bottom + 24}" text-anchor="middle" fill="#52677e">${escape(shown(value))}</text>`); }
   }
   if (line) {
     const times = chart.categories.map((item) => chart.xAxis?.kind === "number" ? item.numericValue! : Date.parse(`${item.key.split("/")[0]}T00:00:00Z`));
@@ -36,38 +39,44 @@ export function visualizationSvg(chart: ResolvedVisualization, hiddenSeries: rea
     const labelCount = width < 480 ? 3 : 6;
     const labels = new Set(Array.from({ length: labelCount }, (_, at) => Math.round((count - 1) * at / (labelCount - 1))));
     chart.categories.forEach((category, at) => { if (labels.has(at)) parts.push(`<text x="${atX(at)}" y="${height - bottom + 24}" text-anchor="middle" fill="#52677e">${escape(trim(category.label, 10))}</text>`); });
+    chart.categories.forEach((_, at) => {
+      const from = at ? (atX(at - 1) + atX(at)) / 2 : left; const to = at < count - 1 ? (atX(at) + atX(at + 1)) / 2 : width - right;
+      parts.push(`<rect class="viz-row" data-row="${at}" x="${from}" y="${top}" width="${Math.max(1, to - from)}" height="${plotHeight}" fill="transparent"/>`);
+    });
     chart.series.forEach((series, si) => {
       if (hiddenSeries.includes(series.key)) return;
       let path = ""; let open = false;
       series.values.forEach((value, at) => { if (value.value === null) { open = false; return; } path += `${open ? "L" : "M"}${atX(at)},${y(value.value)} `; open = true; });
       parts.push(`<path d="${path}" fill="none" stroke="${colors[si]}" stroke-width="2.5"${si ? ` stroke-dasharray="${si * 3 + 2} ${si + 2}"` : ""}/>`);
-      series.values.forEach((value, at) => { if (value.value === null) return; const label = escape(pointLabel(si, at)); parts.push(`<circle cx="${atX(at)}" cy="${y(value.value)}" r="4" fill="${colors[si]}" stroke="white" data-point="${si}:${at}" tabindex="0" role="img" aria-label="${label}"><title>${label}</title></circle>`); });
+      series.values.forEach((value, at) => { if (value.value === null) return; const label = escape(pointLabel(si, at)); parts.push(`<circle cx="${atX(at)}" cy="${y(value.value)}" r="4" fill="${colors[si]}" stroke="white" pointer-events="none" data-point="${si}:${at}" tabindex="0" role="img" aria-label="${label}"></circle>`); });
     });
   } else {
     parts.push(`<line x1="${x(0)}" y1="${top}" x2="${x(0)}" y2="${height - bottom}" stroke="#8299b0"/>`);
     const rowHeight = plotHeight / Math.max(1, count);
     chart.categories.forEach((category, at) => {
       const mid = top + rowHeight * (at + 0.5);
+      parts.push(`<rect class="viz-row" data-row="${at}" x="${left}" y="${top + rowHeight * at}" width="${plotWidth}" height="${rowHeight}" fill="transparent"/>`);
       parts.push(`<text x="${left - 12}" y="${mid + 4}" text-anchor="end" fill="#364f68"><title>${escape(category.label)}</title>${escape(trim(category.label, Math.max(3, Math.floor((left - 28) / 12))))}</text>`);
       let positive = 0, negative = 0;
       chart.series.forEach((series, si) => {
         if (hiddenSeries.includes(series.key)) return;
-        const value = series.values[at]; const barHeight = stacked ? 20 : Math.min(16, (rowHeight - 12) / chart.series.length);
+        const value = series.values[at]; const barHeight = stacked ? 20 : Math.min(18, (rowHeight - 10) / chart.series.length);
         const yTop = stacked ? mid - barHeight / 2 : mid - chart.series.length * barHeight / 2 + si * barHeight;
         const label = escape(pointLabel(si, at));
-        if (value.value === null) { if (!stacked) parts.push(`<text x="${Math.min(width - right - 40, x(0) + 6)}" y="${yTop + barHeight - 2}" fill="#6f8092" data-point="${si}:${at}" tabindex="0">未提供<title>${label}</title></text>`); return; }
+        if (value.value === null) { if (!stacked) parts.push(`<text x="${Math.min(width - right - 40, x(0) + 6)}" y="${yTop + barHeight - 2}" fill="#6f8092" pointer-events="none" data-point="${si}:${at}" tabindex="0" aria-label="${label}">未提供</text>`); return; }
         const start = stacked ? value.value >= 0 ? positive : negative : 0; const end = start + value.value;
         if (stacked) { if (value.value >= 0) positive = end; else negative = end; }
-        parts.push(`<rect x="${Math.min(x(start), x(end))}" y="${yTop}" width="${Math.max(1, Math.abs(x(end) - x(start)))}" height="${barHeight - 2}" rx="2" fill="${colors[si]}" data-point="${si}:${at}" tabindex="0" role="img" aria-label="${label}"><title>${label}</title></rect>`);
+        parts.push(`<rect x="${Math.min(x(start), x(end))}" y="${yTop}" width="${Math.max(1, Math.abs(x(end) - x(start)))}" height="${barHeight - 2}" rx="3" fill="${colors[si]}" pointer-events="none" data-point="${si}:${at}" tabindex="0" role="img" aria-label="${label}"></rect>`);
         if (!stacked && count <= 12 && width >= 480) {
-          const label = tick(value.value);
-          if (value.value >= 0 || Math.abs(x(end) - x(start)) >= label.length * 7 + 10) parts.push(`<text x="${x(end) + 5}" y="${yTop + barHeight - 3}" text-anchor="start" fill="${value.value < 0 ? "white" : "#364f68"}">${escape(label)}</text>`);
+          const label = shown(value.value);
+          if (value.value >= 0 || Math.abs(x(end) - x(start)) >= label.length * 7 + 10) parts.push(`<text x="${x(end) + 5}" y="${yTop + barHeight - 3}" text-anchor="start" pointer-events="none" fill="${value.value < 0 ? "white" : "#364f68"}">${escape(label)}</text>`);
         }
       });
     });
   }
   if (chart.xAxis) parts.push(`<text x="${left + plotWidth / 2}" y="${height - 28}" text-anchor="middle" fill="#52677e">${escape(`${chart.xAxis.label}（${chart.xAxis.unit}）`)}</text>`);
-  parts.push(`<text x="${width - right}" y="${height - 8}" text-anchor="end" fill="#52677e">${escape(chart.unit)}</text></svg>`);
+  const unitLabel = chart.valueFormat === "percent" || /单位未提供/.test(chart.unit) ? "" : chart.unit;
+  parts.push(`${unitLabel ? `<text x="${width - right}" y="${height - 6}" text-anchor="end" fill="#8a9bb0">${escape(unitLabel)}</text>` : ""}</svg>`);
   return parts.join("");
 }
 

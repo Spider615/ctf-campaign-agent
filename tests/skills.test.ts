@@ -120,6 +120,7 @@ function expectCatalogError(action: () => unknown, relativePath: string, reason:
 type SkillRoutingContext = {
   hasIcs1811?: boolean;
   tracks?: string[];
+  building?: boolean;
 };
 
 function requiredSkills(text: string, context: SkillRoutingContext = {}) {
@@ -152,7 +153,7 @@ test("按知识请求保守选择基线 Skill，并保持基线顺序", () => {
     ["先解释浮动和固定的区别，再告诉我这个活动怎么录", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide", "field-explainer"]],
     ["先解释区别，再告诉我这个活动怎么录", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide", "field-explainer"]],
     ["这个活动怎么录，再解释区别", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide", "field-explainer"]],
-    ["区别解释怎么录", ["campaign-orchestrator"]],
+    ["区别解释怎么录", []],
     ["满减是什么意思", ["campaign-orchestrator", "campaign-sop", "offer-entry-guide"]],
   ];
 
@@ -207,7 +208,13 @@ test("普通交易事实加载编排与 1811 子流程 Skill", () => {
   }
 });
 
-test("每个模型回合都要求编排 Skill，通用活动不误载 1811 子流程", () => {
+test("寒暄和一般问答不强制加载 Skill，创建活动才要求编排 Skill", () => {
+  for (const text of ["你好", "你是谁", "谢谢", "你能做什么", "今天天气怎么样"]) assert.deepEqual(requiredSkills(text), [], text);
+  assert.deepEqual(requiredSkills("行", { building: true }), ["campaign-orchestrator"]);
+  assert.deepEqual(requiredSkills("好的"), []);
+});
+
+test("通用活动要求编排 Skill，不误载 1811 子流程", () => {
   assert.deepEqual(requiredSkills("帮我策划一场新品发布活动"), ["campaign-orchestrator"]);
   assert.deepEqual(requiredSkills("做一个会员唤醒活动"), ["campaign-orchestrator"]);
   assert.deepEqual(requiredSkills("先继续完善活动方案"), ["campaign-orchestrator"]);
@@ -249,7 +256,7 @@ test("混合意图扫描对不完整的长输入保持线性", () => {
     const actual = requiredSkillsForTurn({
       trigger: { kind: "user_message", text: "解释区别怎么".repeat(320) },
     });
-    if (JSON.stringify(actual) !== '["campaign-orchestrator"]') process.exit(1);
+    if (JSON.stringify(actual) !== '[]') process.exit(1);
   `;
   const result = spawnSync(
     process.execPath,

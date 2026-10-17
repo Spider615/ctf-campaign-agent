@@ -6,6 +6,12 @@ import { isConversationAnswer } from "../attachments/answer.ts";
 import type { AttachmentReference, ConversationRequest } from "../attachments/types.ts";
 
 export type HistoryMessage = { id: string; role: "user" | "assistant"; text: string; createdAt: string; answer?: AnalyticsAnswerResult; request?: DatabaseExplainRequest | ConversationRequest; attachments?: AttachmentReference[]; status?: "running" | "done" | "failed" | "cancelled"; trace?: AgentTraceEvent[]; startedAt?: number; durationMs?: number; phase?: "analyzing" | "writing"; visualizationState?: VisualizationProgressState; afterMessageId?: string };
+export function replaceHistoryAttachment(messages: HistoryMessage[], previousId: string, file: AttachmentReference): HistoryMessage[] {
+  return messages.map((message) => ({ ...message,
+    ...(message.attachments ? { attachments: [...new Map(message.attachments.map((item) => item.id === previousId ? file : item).map((item) => [item.id, item])).values()] } : {}),
+    ...(message.request && "attachmentIds" in message.request ? { request: { ...message.request, attachmentIds: [...new Set(message.request.attachmentIds.map((id) => id === previousId ? file.id : id))] } } : {}),
+  }));
+}
 type Thread = { id: string; title: string; messages: HistoryMessage[]; context: string[]; campaignId: string | null; updatedAt: string };
 export type ConversationSummary = Pick<Thread, "id" | "title" | "updatedAt" | "campaignId">;
 type Persistence = { getItem(key: string): string | null; setItem(key: string, value: string): void };

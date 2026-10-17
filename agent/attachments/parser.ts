@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import type { ParsedAttachment } from "../../app/lib/attachments/types.ts";
@@ -11,7 +11,16 @@ const script = fileURLToPath(new URL("./parse.py", import.meta.url));
 type Runtime = { python: string; packages: string[] };
 const runtimes = new Map<string, Runtime>();
 export function attachmentPython() { const installed = join(homedir(), "Library/Application Support/ctf-campaign-agent/attachment-python/bin/python3"); return process.env.ATTACHMENTS_PYTHON || (existsSync(installed) ? installed : "python3"); }
-export function attachmentOffice() { const installed = join(homedir(), "Library/Application Support/ctf-campaign-agent/attachment-office/LibreOffice.app/Contents/MacOS/soffice"); return process.env.ATTACHMENTS_LIBREOFFICE || (existsSync(installed) ? installed : "soffice"); }
+export function attachmentOffice() {
+  const installed = join(homedir(), "Library/Application Support/ctf-campaign-agent/attachment-office/LibreOffice.app/Contents/MacOS/soffice");
+  const requested = process.env.ATTACHMENTS_LIBREOFFICE || (existsSync(installed) ? installed : "soffice");
+  const located = isAbsolute(requested) ? requested : (process.env.PATH ?? "").split(delimiter).map((path) => join(path, requested)).find(existsSync);
+  if (!located || !existsSync(located)) return requested;
+  const executable = realpathSync(located);
+  // 内置运行时的命令是脚本入口；直接使用同一依赖包内的原生程序以便精确授权。
+  const bundled = join(dirname(executable), "../../native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/MacOS/soffice");
+  return process.platform === "darwin" && executable.endsWith("/bin/override/soffice") && existsSync(bundled) ? realpathSync(bundled) : executable;
+}
 
 function runtime(python: string): Runtime {
   const known = runtimes.get(python); if (known) return known;
@@ -38,7 +47,10 @@ async function parseInSandbox(input: string, output: string, name: string, signa
     const quote = (value: string) => JSON.stringify(value);
     // macOS 系统框架需要读取系统运行时；用户文件与临时目录另行禁止，例外只含本任务和解析依赖。
     const office = attachmentOffice();
-    const readable = [dirname(script), dirname(dirname(selected.python)), ...selected.packages, output, scratch, ...(isAbsolute(office) && existsSync(office) ? [dirname(dirname(dirname(realpathSync(office))))] : [])];
+    const officeExecutable = isAbsolute(office) && existsSync(office) ? realpathSync(office) : undefined;
+    const appBoundary = officeExecutable?.lastIndexOf(".app/Contents/MacOS/") ?? -1;
+    const officeDirectory = officeExecutable ? appBoundary >= 0 ? officeExecutable.slice(0, appBoundary + 4) : dirname(officeExecutable) : undefined;
+    const readable = [dirname(script), dirname(dirname(selected.python)), ...selected.packages, output, scratch, ...(officeDirectory ? [officeDirectory] : [])];
     const exceptions = `${readable.map((path) => `(require-not (subpath ${quote(path)}))`).join(" ")} (require-not (literal ${quote(realpathSync(input))}))`;
     const parents = new Set<string>();
     for (const path of [...readable, input]) for (let parent = dirname(path); parent !== dirname(parent); parent = dirname(parent)) parents.add(parent);

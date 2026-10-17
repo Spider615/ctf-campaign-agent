@@ -5,18 +5,20 @@ import { parseVisualizationSpec, resolveAnalysisVisualization, resolveAttachment
 import { VISUALIZATION_SCHEMA, VISUALIZATION_LIMITS, type AttachmentCalculation, type VisualizationFileSource, type VisualizationProgressEvent, type VisualizationSpec } from "../app/lib/analytics/visualization-types.ts";
 
 type Placement = { id: string; afterBlockIndex: number; conclusionId?: string };
-type Input = Pick<VisualizationSpec, "kind" | "renderer" | "source" | "selection"> & { id?: string };
-export function createVisualizationRegistry(options: { runId: string; enabled: boolean; emit?: (event: VisualizationProgressEvent) => void; analysisEvidence?: () => AnalysisEvidence; attachmentEvidence?: () => { calculations: AttachmentCalculation[]; sources: VisualizationFileSource[] }; audit?: (kind: string, data: unknown) => void }) {
+type Input = Pick<VisualizationSpec, "kind" | "source"> & Partial<Pick<VisualizationSpec, "renderer" | "selection" | "title">> & { id?: string };
+export function createVisualizationRegistry(options: { runId: string; enabled: boolean; emit?: (event: VisualizationProgressEvent) => void; analysisEvidence?: () => AnalysisEvidence; attachmentEvidence?: () => { calculations: AttachmentCalculation[]; sources: VisualizationFileSource[] }; audit?: (kind: string, data: unknown) => void; maxCharts?: number }) {
   let epoch = 0; const items = new Map<string, VisualizationSpec>(); const signatures = new Map<string, string>();
   return {
-    present(input: Input) {
+    present(rawInput: Input) {
       if (!options.enabled) throw new Error("当前客户端未启用图表展示");
+      const input = { ...rawInput, renderer: rawInput.renderer ?? "native", selection: rawInput.selection ?? { mode: "all" as const } };
       const prior = input.id ? items.get(input.id) : undefined;
       if (input.id && !prior) throw new Error("图表修订引用不存在");
-      const signature = JSON.stringify({ kind: input.kind, renderer: input.renderer, source: input.source, selection: input.selection });
+      const signature = JSON.stringify({ kind: input.kind, renderer: input.renderer, source: input.source, selection: input.selection, title: input.title });
       const knownId = input.id ?? signatures.get(signature); const known = knownId ? items.get(knownId) : undefined;
-      const spec = parseVisualizationSpec({ id: known?.id ?? randomUUID(), revision: known ? known.revision + (signature === JSON.stringify({ kind: known.kind, renderer: known.renderer, source: known.source, selection: known.selection }) ? 0 : 1) : 1, kind: input.kind, renderer: input.renderer, source: input.source, selection: input.selection, afterBlockIndex: 0 });
-      if (!known && items.size >= VISUALIZATION_LIMITS.charts) throw new Error("本轮最多展示六张图，请复用已有图表");
+      const spec = parseVisualizationSpec({ id: known?.id ?? randomUUID(), revision: known ? known.revision + (signature === JSON.stringify({ kind: known.kind, renderer: known.renderer, source: known.source, selection: known.selection, title: known.title }) ? 0 : 1) : 1, kind: input.kind, renderer: input.renderer, source: input.source, selection: input.selection, afterBlockIndex: 0, ...(input.title ? { title: input.title } : {}) });
+      const maxCharts = options.maxCharts ?? VISUALIZATION_LIMITS.charts;
+      if (!known && items.size >= maxCharts) throw new Error(`本轮最多准备 ${maxCharts} 张图，请复用已有图表或用文字说明`);
       const evidence = options.analysisEvidence?.(); const attachment = options.attachmentEvidence?.();
       const chart = spec.source.kind !== "attachment" && evidence ? resolveAnalysisVisualization(spec, evidence) : spec.source.kind === "attachment" && attachment ? resolveAttachmentVisualization(spec, attachment.calculations, attachment.sources) : (() => { throw new Error("图表来源不属于本轮已读取的证据"); })();
       if (!known || spec.revision !== known.revision) {

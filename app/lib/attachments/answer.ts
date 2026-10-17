@@ -19,11 +19,46 @@ export function validateConversationRequest(value: unknown): ConversationRequest
   return { conversationId: value.conversationId, question, attachmentIds: value.attachmentIds as string[], history: value.history as ConversationRequest["history"], ...(value.context ? { context: value.context as string[] } : {}) };
 }
 
+// 日期统一成「年月日」，免得 2025-03-01 被拆成 2025、-3、-1，正文写「3 月」反而对不上。
+const datesAsText = (value: string) => value.replace(/(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)/g, "$1年$2月$3日").replace(/(?<!\d)(\d{4})[-/](\d{1,2})(?![\d\-/])/g, "$1年$2月");
+const trimNumber = (entry: string) => entry.replace(/^\+/, "").replace(/^(-?)0+(?=\d)/, "$1").replace(/(\.\d*?[1-9])0+(?=%|‰|万|亿|$)/, "$1").replace(/\.0+(?=%|‰|万|亿|$)/, "").replace(/^-0(?=%|‰|万|亿|$)/, "0");
+
 function numericTokens(value: string): string[] {
-  const plain = value.normalize("NFKC").replace(/(?<![\d,.])[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d,])/g, (number) => number.replace(/,/g, ""));
-  const arabic = (plain.match(/[+-]?\d+(?:\.\d+)?(?:%|‰)?/g) ?? []).map((entry) => entry.replace(/^\+/, "").replace(/^(\-?)0+(?=\d)/, "$1").replace(/(\.\d*?[1-9])0+(?=%|‰|$)/, "$1").replace(/\.0+(?=%|‰|$)/, ""));
-  const chinese = (plain.match(/[零〇一二两三四五六七八九十百千万亿]+(?:倍|元|天|家|人|件|克|%)/g) ?? []);
+  const plain = datesAsText(value.normalize("NFKC")).replace(/(?<![\d,.])[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d,])/g, (number) => number.replace(/,/g, ""));
+  const arabic = (plain.match(/[+-]?\d+(?:\.\d+)?(?:%|‰|万|亿)?/g) ?? []).map(trimNumber);
+  const chinese = (plain.match(/(?<![\d.])[零〇一二两三四五六七八九十百千万亿]+(?:倍|元|天|家|人|件|克|%)/g) ?? []);
   return [...arabic, ...chinese];
+}
+
+// 来源里的同一个数允许按常见写法展示：保留 0–2 位小数、换成万或亿、比率写成百分数。
+// 只换写法不换数，负号和数量级都不会丢。
+function displayForms(token: string): string[] {
+  const match = token.match(/^(-?\d+(?:\.\d+)?)(%|‰|万|亿)?$/); if (!match) return [token];
+  const value = Number(match[1]); const suffix = match[2] ?? ""; if (!Number.isFinite(value)) return [token];
+  const forms = new Set([token]);
+  // 舍入后至少保留两位有效数字，0.29 不能写成 0，21.77 不能写成 22 以外更粗的数。
+  const significant = (text: string) => text.replace(/^-?0*\.?0*/, "").replace(/\./, "").length;
+  const rounded = (number: number, unit: string) => { for (const digits of [0, 1, 2]) { const shown = number.toFixed(digits); if (significant(shown) >= 2) forms.add(trimNumber(shown + unit)); } };
+  rounded(value, suffix);
+  if (!suffix) {
+    if (Math.abs(value) >= 1000) rounded(value / 1e4, "万");
+    if (Math.abs(value) >= 1e7) rounded(value / 1e8, "亿");
+    if (Math.abs(value) <= 10 && match[1].includes(".")) rounded(value * 100, "%");
+  }
+  return [...forms];
+}
+
+const magnitude = (token: string): number | null => { const match = token.match(/^(-?\d+(?:\.\d+)?)(%|‰|万|亿)?$/); if (!match) return null; const scale = { "%": 0.01, "‰": 0.001, 万: 1e4, 亿: 1e8 }[match[2] as "%"] ?? 1; return Number(match[1]) * scale; };
+// 模型写错舍入或单位时，找出来源里数值接近的数，列出它允许的写法，帮模型一次改对。
+function nearbyForms(token: string, sourceTokens: string[]): string[] {
+  const value = magnitude(token); if (value === null || value === 0) return [];
+  const near = (other: number, target: number) => Math.abs(Math.abs(other) - Math.abs(target)) <= Math.abs(target) * 0.02;
+  const candidates = [...new Set(sourceTokens)].map((candidate) => ({ candidate, other: magnitude(candidate) })).filter((item): item is { candidate: string; other: number } => item.other !== null && item.other !== 0);
+  const close = candidates.filter((item) => near(item.other, value)).map((item) => item.candidate);
+  // 差 10 倍、100 倍、1 万倍通常是万和元、百分数和小数换错了，直接点明。
+  if (!close.length && Math.abs(value) >= 1000) { const shifted = candidates.find((item) => [10, 100, 1e4].some((factor) => near(item.other * factor, value) || near(item.other / factor, value))); if (shifted) return [`（数量级不对，来源是 ${shifted.candidate}）`, ...displayForms(shifted.candidate).filter((form) => /[万亿%]$/.test(form)).slice(-2)]; }
+  const percent = token.endsWith("%"); const large = /[万亿]$/.test(token);
+  return close.slice(0, 2).flatMap((candidate) => displayForms(candidate).filter((form) => percent ? form.endsWith("%") : large ? /[万亿]$/.test(form) : !/[%万亿‰]$/.test(form)).slice(-2)).slice(0, 4);
 }
 
 function source(value: unknown): AttachmentSource {
@@ -40,15 +75,35 @@ function source(value: unknown): AttachmentSource {
   return result;
 }
 
+// 限制说明不绑定来源，但里面的数字同样要能在本轮读到的来源里找到，免得口径说明里冒出编造的数。
+export function unsupportedLimitationNumbers(limitations: readonly string[], sources: readonly AttachmentSource[]): string[] {
+  const supported = new Set(sources.flatMap((item) => numericTokens(item.excerpt).flatMap(displayForms)));
+  return [...new Set(limitations.flatMap((text) => numericTokens(text.replace(/(\d[\d,]*(?:\.\d+)?)\s*个百分点/g, "$1%")).filter((number) => !supported.has(number) && !supported.has("-" + number))))];
+}
+
 export function validateConversationDraft(value: unknown, sources: readonly AttachmentSource[]): ConversationDraft {
   if (!record(value) || !["answered", "partial"].includes(String(value.status)) || !Array.isArray(value.blocks) || !value.blocks.length || value.blocks.length > 40) fail("文件回答正文格式不正确");
   const byId = new Map(sources.map((item) => [item.id, item]));
-  const blocks = value.blocks.map((raw) => {
+  const blocks = value.blocks.map((raw, index) => {
     if (!record(raw)) fail("文件回答段落格式不正确");
     const content = text(raw.text, "文件回答段落", 6000); const ids = stringList(raw.sourceIds, "文件引用", 30, 120);
-    if (!ids.length || ids.some((id) => !byId.has(id)) || new Set(ids).size !== ids.length) fail("文件回答引用了未读取的依据或缺少引用");
-    const supported = new Set(ids.flatMap((id) => numericTokens(byId.get(id)!.excerpt)));
-    if (numericTokens(content).some((number) => !supported.has(number))) fail("文件回答包含未绑定来源的数字，请引用原文或调用表格计算");
+    if (!ids.length || ids.some((id) => !byId.has(id)) || new Set(ids).size !== ids.length) {
+      const unknown = ids.filter((id) => !byId.has(id)); const repeated = ids.filter((id, position) => ids.indexOf(id) !== position);
+      fail(`文件回答引用了未读取的依据或缺少引用：第${index + 1}段${!ids.length ? "没有绑定来源" : ""}${unknown.length ? `引用了本轮没有返回的 ${[...new Set(unknown)].slice(0, 8).join("、")}` : ""}${repeated.length ? `重复引用 ${[...new Set(repeated)].slice(0, 8).join("、")}` : ""}。只能引用工具实际返回的 sourceId，去掉这些编号或先读取、计算出对应来源。`);
+    }
+    const supported = new Set(ids.flatMap((id) => numericTokens(byId.get(id)!.excerpt).flatMap(displayForms)));
+    // 「下降 7.69%」「减少 954.55 万」用方向词表达变化：这类数字按绝对值或负值对上来源都算有据；
+    // 其他数字照旧逐个比对，正数不能冒充负值。
+    const listless = content.replace(/(^|\n)([ \t]*(?:#{1,6}[ \t]+)?)[0-9]{1,2}[.)、][ \t]+/g, "$1$2");
+    const directional: string[] = [];
+    const businessText = listless
+      .replace(/(\d[\d,]*(?:\.\d+)?)\s*个百分点/g, (_whole, number: string) => { directional.push(...numericTokens(number + "%")); return "百分点"; })
+      .replace(/(?<![至最])(下降|减少|降低|回落|下滑|缩减|亏损)(了|约|近|超过|达)?\s*(\d[\d,]*(?:\.\d+)?(?:%|‰|万|亿)?)/g, (_whole, verb: string, filler: string | undefined, number: string) => { directional.push(...numericTokens(number)); return verb + (filler ?? ""); });
+    const unsupported = [...new Set([...numericTokens(businessText).filter((number) => !supported.has(number)), ...directional.filter((number) => !supported.has(number) && !supported.has("-" + number))])];
+    if (unsupported.length) {
+      const hints = unsupported.slice(0, 6).flatMap((token) => { const near = nearbyForms(token, ids.flatMap((id) => numericTokens(byId.get(id)!.excerpt))); return near.length ? [`${token} 可写成 ${near.join(" / ")}`] : []; });
+      fail(`文件回答第${index + 1}段包含未绑定来源的数字：${unsupported.slice(0, 12).join("、")}；本段引用：${ids.join("、")}。${hints.length ? `按来源四舍五入后的写法：${hints.join("；")}。` : ""}数字要来自绑定的来源（可按万、亿、百分数或两位小数四舍五入展示）；找不到来源时先用计算工具算出，或删掉这个数字保留判断。`);
+    }
     return { text: content, sourceIds: ids };
   });
   const limitations = stringList(value.limitations, "文件回答限制", 30, 1500);

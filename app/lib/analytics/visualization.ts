@@ -15,10 +15,12 @@ const metricLabels: Record<string, string> = { amount: "销售金额", quantity:
 const populationLabels: Record<string, string> = { sales: "销售正金额行", net: "销售与退货净额", recovery: "回收抵扣候选", returns: "退货", zero_sales: "零元销售", unknown: "口径待确认" };
 const additive = new Set(["amount", "quantity", "grams", "profit", "rows", "tag_amount"]);
 function realDate(value: string): boolean { const time = Date.parse(`${value}T00:00:00Z`); return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value; }
+// 表头里的单位后缀不进图标题：「扣营销费贡献_元」显示成「扣营销费贡献」。
+const readableColumn = (name: string) => name.replace(/[_（(](?:含税|不含税)?(?:元|g|克|件|%|％)[）)]?$/, "").replace(/_去重$/, "").replace(/_/g, "");
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) => record(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 
 export function parseVisualizationSpec(value: unknown): VisualizationSpec {
-  const item = object(value, ["id", "revision", "kind", "renderer", "afterBlockIndex", "source", "selection", "conclusionId"]);
+  const item = object(value, ["id", "revision", "kind", "renderer", "afterBlockIndex", "source", "selection", "conclusionId", "title"]);
   if (!["bar", "line", "stacked_bar"].includes(String(item.kind)) || !["native", "html"].includes(String(item.renderer))) fail("图形或渲染方式不支持");
   const raw = record(item.source) ? item.source : fail("来源不正确"); let source: VisualizationSpec["source"];
   if (raw.kind === "analysis") {
@@ -38,7 +40,7 @@ export function parseVisualizationSpec(value: unknown): VisualizationSpec {
   else if (selection.mode === "top" && selection.ids === undefined) selected = { mode: "top", limit: integer(selection.limit, 1, VISUALIZATION_LIMITS.categories), ...(selection.rankFrameId === undefined ? {} : { rankFrameId: text(selection.rankFrameId) }) };
   else if (selection.mode === "selected" && selection.limit === undefined && selection.rankFrameId === undefined) selected = { mode: "selected", ids: ids(selection.ids, 120) };
   else fail("选择规则不正确");
-  return { id: text(item.id), revision: integer(item.revision, 1, 10000), kind: item.kind as VisualizationSpec["kind"], renderer: item.renderer as VisualizationSpec["renderer"], afterBlockIndex: integer(item.afterBlockIndex, 0, 79), source: source!, selection: selected!, ...(item.conclusionId === undefined ? {} : { conclusionId: text(item.conclusionId) }) };
+  return { id: text(item.id), revision: integer(item.revision, 1, 10000), kind: item.kind as VisualizationSpec["kind"], renderer: item.renderer as VisualizationSpec["renderer"], afterBlockIndex: integer(item.afterBlockIndex, 0, 79), source: source!, selection: selected!, ...(item.conclusionId === undefined ? {} : { conclusionId: text(item.conclusionId) }), ...(item.title === undefined ? {} : { title: text(item.title, 40) }) };
 }
 
 export function parseVisualizations(value: unknown, blockCount: number): Visualizations | undefined {
@@ -51,15 +53,29 @@ export function parseVisualizations(value: unknown, blockCount: number): Visuali
 }
 
 type Entry = { category: string; categoryLabel: string; numericValue?: number; series: string; seriesLabel: string; value: VisualizationValue; objectIds: string[] };
-function fillDailyGaps(entries: Entry[], startDate: string, endDate: string): void {
+function compareExactDecimal(left: string, right: string): number {
+  const [leftWhole, leftFraction = ""] = left.split("."); const [rightWhole, rightFraction = ""] = right.split(".");
+  const scale = Math.max(leftFraction.length, rightFraction.length);
+  const a = BigInt(leftWhole + leftFraction.padEnd(scale, "0")); const b = BigInt(rightWhole + rightFraction.padEnd(scale, "0"));
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function attachmentDateKey(value: string, monthly: boolean): string {
+  const candidate = monthly && /^\d{4}-\d{2}$/.test(value) ? `${value}-01` : value;
+  const matched = /^(\d{4}-\d{2}-\d{2})(?:T00:00:00(?:\.0{1,6})?(?:Z|[+-]00:00)?)?$/.exec(candidate);
+  if (!matched || !realDate(matched[1])) fail("趋势必须使用真实日期，不能把非零点时间或文字当作日期");
+  return monthly ? matched[1].slice(0, 7) + "-01" : matched[1];
+}
+function fillDateGaps(entries: Entry[], startDate: string, endDate: string, monthly = false): void {
   if (!realDate(startDate) || !realDate(endDate) || entries.some((entry) => !realDate(entry.category))) fail("趋势必须使用真实日期");
   const start = Date.parse(`${startDate}T00:00:00Z`), end = Date.parse(`${endDate}T00:00:00Z`);
-  if ((end - start) / 86400000 + 1 > VISUALIZATION_LIMITS.timePoints) fail("时间范围超过趋势展示上限，请选择明确周期或数据表");
+  const points = monthly ? (Number(endDate.slice(0, 4)) - Number(startDate.slice(0, 4))) * 12 + Number(endDate.slice(5, 7)) - Number(startDate.slice(5, 7)) + 1 : (end - start) / 86400000 + 1;
+  if (points > VISUALIZATION_LIMITS.timePoints) fail("时间范围超过趋势展示上限，请选择明确周期或数据表");
   const observed = new Set(entries.map((entry) => `${entry.series}\u0000${entry.category}`));
   const series = new Map(entries.map((entry) => [entry.series, entry.seriesLabel]));
-  for (let time = start; time <= end; time += 86400000) for (const [key, label] of series) {
+  const next = (time: number) => { if (!monthly) return time + 86400000; const date = new Date(time); date.setUTCMonth(date.getUTCMonth() + 1); return date.getTime(); };
+  for (let time = start; time <= end; time = next(time)) for (const [key, label] of series) {
     const day = new Date(time).toISOString().slice(0, 10);
-    if (!observed.has(`${key}\u0000${day}`)) entries.push({ category: day, categoryLabel: day, series: key, seriesLabel: label, value: { value: null, exact: null, refIds: [] }, objectIds: [] });
+    if (!observed.has(`${key}\u0000${day}`)) entries.push({ category: day, categoryLabel: monthly ? day.slice(0, 7) : day, series: key, seriesLabel: label, value: { value: null, exact: null, refIds: [] }, objectIds: [] });
   }
 }
 function assemble(spec: VisualizationSpec, entries: Entry[], base: Omit<ResolvedVisualization, "categories" | "series" | "selectionLabel">): ResolvedVisualization {
@@ -82,12 +98,18 @@ function assemble(spec: VisualizationSpec, entries: Entry[], base: Omit<Resolved
       selected.sort((a, b) => a.key.localeCompare(b.key));
     }
     if (spec.selection.mode !== "all") fail("趋势不能用前列或候选抽点代替完整时间序列");
-  } else if (spec.selection.mode === "top") {
-    const rankId = spec.selection.rankFrameId;
+  } else if (spec.selection.mode === "top" || spec.kind === "bar" && series.size === 1 && spec.selection.mode === "all") {
+    const rankId = spec.selection.mode === "top" ? spec.selection.rankFrameId : undefined;
     const ranking = rankId ? [...series.values()].find((item) => item.key === rankId) : series.size === 1 ? [...series.values()][0] : undefined;
     if (!ranking) fail("多系列前列选择需要明确排名序列");
-    selected.sort((a, b) => { const left = ranking.values.get(a.key)?.value ?? null, right = ranking.values.get(b.key)?.value ?? null; return left === null ? right === null ? a.key.localeCompare(b.key) : 1 : right === null ? -1 : right - left || a.key.localeCompare(b.key); });
-    selected = selected.slice(0, spec.selection.limit);
+    selected.sort((a, b) => {
+      const left = ranking.values.get(a.key), right = ranking.values.get(b.key);
+      if (left?.value === undefined || left.value === null) return right?.value === undefined || right.value === null ? a.key.localeCompare(b.key) : 1;
+      if (right?.value === undefined || right.value === null) return -1;
+      const order = spec.source.kind === "attachment" ? compareExactDecimal(right.exact!, left.exact!) : right.value - left.value;
+      return order || a.key.localeCompare(b.key);
+    });
+    if (spec.selection.mode === "top") selected = selected.slice(0, spec.selection.limit);
   } else if (spec.selection.mode === "selected") {
     const requested = spec.selection.ids;
     if (requested.some((id) => !entries.some((entry) => entry.objectIds.includes(id) || entry.value.refIds.includes(id)))) fail("候选引用不存在");
@@ -135,10 +157,10 @@ export function resolveAnalysisVisualization(input: VisualizationSpec, evidence:
   });
   if (spec.kind === "line" && source.dimension === "day") {
     const starts = selectedFrames.map((frame) => frame.scope.period.start).sort(), ends = selectedFrames.map((frame) => frame.scope.period.end).sort();
-    fillDailyGaps(entries, starts[0], ends.at(-1)!);
+    fillDateGaps(entries, starts[0], ends.at(-1)!);
   }
   const usedObjects = [...new Set(facts.flatMap((fact) => fact.objectIds))];
-  return assemble(spec, entries, { id: spec.id, revision: spec.revision, kind: spec.kind, renderer: spec.renderer, afterBlockIndex: spec.afterBlockIndex, title: `${metricName} · 按${dimensionLabels[source.dimension]}`, unit: facts[0].unit.replace(/^CNY/, "元"), scope: selectedFrames.map(frameScope).join("；"), definition: [...new Set(facts.map((fact) => fact.definition))].join("；"), limitations: [...new Set([...selectedFrames.flatMap((frame) => frame.limitations), ...facts.flatMap((fact) => fact.limitations), ...methods.flatMap((method) => method.limitations), ...(spec.kind === "line" ? ["缺少记录的日期保留为空点，不代表零销售或完整观测"] : [])])], factIds: facts.map((fact) => fact.id), objectIds: usedObjects, sourceIds: [] });
+  return assemble(spec, entries, { id: spec.id, revision: spec.revision, kind: spec.kind, renderer: spec.renderer, afterBlockIndex: spec.afterBlockIndex, title: spec.title ?? `${metricName} · 按${dimensionLabels[source.dimension]}`, unit: facts[0].unit.replace(/^CNY/, "元"), scope: selectedFrames.map(frameScope).join("；"), definition: [...new Set(facts.map((fact) => fact.definition))].join("；"), limitations: [...new Set([...selectedFrames.flatMap((frame) => frame.limitations), ...facts.flatMap((fact) => fact.limitations), ...methods.flatMap((method) => method.limitations), ...(spec.kind === "line" ? ["缺少记录的日期保留为空点，不代表零销售或完整观测"] : [])])], factIds: facts.map((fact) => fact.id), objectIds: usedObjects, sourceIds: [] });
 }
 
 function resolveScenarioVisualization(spec: VisualizationSpec, evidence: AnalysisEvidence): ResolvedVisualization {
@@ -163,14 +185,14 @@ function resolveScenarioVisualization(spec: VisualizationSpec, evidence: Analysi
     entries.push({ ...common, series: "unchanged", seriesLabel: "收入持平参照", value: { value: unchanged, exact: exact(unchanged), refIds: [baseline.id] } });
   }
   const frame = evidence.frames.find((item) => item.id === points[0].frameId)!;
-  return assemble(spec, entries, { id: spec.id, revision: spec.revision, kind: spec.kind, renderer: spec.renderer, afterBlockIndex: spec.afterBlockIndex, title: `条件情景 · ${source.metricId === "scenario.revenue_change" ? "实收变化" : "实收金额"}`, unit: points[0].unit.replace(/^CNY/, "元"), xAxis: { kind: "number", label: "假设净成交量变化", unit: "%" }, scope: frameScope(frame), definition: "在价格、商品和优惠结构固定时，按显式净成交量假设计算；横轴不是日期，曲线不是需求预测", limitations: [...new Set(points.flatMap((point) => point.limitations))], factIds: [...ids], objectIds: [...new Set(selected.flatMap((fact) => fact.objectIds))], sourceIds: [] });
+  return assemble(spec, entries, { id: spec.id, revision: spec.revision, kind: spec.kind, renderer: spec.renderer, afterBlockIndex: spec.afterBlockIndex, title: spec.title ?? `条件情景 · ${source.metricId === "scenario.revenue_change" ? "实收变化" : "实收金额"}`, unit: points[0].unit.replace(/^CNY/, "元"), xAxis: { kind: "number", label: "假设净成交量变化", unit: "%" }, scope: frameScope(frame), definition: "在价格、商品和优惠结构固定时，按显式净成交量假设计算；横轴不是日期，曲线不是需求预测", limitations: [...new Set(points.flatMap((point) => point.limitations))], factIds: [...ids], objectIds: [...new Set(selected.flatMap((fact) => fact.objectIds))], sourceIds: [] });
 }
 
 export function parseAttachmentCalculations(value: unknown): AttachmentCalculation[] {
   if (!Array.isArray(value) || value.length > 100) fail("文件计算集合不正确");
   return value.map((entry) => {
     const raw = object(entry, ["id", "attachmentId", "version", "tableId", "name", "location", "operation", "column", "groupBy", "unit", "filters", "groupCount", "groups", "warnings"]);
-    if (!["sum", "count", "distinct", "average", "min", "max"].includes(String(raw.operation)) || !Array.isArray(raw.groups) || raw.groups.length > 10000 || !Array.isArray(raw.groupBy) || raw.groupBy.length > 3 || !Array.isArray(raw.filters) || raw.filters.length > 12 || !Array.isArray(raw.warnings)) fail("文件计算记录不正确");
+    if (!["sum", "count", "distinct", "average", "min", "max", "ratio", "difference", "change_rate"].includes(String(raw.operation)) || !Array.isArray(raw.groups) || raw.groups.length > 10000 || !Array.isArray(raw.groupBy) || raw.groupBy.length > 3 || !Array.isArray(raw.filters) || raw.filters.length > 12 || !Array.isArray(raw.warnings)) fail("文件计算记录不正确");
     const groups = raw.groups.map((entry) => { const group = object(entry, ["labels", "value", "sourceId", "matchedRows", "missingRows"]); if (!Array.isArray(group.labels) || group.labels.length !== (raw.groupBy as unknown[]).length || group.labels.some((v) => typeof v !== "string" || v.length > 1000) || group.value !== null && (typeof group.value !== "string" || !/^[+-]?\d+(?:\.\d+)?$/.test(group.value))) fail("文件计算分组或精确值不正确"); return { labels: group.labels as string[], value: group.value as string | null, sourceId: text(group.sourceId), matchedRows: integer(group.matchedRows, 0, 200000), missingRows: integer(group.missingRows, 0, 200000) }; });
     if (raw.groupCount !== groups.length) fail("文件计算缺少完整分组，不能把分页当总体");
     const result: AttachmentCalculation = { id: text(raw.id), attachmentId: text(raw.attachmentId), version: text(raw.version), tableId: text(raw.tableId), name: text(raw.name, 255), location: text(raw.location, 600), operation: raw.operation as AttachmentCalculation["operation"], groupBy: (raw.groupBy as unknown[]).map((v) => text(v, 500)), unit: text(raw.unit, 100), filters: raw.filters.map((entry) => { const item = object(entry, ["column", "operator", "value"]); return { column: text(item.column, 500), operator: text(item.operator), value: typeof item.value === "string" && item.value.length <= 500 ? item.value : fail("筛选值不正确") }; }), groupCount: groups.length, groups, warnings: (raw.warnings as unknown[]).map((v) => text(v, 1500)), ...(raw.column === undefined ? {} : { column: text(raw.column, 500) }) };
@@ -187,17 +209,21 @@ export function resolveAttachmentVisualization(input: VisualizationSpec, rawCalc
   if (!first.groupBy.length || calculations.some((item) => !item.groupBy[dimension] || seriesIndex !== undefined && !item.groupBy[seriesIndex])) fail("文件计算没有这个分组维度");
   if (spec.kind === "stacked_bar" && (calculations.length !== 1 || first.operation !== "sum" || seriesIndex === undefined || dimension === seriesIndex)) fail("堆叠需要同一计算内可加总的完整分组");
   if (spec.kind === "stacked_bar" && (!/^(元|CNY|人民币|USD|美元|HKD|港元|克|件)$/.test(first.unit) || !/金额|销售额|实收|收入|费用|成本|利润|毛利|克重|重量|数量|件数|销量/.test(first.column ?? "") || /率|比例|占比|单价|均价|每|平均|指数|倍/.test(first.column ?? ""))) fail("文件指标缺少可加总依据或属于比例、均值，请使用分组柱图");
+  const monthly = spec.kind === "line" && /^(月份|年月|月度)$/.test(first.groupBy[dimension].trim());
+  let approximateCoordinates = false;
   const entries = calculations.flatMap((calculation) => calculation.groups.map((group): Entry => {
     const ref = sources.find((item) => item.id === group.sourceId);
     if (!ref || ref.attachmentId !== calculation.attachmentId || ref.version !== calculation.version || ref.calculationId !== undefined && ref.calculationId !== calculation.id || ref.calculationId === undefined && group.value !== null && !ref.excerpt.replace(/,/g, "").includes(group.value)) fail("文件版本或数值来源不匹配");
     const numeric = group.value === null ? null : Number(group.value);
-    if (numeric !== null && (!Number.isFinite(numeric) || Math.abs(numeric) > Number.MAX_SAFE_INTEGER || group.value!.replace(/^[+-]?0*|\./g, "").length > 15)) fail("文件数值精度超过可靠绘图范围，请使用数据表");
-    return { category: group.labels[dimension], categoryLabel: group.labels[dimension], series: seriesIndex === undefined ? calculation.id : `${calculation.id}:${group.labels[seriesIndex]}`, seriesLabel: seriesIndex === undefined ? calculation.column ?? "记录数" : group.labels[seriesIndex], value: { value: numeric, exact: group.value, refIds: [group.sourceId] }, objectIds: [] };
+    if (numeric !== null && (!Number.isFinite(numeric) || Math.abs(numeric) > Number.MAX_SAFE_INTEGER || numeric === 0 && /[1-9]/.test(group.value!) || compareExactDecimal(group.value!.replace(/^[+-]/, ""), String(Number.MAX_SAFE_INTEGER)) > 0)) fail("文件数值精度超过可靠绘图范围，请使用数据表");
+    if (group.value !== null && group.value.replace(/^[+-]?0*|\./g, "").length > 15) approximateCoordinates = true;
+    const category = spec.kind === "line" ? attachmentDateKey(group.labels[dimension], monthly) : group.labels[dimension];
+    return { category, categoryLabel: monthly ? category.slice(0, 7) : category, series: seriesIndex === undefined ? calculation.id : `${calculation.id}:${group.labels[seriesIndex]}`, seriesLabel: seriesIndex === undefined ? readableColumn(calculation.column ?? "记录数") : group.labels[seriesIndex], value: { value: numeric, exact: group.value, refIds: [group.sourceId] }, objectIds: [] };
   }));
   if (spec.kind === "line" && entries.length) {
-    const dates = entries.map((entry) => entry.category).sort(); fillDailyGaps(entries, dates[0], dates.at(-1)!);
+    const dates = entries.map((entry) => entry.category).sort(); fillDateGaps(entries, dates[0], dates.at(-1)!, monthly);
   }
-  return assemble(spec, entries, { id: spec.id, revision: spec.revision, kind: spec.kind, renderer: spec.renderer, afterBlockIndex: spec.afterBlockIndex, title: `${first.column ?? "记录数"} · 按${first.groupBy[dimension]}`, unit: first.unit, scope: `${first.name} · ${first.location}${first.filters.length ? ` · 筛选：${first.filters.map((f) => `${f.column} ${f.operator} ${f.value}`).join("；")}` : ""}`, definition: `全表确定性${{ sum: "求和", count: "计数", distinct: "去重计数", average: "均值", min: "最小值", max: "最大值" }[first.operation]}；文件计算不等同于已对数经营口径`, limitations: [...new Set([...calculations.flatMap((item) => item.warnings), ...(calculations.some((item) => item.groups.some((group) => group.missingRows)) ? ["计算包含缺失值，仅覆盖有效值；未补零"] : []), ...(spec.kind === "line" ? ["实际首尾日期之间的缺失日期保留为空点，不代表零值或完整观测"] : [])])], factIds: [], objectIds: [], sourceIds: [...new Set(entries.flatMap((entry) => entry.value.refIds))] });
+  return assemble(spec, entries, { id: spec.id, revision: spec.revision, kind: spec.kind, renderer: spec.renderer, afterBlockIndex: spec.afterBlockIndex, title: spec.title ?? `${readableColumn(first.column ?? "记录数")} · 按${readableColumn(first.groupBy[dimension])}`, unit: first.unit === "比率" ? "%" : first.unit, ...(first.unit === "比率" ? { valueFormat: "percent" as const } : {}), scope: `${first.name} · ${first.location}${first.filters.length ? ` · 筛选：${first.filters.map((f) => `${f.column} ${f.operator} ${f.value}`).join("；")}` : ""}`, definition: `全表确定性${{ sum: "求和", count: "计数", distinct: "去重计数", average: "均值", min: "最小值", max: "最大值", ratio: "比值", difference: "差值", change_rate: "变化率" }[first.operation]}；文件计算不等同于已对数经营口径`, limitations: [...new Set([...calculations.flatMap((item) => item.warnings), ...(calculations.some((item) => item.groups.some((group) => group.missingRows)) ? ["计算包含缺失值，仅覆盖有效值；未补零"] : []), ...(approximateCoordinates ? ["图形位置使用近似值；排序、提示和数据表保留完整精确数值"] : []), ...(spec.kind === "line" ? [monthly ? "实际首尾月份之间的缺失月份保留为空点，不代表零值或完整观测" : "实际首尾日期之间的缺失日期保留为空点，不代表零值或完整观测"] : [])])], factIds: [], objectIds: [], sourceIds: [...new Set(entries.flatMap((entry) => entry.value.refIds))] });
 }
 
 export function visualizationText(chart: ResolvedVisualization): string {

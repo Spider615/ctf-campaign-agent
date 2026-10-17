@@ -123,6 +123,7 @@ export function createAgentRunner(
     const requiredSkills = requiredSkillsForTurn(request, {
       hasIcs1811: Boolean(state.draft),
       tracks: routing.tracks,
+      building: Object.values(state.campaign.brief).some(Boolean) || request.openQuestions.length > 0 || request.proposals.length > 0,
     });
     const skillLoads = createSkillLoadState();
     let replyStream = createReplyStreamState();
