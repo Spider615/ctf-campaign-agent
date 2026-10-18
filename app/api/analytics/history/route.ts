@@ -1,6 +1,6 @@
 import { visualizationCapability } from "../../../lib/analytics/visualization.ts";
 import { analyticsResponse } from "../../../lib/server/analytics-runtime.ts";
-import { readAnalyticsJson } from "../../../lib/server/analytics-access.ts";
+import { readAnalyticsJson, rejectStaleAnswerSchema } from "../../../lib/server/analytics-access.ts";
 import { inspectHistoryDatabase, explainHistoryDatabase, explainHistoryDatabaseStream } from "../../../lib/server/runtime.ts";
 import { isDatabaseExplainRequest } from "../../../lib/analytics/database.ts";
 import { AnalyticsError } from "../../../lib/server/analytics-store.ts";
@@ -12,6 +12,7 @@ export async function GET(request: Request) {
 }
 export async function POST(request: Request) {
   return analyticsResponse(request, async () => {
+    rejectStaleAnswerSchema(request);
     const body = await readAnalyticsJson(request);
     if (!isDatabaseExplainRequest(body)) throw new AnalyticsError("请提供营销问题和有效的对话上下文");
     const answerSchema = normalizeAnalyticsAnswerSchema(request.headers.get("X-Analytics-Answer-Schema"));

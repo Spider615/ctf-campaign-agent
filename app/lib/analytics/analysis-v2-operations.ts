@@ -2,12 +2,22 @@ import { normalizeDate } from "./import.ts";
 import { TurnCancelledError, throwIfTurnCancelled } from "../cancellation.ts";
 import { sealOwnedAnalysisOperation } from "./analysis-v2-evidence.ts";
 import { ANALYSIS_DIMENSIONS, ANALYSIS_METHODS, ANALYSIS_METRICS } from "./analysis-v2-types.ts";
+import { ANALYSIS_FILTER_DIMENSIONS as SEMANTIC_FILTER_DIMENSIONS, SEMANTIC_DIMENSIONS, SEMANTIC_METRICS, semanticRatio, semanticUnit, type SemanticBaseField } from "./semantic/model.ts";
 import type { AnalysisAggregateCell, AnalysisAggregateQuery, AnalysisCapabilities, AnalysisConstraints, AnalysisDataSession, AnalysisDimension, AnalysisFact, AnalysisFilters, AnalysisFrame, AnalysisMetric, AnalysisMetricDefinition, AnalysisObject, AnalysisOperationRequest, AnalysisOperationResult, AnalysisScope, FactExpression } from "./analysis-v2-types.ts";
 import type { Period } from "./types.ts";
 
 const populations = ["sales", "net", "recovery", "returns", "zero_sales"] as const;
-export const ANALYSIS_FILTER_DIMENSIONS: Record<keyof AnalysisFilters, AnalysisDimension> = { stores: "store", regions: "region", districts: "district", categories: "category", materials: "material", offers: "offer", memberFlags: "memberFlag", storeTypes: "storeType", skus: "sku", memberSegments: "memberSegment" };
-const labels: Record<AnalysisMetric, string> = { amount: "实收金额", quantity: "件数", grams: "克重", profit: "毛利", orders: "当前筛选内订单数", stores: "观察门店数", rows: "明细行数", tag_amount: "牌仔价合计", amount_per_order: "订单成交部分均额", amount_per_gram: "每克实收代理值", gap_per_gram: "每克牌价实收差额" };
+export const ANALYSIS_FILTER_DIMENSIONS: Record<keyof AnalysisFilters, AnalysisDimension> = SEMANTIC_FILTER_DIMENSIONS;
+const GROUP_NOUNS = Object.fromEntries(ANALYSIS_DIMENSIONS.map((dimension) => [dimension, SEMANTIC_DIMENSIONS[dimension].label])) as Record<AnalysisDimension, string>;
+const labels = Object.fromEntries(ANALYSIS_METRICS.map((metric) => [metric, SEMANTIC_METRICS[metric].label])) as Record<AnalysisMetric, string>;
+// 比率按语义层登记的分子分母重算；保护比率在结论引用时必须是同层或标准化比较。
+const isRatio = (metric: AnalysisMetric) => Boolean(semanticRatio(metric));
+const needsOrders = (metric: AnalysisMetric) => SEMANTIC_METRICS[metric].grain === "selected_order";
+// 门店数本身或以门店数为分母的比率（每店实收等）都需要读到门店层，才能跨分组去重计数。
+const usesStores = (metric: AnalysisMetric) => metric === "stores" || semanticRatio(metric)?.denominator === "stores";
+const isGuarded = (metric: AnalysisMetric) => Boolean(semanticRatio(metric)?.guarded);
+const standardizable = (metric: AnalysisMetric) => metric === "amount" || Boolean(semanticRatio(metric)?.standardize);
+const ratioFields = (metric: AnalysisMetric): SemanticBaseField[] => { const spec = semanticRatio(metric); return spec ? [...new Set([...spec.numerator.map((term) => term.field), ...(spec.denominator === "days" ? [] : [spec.denominator])])] : []; };
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const uniq = <T>(values: T[]) => [...new Set(values)];
 const ordered = <T extends string>(values: T[]) => uniq(values).sort();
@@ -22,9 +32,11 @@ export function analysisMoneyCents(value: number): number {
   return result;
 }
 export function analysisMetricDefinitions(currency: string, available: AnalysisMetric[], mode: "database" | "snapshot"): AnalysisMetricDefinition[] {
-  return available.map((id) => ({ id, label: id === "profit" && mode === "database" ? "源字段零售毛利" : labels[id], unit: id === "quantity" ? "件" : id === "grams" ? "克" : id === "orders" ? "单" : id === "stores" ? "家" : id === "rows" ? "条" : id.endsWith("per_gram") ? `${currency}/克` : id === "amount_per_order" ? `${currency}/单` : currency,
-    grain: id === "orders" || id === "amount_per_order" ? "selected_order" : "line", additive: !["orders", "stores", "amount_per_order", "amount_per_gram", "gap_per_gram"].includes(id), allowedPopulations: id.includes("per_") ? ["sales"] : [...populations], requiredControls: id.endsWith("per_gram") ? ["category", "material"] : [],
-    definition: id === "profit" ? mode === "database" ? "直接汇总源字段零售毛利；不从成本、税率或实收反推毛利率" : "逐行实收减导入成本，金额均按分；不是数据库源字段零售毛利，不能直接比较二者" : id === "orders" ? "门店与销售单号组合去重；只覆盖当前筛选内成交部分，缺任一标识则整体订单数缺失" : id === "stores" ? "选定记录中有店号的观察门店；不是门店营业状态或正式同店定义" : id === "amount_per_order" ? "销售正金额总额除以当前筛选内复合订单数；不是整张订单客单价" : id === "amount_per_gram" ? "销售正金额总额除以克重；须同货类同材料比较，不等于每日金价或活动力度" : id === "gap_per_gram" ? "牌仔价减实收后的差额除以克重；须同货类同材料比较，不等于完整活动优惠" : id === "amount" || id === "tag_amount" ? "金额逐行四舍五入为分后汇总；任一参与行缺失则缺失，不补零" : `${labels[id]}直接来自选定记录；缺失不补零` }));
+  return available.map((id) => {
+    const spec = SEMANTIC_METRICS[id];
+    const definition = id === "profit" && mode === "snapshot" ? "逐行实收减导入成本，金额均按分；不是数据库源字段零售毛利，不能直接比较二者" : spec.definition;
+    return { id, label: id === "profit" && mode === "snapshot" ? "毛利" : spec.label, unit: semanticUnit(spec.unit, currency), grain: spec.grain, additive: spec.additive, allowedPopulations: [...spec.populations], requiredControls: [...spec.requires], definition, basis: id === "profit" && mode === "snapshot" ? "data" : spec.basis };
+  });
 }
 export function normalizeAnalysisPeriod(period: unknown): Period {
   if (!isObject(period) || Object.keys(period).some((key) => !["start", "end"].includes(key)) || typeof period.start !== "string" || typeof period.end !== "string") throw new Error("请提供有效分析日期范围");
@@ -69,27 +81,43 @@ export function normalizeAnalysisAggregateQuery(query: AnalysisAggregateQuery, c
   return { scope, by: ordered(query.by), ...(query.metrics ? { metrics: ordered(query.metrics) } : {}), ...(query.excludeStores ? { excludeStores: excluded(query.excludeStores) } : {}), ...(query.excludeOrders ? { excludeOrders: excluded(query.excludeOrders) } : {}) };
 }
 
-function sum(cells: AnalysisAggregateCell[], metric: AnalysisMetric): number | null {
+// 日均分母是范围内有成交记录的日期数：按分组维度各自计数，汇总多组时取日期并集。
+// days 由调用方按 dayKeys 预先读取，cells 用分组键查到各自日期集合。
+type DayIndex = { dimensions: AnalysisDimension[]; days: Map<string, Set<string>> };
+function dayCount(cells: AnalysisAggregateCell[], index?: DayIndex): number | null {
+  if (cells.length && cells.every((cell) => cell.dimensions.day)) return new Set(cells.map((cell) => cell.dimensions.day)).size;
+  if (!index) return null;
+  const union = new Set<string>();
+  for (const key of new Set(cells.map((cell) => JSON.stringify(index.dimensions.map((dimension) => cell.dimensions[dimension] ?? null))))) for (const day of index.days.get(key) ?? []) union.add(day);
+  return cells.length ? union.size : null;
+}
+// 订单计数排除的行数：逐单分组时是没有订单标识的行，否则用适配器给出的计数。
+function missingOrderRows(cells: AnalysisAggregateCell[]): number {
+  if (cells.some((cell) => cell.dimensions.order)) return cells.filter((cell) => !cell.dimensions.order).reduce((total, cell) => total + cell.rows, 0);
+  return cells.reduce((total, cell) => total + (cell.orderMissingRows ?? cell.orderIds?.filter((id) => id === null).length ?? 0), 0);
+}
+function sum(cells: AnalysisAggregateCell[], metric: AnalysisMetric, days?: DayIndex): number | null {
   if (metric === "rows") return cells.reduce((value, cell) => value + cell.rows, 0);
   if (!cells.length) return null;
   if (metric === "stores" || metric === "orders") {
+    // 订单只统计有店号和单号的行；缺标识的行由 missingOrderRows 单列，不让整体指标失效。
     if (metric === "orders" && cells.every((cell) => cell.orderIds)) {
       const ids = new Set<string>();
-      for (const cell of cells) for (const id of cell.orderIds!) { if (id === null) return null; ids.add(id); }
+      for (const cell of cells) for (const id of cell.orderIds!) if (id !== null) ids.add(id);
       return ids.size;
     }
     const dimension = metric === "stores" ? "store" : "order";
-    if (cells.every((cell) => Object.hasOwn(cell.dimensions, dimension))) {
-      const ids = cells.map((cell) => cell.dimensions[dimension]);
-      if (metric === "orders" && ids.some((id) => !id)) return null;
-      return new Set(ids.filter((id) => Boolean(id))).size;
+    if (metric === "orders" ? cells.some((cell) => cell.dimensions.order) : cells.every((cell) => Object.hasOwn(cell.dimensions, dimension))) {
+      return new Set(cells.map((cell) => cell.dimensions[dimension]).filter((id) => Boolean(id))).size;
     }
     if (cells.length === 1) return cells[0][metric];
     return null;
   }
-  if (metric === "amount_per_order" || metric.endsWith("per_gram")) {
-    const denominator = sum(cells, metric === "amount_per_order" ? "orders" : "grams"); const amount = sum(cells, "amount"); const tag = metric === "gap_per_gram" ? sum(cells, "tag_amount") : 0;
-    return denominator === null || denominator <= 0 || amount === null || tag === null ? null : (metric === "gap_per_gram" ? tag - amount : amount) / denominator;
+  const spec = semanticRatio(metric);
+  if (spec) {
+    const denominator = spec.denominator === "days" ? dayCount(cells, days) : sum(cells, spec.denominator); let numerator = 0;
+    for (const term of spec.numerator) { const value = sum(cells, term.field); if (value === null) return null; numerator += term.sign * value; }
+    return denominator === null || denominator <= 0 ? null : numerator * spec.scale / denominator;
   }
   const values = cells.map((cell) => cell[metric as "amount" | "quantity" | "grams" | "profit" | "tag_amount"]);
   if (values.some((v) => v === null || !Number.isFinite(v))) return null;
@@ -175,7 +203,7 @@ async function controlledComplements(children: Map<string, AnalysisAggregateCell
       if (!missing && (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER)) throw new Error("聚合指标超出安全计算范围");
       return [field, missing ? null : ["amount", "profit", "tag_amount"].includes(field) ? value / 100 : value];
     })) as Pick<AnalysisAggregateCell, AdditiveField>;
-    return { dimensions: total.dimensions, rows: total.rows - (removed?.rows ?? 0), ...values, orders: total.missingOrders - (removed?.missingOrders ?? 0) ? null : total.orders - exclusiveOrders, stores: null };
+    return { dimensions: total.dimensions, rows: total.rows - (removed?.rows ?? 0), ...values, orders: total.orders - exclusiveOrders, orderMissingRows: total.missingOrders - (removed?.missingOrders ?? 0), stores: null };
   };
   return (childKey: string) => {
     const strata = childTotals.get(childKey)!; const target: AnalysisAggregateCell[] = []; const reference: AnalysisAggregateCell[] = []; let childRows = 0;
@@ -241,7 +269,7 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
       if (!request.controls?.includes(dimension) && !groupedAggregate && !(filter && request.scope.filters[filter]?.length === 1 && (!request.reference || request.reference.filters[filter]?.length === 1 && request.reference.filters[filter]![0] === request.scope.filters[filter]![0]))) throw analysisArgumentsInvalid(`${labels[metric]}的 ${dimension} 字段可用，但调用缺少实际比较控制。请补充 controls，或在原授权业务范围内明确相同的单值筛选；by 分组不能代替总体控制，不能擅自解除原范围`);
     }
     if (request.reference && request.reference.population !== request.scope.population) throw analysisArgumentsInvalid("目标与 reference 参照人口口径不同，不能按同定义直接比较。请保留原问题的业务口径和范围约束，使两边采用相同定义；若要区分销售与退货贡献，请在两边净销售范围内使用 decompose，不把销售总额替代净销售");
-    const grain: AnalysisFrame["grain"] = request.metrics.some((v) => ["orders", "amount_per_order"].includes(v)) || ["largest_order", "order_distribution"].includes(request.check ?? "") ? "selected_order" : "group";
+    const grain: AnalysisFrame["grain"] = request.metrics.some(needsOrders) || ["largest_order", "order_distribution"].includes(request.check ?? "") ? "selected_order" : "group";
     const frame = (scope: AnalysisScope, description: string): AnalysisFrame => {
       const item: AnalysisFrame = { id: analysisId("d"), snapshotId: session.snapshotId, datasetVersion: session.datasetVersion, mode: session.capabilities.mode, provenance: session.capabilities.provenance, scope: structuredClone(scope), currency: session.capabilities.currency, grain, controls, limitations: [...session.capabilities.limitations, description].filter(Boolean) };
       result.frames.push(item); method.frameIds.push(item.id); return item;
@@ -282,36 +310,56 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
       return fact;
     };
     const base = (f: AnalysisFrame, cells: AnalysisAggregateCell[], metric: AnalysisMetric, label: string, objectIds: string[] = []): AnalysisFact => {
-      if (metric.includes("per_")) {
-        const a = base(f, cells, "amount", `${label}分子实收`, objectIds); const denominator = base(f, cells, metric === "amount_per_order" ? "orders" : "grams", `${label}分母`, objectIds);
-        const numerator = metric === "gap_per_gram" ? expression("subtract", ref(base(f, cells, "tag_amount", `${label}分子牌价`, objectIds)), ref(a)) : ref(a);
-        const derivation = expression("divide", numerator, ref(denominator)); const context = ratioContext(f, cells, metric);
-        return setComparison(add(f, metric, `${label} · ${labels[metric]}`, denominator.value !== null && denominator.value > 0 ? valueOf(derivation) : null, definitions.get(metric)!.unit, objectIds, derivation), context.role, context.controls, context.values);
+      const spec = semanticRatio(metric);
+      if (spec) {
+        // 分子分母各自作为事实登记，比率由代码按语义层公式派生，证据可逐项核对。
+        const terms = spec.numerator.map((term) => ({ sign: term.sign, fact: base(f, cells, term.field, `${label}分子${labels[term.field]}`, objectIds) }));
+        const denominator = spec.denominator === "days" ? add(f, "period_days", `${label}天数`, dayCount(cells, dayIndexes.get(JSON.stringify(f.scope))), "日", objectIds, undefined, "该范围及分组内有成交记录的日期数；不是营业天数") : base(f, cells, spec.denominator, `${label}分母${labels[spec.denominator]}`, objectIds);
+        const numerator = terms.slice(1).reduce<FactExpression>((value, term) => expression(term.sign > 0 ? "add" : "subtract", value, ref(term.fact)), terms[0].sign > 0 ? ref(terms[0].fact) : expression("subtract", constant(0), ref(terms[0].fact)));
+        const quotient = expression("divide", numerator, ref(denominator)); const derivation = spec.scale === 1 ? quotient : expression("multiply", constant(spec.scale), quotient);
+        const fact = add(f, metric, `${label} · ${labels[metric]}`, denominator.value !== null && denominator.value > 0 ? valueOf(derivation) : null, definitions.get(metric)!.unit, objectIds, derivation);
+        if (!spec.guarded) return fact;
+        const context = ratioContext(f, cells, metric); return setComparison(fact, context.role, context.controls, context.values);
       }
-      return add(f, metric, `${label} · ${labels[metric]}`, sum(cells, metric), definitions.get(metric)!.unit, objectIds);
+      const fact = add(f, metric, `${label} · ${labels[metric]}`, sum(cells, metric), definitions.get(metric)!.unit, objectIds);
+      if (metric === "orders") { const excluded = missingOrderRows(cells); if (excluded) fact.limitations.push(`${excluded} 行缺店号或销售单号，未计入订单数`); }
+      return fact;
     };
     const derived = (f: AnalysisFrame, metric: string, label: string, derivation: FactExpression, unit: string, ids: string[] = [], definition?: string) => add(f, metric, label, valueOf(derivation), unit, ids, derivation, definition);
     const readMetrics = ordered([...request.metrics,
       ...(request.method === "decompose" ? ["amount" as const, request.metrics.includes("grams") ? "grams" as const : "quantity" as const] : []),
       ...(request.method === "robustness" && ["largest_order", "largest_store"].includes(request.check ?? "") ? ["amount" as const] : []),
-      ...(request.controls?.length ? request.metrics.filter((metric) => metric === "amount" || metric.includes("per_")).flatMap((metric): AnalysisMetric[] => ["amount", metric === "amount_per_order" ? "orders" : metric.endsWith("per_gram") || request.metrics.includes("grams") ? "grams" : "quantity"]) : []),
+      ...(request.controls?.length ? request.metrics.filter(standardizable).flatMap((metric): AnalysisMetric[] => metric === "amount" ? ["amount", request.metrics.includes("grams") ? "grams" : "quantity"] : ratioFields(metric)) : []),
     ]);
     const load = async (scope: AnalysisScope, by: Array<AnalysisDimension | "order"> = [], excludeStores?: string[], excludeOrders?: string[], metrics?: AnalysisMetric[]) => {
       throwIfTurnCancelled(signal); session.assertActive?.();
       const query: AnalysisAggregateQuery = { scope, by: ordered(by), metrics: metrics ?? readMetrics, ...(excludeStores ? { excludeStores } : {}), ...(excludeOrders ? { excludeOrders } : {}) };
       // 跨层求订单数仍保留完整订单集合；集合身份经适配器核验后，只传分组总值，不传每单的一整行指标。
       const independentGroups = request.method === "aggregate" || request.method === "scan" && !request.reference && !request.controls?.length && !query.by.includes("order");
-      const wantsOrderIds = !independentGroups && (query.by.includes("order") || query.by.length && query.metrics!.some((metric) => ["orders", "amount_per_order"].includes(metric)));
+      const wantsOrderIds = !independentGroups && (query.by.includes("order") || query.by.length && query.metrics!.some(needsOrders));
       // 原生集合包含完整店号与单号，不为活动/货类控制层再强行展开每家门店；共同店对齐、门店输出及门店数仍保留门店层。
-      const needsStore = !["compare", "scan"].includes(request.method) || request.commonStores || request.by?.includes("store") || request.controls?.includes("store") || request.breakdown === "store" || query.metrics?.includes("stores");
+      const needsStore = !["compare", "scan"].includes(request.method) || request.commonStores || request.by?.includes("store") || request.controls?.includes("store") || request.breakdown === "store" || Boolean(query.metrics?.some(usesStores));
       const compactBy = query.by.filter((dimension) => dimension !== "order" && (dimension !== "store" || needsStore));
       const compact = wantsOrderIds && session.aggregateWithOrderIds && !["largest_order", "order_distribution"].includes(request.check ?? "") ? await session.aggregateWithOrderIds({ ...query, by: compactBy }, signal) : null;
       const cells = compact ?? await session.aggregate(query, signal);
       throwIfTurnCancelled(signal); session.assertActive?.(); return cells;
     };
+    // 有日均类指标时，按各范围读取一次「分组 × 日期」，供分母查日期集合。
+    const dayIndexes = new Map<string, DayIndex>();
+    if (request.metrics.some((metric) => semanticRatio(metric)?.denominator === "days")) {
+      const dimensions = ordered([...(request.by ?? []), ...(request.breakdown ? [request.breakdown] : [])]).filter((dimension) => dimension !== "day");
+      const scopes = [request.scope, ...(request.reference ? [request.reference] : []), ...(request.alternative ? [{ ...request.scope, period: request.alternative }] : [])];
+      for (const scope of scopes) {
+        const key = JSON.stringify(scope); if (dayIndexes.has(key)) continue;
+        const cells = await session.aggregate({ scope, by: ordered([...dimensions, "day"]), metrics: ["rows"] }, signal); throwIfTurnCancelled(signal); session.assertActive?.();
+        const days = new Map<string, Set<string>>();
+        for (const cell of cells) { const group = JSON.stringify(dimensions.map((dimension) => cell.dimensions[dimension] ?? null)); const set = days.get(group) ?? new Set<string>(); if (cell.dimensions.day) set.add(cell.dimensions.day); days.set(group, set); }
+        dayIndexes.set(key, { dimensions, days });
+      }
+    }
     // 普通汇总由适配器在请求粒度内直接去重计数，不为单个总额展开全部订单或门店。
     // 跨层对照、扫描和订单分布仍保留实际需要的明细粒度，避免把分组订单数相加。
-    const internalBy = request.method === "aggregate" ? ordered(request.by ?? []) : ordered([...(request.by ?? []), ...(request.controls ?? []), "store" as const, ...(request.metrics.some((v) => ["orders", "amount_per_order"].includes(v)) ? ["order" as const] : [])]);
+    const internalBy = request.method === "aggregate" ? ordered(request.by ?? []) : ordered([...(request.by ?? []), ...(request.controls ?? []), "store" as const, ...(request.metrics.some(needsOrders) ? ["order" as const] : [])]);
     const scanBy = ordered([...(request.by ?? []), ...(request.breakdown ? [request.breakdown] : [])]);
     const scanParents = request.breakdown ? scanBy.filter((dimension) => dimension !== request.breakdown) : [];
     const align = (target: AnalysisAggregateCell[], reference: AnalysisAggregateCell[], originalRows = [sum(target, "rows"), sum(reference, "rows")]) => {
@@ -337,7 +385,7 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
         const change = derived(fa, `${metric}.relative_change`, `${label}${labels[metric]}相对变化`, expression("multiply", constant(100), expression("divide", ref(delta), ref(reference))), "%", objectIds);
         const comparisonKey = analysisId("p");
         for (const fact of [target, reference, delta, change]) fact.comparisonKey = comparisonKey;
-        if (metric.includes("per_")) {
+        if (isGuarded(metric)) {
           const left = ratioContext(fa, a, metric); const right = ratioContext(fb, b, metric);
           const comparable = left.role === "within_stratum" && right.role === "within_stratum" && left.controls.length === right.controls.length && left.controls.every((dimension) => right.controls.includes(dimension) && left.values[dimension] === right.values[dimension]);
           setComparison(delta, comparable ? "within_stratum" : "descriptive", comparable ? left.controls : [], comparable ? left.values : undefined); setComparison(change, comparable ? "within_stratum" : "descriptive", comparable ? left.controls : [], comparable ? left.values : undefined);
@@ -352,20 +400,25 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
       const baselineId = formula.args[1].factId; return factIndex.get(baselineId)!;
     };
     const standardized = (a: AnalysisAggregateCell[], b: AnalysisAggregateCell[], fa: AnalysisFrame, fb: AnalysisFrame, by: AnalysisDimension[], metric: AnalysisMetric = "amount", prefix = "", targetObjectIds: string[] = []): AnalysisFact | null => {
-      const denominator: AnalysisMetric = metric === "amount_per_order" ? "orders" : metric.endsWith("per_gram") || request.metrics.includes("grams") ? "grams" : "quantity";
+      const spec = semanticRatio(metric);
+      if (spec && (!spec.standardize || spec.denominator === "days")) return null;
+      // 比率以参照分母为各层权重求加权平均；实收以参照数量为权重换算目标层单价。
+      const denominator: AnalysisMetric = spec ? spec.denominator as AnalysisMetric : request.metrics.includes("grams") ? "grams" : "quantity";
       if (!definitions.has(denominator)) { check("参照权重标准化", "缺少对应分母字段，未执行标准化", false); return null; }
+      // 分子只有实收时直接用实收除以层分母，不另登记层比率事实；复合分子先取层比率。
+      const direct = !spec || spec.numerator.length === 1 && spec.numerator[0].sign > 0 && spec.numerator[0].field === "amount" && spec.scale === 1;
       const left = groups(a, by); const right = groups(b, by); const contributions: FactExpression[] = []; const weights: FactExpression[] = []; const baseline: FactExpression[] = [];
       for (const [key, cells] of left) {
         const reference = right.get(key); if (!reference) continue;
         const objectIds = objectsFor(fa, cells, by); const label = `${prefix}控制层 ${objectIds.map((id) => objectsById.get(id)!.label).join(" / ")}`;
-        const amount = base(fa, cells, metric === "gap_per_gram" ? "gap_per_gram" : "amount", label, objectIds); const q1 = base(fa, cells, denominator, label, objectIds); const q0 = base(fb, reference, denominator, `${label}参照`);
-        const amount0 = base(fb, reference, metric === "gap_per_gram" ? "gap_per_gram" : "amount", `${label}参照`);
+        const amount = base(fa, cells, direct ? "amount" : metric, label, objectIds); const q1 = base(fa, cells, denominator, label, objectIds); const q0 = base(fb, reference, denominator, `${label}参照`);
+        const amount0 = base(fb, reference, direct ? "amount" : metric, `${label}参照`);
         if (q1.value === null || q1.value <= 0 || q0.value === null || q0.value <= 0 || amount.value === null || amount0.value === null) { limit("部分控制层数量、订单或克重无效，未生成标准化总值"); check("参照权重标准化", "控制层分母无效，未执行完整标准化", false); return null; }
-        const price = metric === "gap_per_gram" ? ref(amount) : expression("divide", ref(amount), ref(q1));
-        contributions.push(expression("multiply", price, ref(q0))); weights.push(ref(q0)); baseline.push(metric === "gap_per_gram" ? expression("multiply", ref(amount0), ref(q0)) : ref(amount0));
+        const price = direct ? expression("divide", ref(amount), ref(q1)) : ref(amount);
+        contributions.push(expression("multiply", price, ref(q0))); weights.push(ref(q0)); baseline.push(direct ? ref(amount0) : expression("multiply", ref(amount0), ref(q0)));
       }
       if (!contributions.length) return null;
-      const numerator = expression("add", ...contributions); const baseNumerator = expression("add", ...baseline); const ratio = metric.includes("per_");
+      const numerator = expression("add", ...contributions); const baseNumerator = expression("add", ...baseline); const ratio = isRatio(metric);
       const actualControls = ordered([...by, ...fixedControls(fa), ...fixedControls(fb)]);
       const value = setComparison(derived(fa, `${metric}.standardized_target`, `${prefix}参照权重下的目标反事实${labels[metric]}`, ratio ? expression("divide", numerator, expression("add", ...weights)) : numerator, definitions.get(metric)!.unit, targetObjectIds, "使用参照范围对应分母作为各层权重；这是标准化反事实，不是观察实收或未来销售"), "standardized", actualControls);
       const reference = setComparison(derived(fb, `${metric}.standardized_reference`, `${prefix}参照权重下的参照${labels[metric]}`, ratio ? expression("divide", baseNumerator, expression("add", ...weights)) : baseNumerator, definitions.get(metric)!.unit), "standardized", actualControls);
@@ -377,10 +430,10 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
 
     if (request.method === "aggregate") {
       let cells = await load(request.scope, internalBy, undefined, undefined, request.metrics);
-      if (request.metrics.some((metric) => ["orders", "amount_per_order", "stores"].includes(metric)) && new Set(cells.map((cell) => keyOf(cell, request.by ?? []))).size !== cells.length) {
-        const query: AnalysisAggregateQuery = { scope: request.scope, by: request.metrics.includes("stores") ? ordered([...internalBy, "store"]) : internalBy, metrics: request.metrics };
-        const exact = session.aggregateWithOrderIds && request.metrics.some((metric) => ["orders", "amount_per_order"].includes(metric)) ? await session.aggregateWithOrderIds(query, signal) : null;
-        cells = exact ?? await session.aggregate({ ...query, by: ordered([...internalBy, "store", ...(request.metrics.some((metric) => ["orders", "amount_per_order"].includes(metric)) ? ["order" as const] : [])]) }, signal);
+      if (request.metrics.some((metric) => needsOrders(metric) || usesStores(metric)) && new Set(cells.map((cell) => keyOf(cell, request.by ?? []))).size !== cells.length) {
+        const query: AnalysisAggregateQuery = { scope: request.scope, by: request.metrics.some(usesStores) ? ordered([...internalBy, "store"]) : internalBy, metrics: request.metrics };
+        const exact = session.aggregateWithOrderIds && request.metrics.some(needsOrders) ? await session.aggregateWithOrderIds(query, signal) : null;
+        cells = exact ?? await session.aggregate({ ...query, by: ordered([...internalBy, "store", ...(request.metrics.some(needsOrders) ? ["order" as const] : [])]) }, signal);
         throwIfTurnCancelled(signal); session.assertActive?.();
       }
       const f = frame(request.scope, "真实选定记录汇总，空范围金额不解释为零"); const grouped = groups(cells, request.by ?? []);
@@ -391,6 +444,8 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
       ranked.sort((a, b) => (b.rank === null ? -Infinity : Math.abs(b.rank)) - (a.rank === null ? -Infinity : Math.abs(a.rank)) || a.key.localeCompare(b.key));
       for (const { cells } of ranked) { const ids = cells.length ? objectsFor(f, cells) : []; for (const metric of request.metrics) base(f, cells, metric, "汇总", ids); }
       method.sampleRows = sum(cells, "rows")!; method.groupCount = cells.length ? grouped.size : 0; check("完整范围汇总", `处理全部 ${method.sampleRows} 行、${method.groupCount} 组；无金额前列截取`);
+      // 「有多少个活动/门店/货品」这类问题的答案就是分组个数：登记成可引用的实测事实，不让模型借情景假设填写。
+      if (request.by?.length && cells.length) add(f, "distinct_count", `${request.by.map((dimension) => GROUP_NOUNS[dimension]).join("×")}个数`, grouped.size, "个", [], undefined, `选定范围内按${request.by.map((dimension) => GROUP_NOUNS[dimension]).join("、")}分组后的不同取值个数（去重计数）`);
     } else if (request.method === "compare" || request.method === "scan" && request.reference) {
       if (!request.reference) throw analysisArgumentsInvalid("请补充 reference 参照范围，再执行对照");
       const by = ordered([...internalBy, ...(request.method === "scan" ? scanBy : [])]); const target = await load(request.scope, by); const reference = await load(request.reference, by);
@@ -400,7 +455,7 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
       const parent = compareFacts(aligned.target, aligned.reference, fa, fb);
       method.sampleRows = sum(aligned.target, "rows")! + sum(aligned.reference, "rows")!;
       if (request.method === "compare") {
-        if (request.controls?.length) for (const metric of request.metrics.filter((v) => v === "amount" || v.includes("per_"))) standardized(aligned.target, aligned.reference, fa, fb, request.controls, metric);
+        if (request.controls?.length) for (const metric of request.metrics.filter(standardizable)) standardized(aligned.target, aligned.reference, fa, fb, request.controls, metric);
         if (request.by?.length) {
           const targets = groups(aligned.target, request.by); const references = groups(aligned.reference, request.by); method.groupCount = new Set([...targets.keys(), ...references.keys()]).size;
           for (const [key, cells] of targets) if (references.has(key)) compareFacts(cells, references.get(key)!, fa, fb, "分组 ", objectsFor(fa, cells));
@@ -414,7 +469,7 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
           const parentIds = scanParents.length ? objectsFor(fa, targetParent.length ? targetParent : referenceParent, scanParents) : [];
           const actualParent = scanParents.length ? compareFacts(targetParent, referenceParent, fa, fb, "父组 ", parentIds) : parent;
           const parentStandard = new Map<AnalysisMetric, AnalysisFact | null>();
-          if (request.controls?.length) for (const metric of request.metrics.filter((v) => v === "amount" || v.includes("per_"))) parentStandard.set(metric, standardized(targetParent, referenceParent, fa, fb, request.controls, metric, "父组 ", parentIds));
+          if (request.controls?.length) for (const metric of request.metrics.filter(standardizable)) parentStandard.set(metric, standardized(targetParent, referenceParent, fa, fb, request.controls, metric, "父组 ", parentIds));
           const targets = groups(targetParent, scanBy); const references = groups(referenceParent, scanBy); const candidates = new Set([...targets.keys(), ...references.keys()]); method.groupCount += candidates.size;
           for (const key of candidates) {
           const a = targets.get(key) ?? []; const b = references.get(key) ?? []; const ids = objectsFor(fa, a.length ? a : b, scanBy); const child = compareFacts(a, b, fa, fb, "分组 ", ids);
@@ -422,7 +477,7 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
             const parentDelta = actualParent.get(metric)!; const parentBaseline = comparisonBaseline(parentDelta); const childBaseline = comparisonBaseline(child.get(metric)!);
             const adjusted = parentStandard.has(metric);
             const raw = derived(fa, `${metric}.${adjusted ? "unadjusted_deviation" : "relative_deviation"}`, `${labels[metric]}未标准化的相对父组变化偏离`, expression("multiply", constant(100), expression("subtract", expression("divide", ref(child.get(metric)!), ref(childBaseline)), expression("divide", ref(parentDelta), ref(parentBaseline)))), "个百分点", ids);
-            if (metric.includes("per_")) setComparison(raw, "descriptive", []);
+            if (isGuarded(metric)) setComparison(raw, "descriptive", []);
             let deviation = raw;
             if (adjusted) {
               const normalizedChild = standardized(a, b, fa, fb, request.controls!, metric, "分组 ", ids); const normalizedParent = parentStandard.get(metric);
@@ -430,7 +485,7 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
               setComparison(deviation, normalizedChild && normalizedParent ? "standardized" : "descriptive", normalizedChild && normalizedParent ? request.controls! : []);
             }
             const contribution = derived(fa, `${metric}.change_contribution`, `${labels[metric]}${definitions.get(metric)!.additive ? "变化贡献占比" : "变化相对父组变化的比值（非加总贡献）"}`, expression("multiply", constant(100), expression("divide", ref(child.get(metric)!), ref(parentDelta))), "%", ids);
-            if (metric.includes("per_")) setComparison(contribution, "descriptive", []);
+            if (isGuarded(metric)) setComparison(contribution, "descriptive", []);
             deviated.push(deviation);
           }
           base(fa, a, "rows", "分组样本", ids);
@@ -506,8 +561,8 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
       const parentCells = parentTotals.get(parentKey);
       if (!parentCells?.length) throw new Error("同快照父分组统计缺失，不能完成完整扫描");
       const parentIds = scanParents.length ? objectsFor(f, parentCells, scanParents) : []; const grouped = groups(members, scanBy); method.groupCount += grouped.size;
-      const complementFields = additiveFields.filter((field) => readMetrics.includes(field) || field === "tag_amount" && request.metrics.includes("gap_per_gram"));
-      const complement = request.controls?.length && !request.commonStores && request.metrics.some((metric) => metric === "amount" || metric.includes("per_")) ? await controlledComplements(grouped, request.controls, complementFields, checkpoint) : null;
+      const complementFields = additiveFields.filter((field) => readMetrics.includes(field) || request.metrics.some((metric) => ratioFields(metric).includes(field)));
+      const complement = request.controls?.length && !request.commonStores && request.metrics.some(standardizable) ? await controlledComplements(grouped, request.controls, complementFields, checkpoint) : null;
       const alignedChildren = new Map<string, ReturnType<typeof align>>(); let scannedGroups = 0;
       for (const metric of request.metrics) {
         const parent = base(f, parentCells, metric, "父组", parentIds); const parentRows = base(f, parentCells, "rows", "父组规模", parentIds);
@@ -515,9 +570,9 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
           if (++scannedGroups % 64 === 0) await checkpoint();
           const ids = objectsFor(f, values, scanBy); const value = base(f, values, metric, "分组", ids); const n = base(f, values, "rows", "分组规模", ids);
           const childValue = definitions.get(metric)!.additive ? expression("divide", ref(value), ref(n)) : ref(value); const parentValue = definitions.get(metric)!.additive ? expression("divide", ref(parent), ref(parentRows)) : ref(parent);
-          const adjusted = Boolean(request.controls?.length && (metric === "amount" || metric.includes("per_")));
+          const adjusted = Boolean(request.controls?.length && standardizable(metric));
           const raw = derived(f, `${metric}.${adjusted ? "unadjusted_deviation" : "relative_deviation"}`, `${labels[metric]}相对父组平均值未标准化偏离`, expression("multiply", constant(100), expression("subtract", expression("divide", childValue, parentValue), constant(1))), "%", ids);
-          if (metric.includes("per_")) setComparison(raw, "descriptive", []);
+          if (isGuarded(metric)) setComparison(raw, "descriptive", []);
           if (adjusted) {
             let aligned = alignedChildren.get(childKey);
             if (!aligned) {
@@ -561,16 +616,16 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
         if (request.check === "largest_order") {
           const totals = await load(request.scope, [], undefined, undefined, ["orders"]);
           if (!totals.length) return unsupported("当前范围没有可检查样本");
-          if (sum(totals, "orders") === null) return unsupported("当前范围存在缺少复合订单标识的行，不能确定全局最大对象");
+          if (missingOrderRows(totals)) return unsupported("当前范围存在缺少复合订单标识的行，不能确定全局最大对象");
         }
-        if (request.check === "order_distribution" && session.orderDistribution && !controls.length && !request.metrics.some((metric) => metric.endsWith("per_gram"))) {
+        if (request.check === "order_distribution" && session.orderDistribution && !controls.length && !request.metrics.some((metric) => isRatio(metric) && metric !== "amount_per_order")) {
           // 数据库读取完整范围后直接返回精确分位数，避免把逐单分组传回服务再排序。
           const summary = await session.orderDistribution({ scope: request.scope, metrics: request.metrics }, signal);
           if (!summary.orderCount) return unsupported("没有完整复合订单标识，未执行分布检查");
           const f = frame(request.scope, "只重构当前筛选内订单成交部分，缺店号或单号的行未参与分布");
           for (const metric of request.metrics) for (const name of ["p50", "p90", "p99"] as const) {
             const quantileFact = add(f, `${metric}.${name}`, `订单成交部分${labels[metric]}${name}`, summary.quantiles[metric]?.[name] ?? null, definitions.get(metric)!.unit, [], undefined, "筛选内复合订单聚合后升序排列，最近秩分位数；任一订单该指标缺失则总体分位数缺失");
-            if (metric.includes("per_")) {
+            if (isGuarded(metric)) {
               const context = ratioContext(f, [{ dimensions: {}, rows: summary.sampleRows, amount: null, quantity: null, grams: null, profit: null, orders: summary.orderCount, stores: null, tag_amount: null }], metric);
               setComparison(quantileFact, context.role, context.controls);
             }
@@ -590,7 +645,7 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
             const values = [...grouped.values()].map((cells) => sum(cells, metric)); const present = values.filter((v): v is number => v !== null).sort((a, b) => a - b);
             for (const [name, quantile] of [["p50", 0.5], ["p90", 0.9], ["p99", 0.99]] as const) {
               const quantileFact = add(f, `${metric}.${name}`, `订单成交部分${labels[metric]}${name}`, present.length === values.length ? present[Math.ceil(quantile * present.length) - 1] : null, definitions.get(metric)!.unit, [], undefined, "筛选内复合订单聚合后升序排列，最近秩分位数；任一订单该指标缺失则总体分位数缺失");
-              if (metric.includes("per_")) { const context = ratioContext(f, valid, metric); setComparison(quantileFact, context.role, context.controls); }
+              if (isGuarded(metric)) { const context = ratioContext(f, valid, metric); setComparison(quantileFact, context.role, context.controls); }
             }
           }
           add(f, "rows.excluded", "缺复合订单标识的排除行数", excluded, "条"); add(f, "orders.observed", "参与分布的订单成交部分数", grouped.size, "单");

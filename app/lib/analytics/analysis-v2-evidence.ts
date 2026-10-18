@@ -1,20 +1,18 @@
-import { ANALYSIS_ANSWER_SCHEMA, ANALYSIS_DIMENSIONS, ANALYSIS_METHODS } from "./analysis-v2-types.ts";
-import type { AnalysisAnswer, AnalysisAnswerBlock, AnalysisAnswerNode, AnalysisConclusion, AnalysisConstraints, AnalysisDraft, AnalysisEvidence, AnalysisFact, AnalysisFilters, AnalysisFrame, AnalysisMethodReport, AnalysisObject, AnalysisOperationResult, AnalysisReviewIssue, AnalysisSemanticReview, AnalysisTask, AnalysisTrialParameter, AnalysisUserCondition, DraftValidation, EvidenceRegistry, FactExpression } from "./analysis-v2-types.ts";
-import { isToolTrace } from "../tool-trace.ts";
+import { ANALYSIS_DIMENSIONS, ANALYSIS_METHODS } from "./analysis-v2-types.ts";
+import { ANALYSIS_FILTER_KEYS, SEMANTIC_DIMENSIONS, type SemanticFilterKey } from "./semantic/model.ts";
+import type { AnalysisEvidence, AnalysisFact, AnalysisFilters, AnalysisFrame, AnalysisMethodReport, AnalysisObject, AnalysisOperationResult, EvidenceRegistry, FactExpression } from "./analysis-v2-types.ts";
 import type { Period } from "./types.ts";
-import type { ToolTrace } from "../tool-trace.ts";
-import { parseVisualizations, resolveAnalysisVisualization } from "./visualization.ts";
 import { throwIfTurnCancelled } from "../cancellation.ts";
 import { analysisFactParents } from "./analysis-v2-fact-links.ts";
 import { scenarioCents, scenarioRevenue } from "./scenario-decimal.ts";
-export { analysisAnswerText, formatAnalysisNode, formatAnalysisNodes } from "./analysis-v2-format.ts";
 
-type IssueKind = AnalysisReviewIssue["kind"];
-const FILTERS = ["stores", "regions", "districts", "categories", "materials", "offers", "memberFlags", "storeTypes", "skus", "memberSegments"] as const;
-const CONTROL_FILTERS = { store: "stores", region: "regions", district: "districts", category: "categories", material: "materials", offer: "offers", memberFlag: "memberFlags", storeType: "storeTypes", sku: "skus", memberSegment: "memberSegments" } as const;
+// 证据自检的问题记录，只在本模块内汇总成报错文字。
+type IssueKind = "task_coverage" | "missing_evidence" | "invalid_comparison" | "unsupported_explanation" | "unclear_action" | "expression";
+type AnalysisReviewIssue = { needIds: string[]; conclusionIds: string[]; requirement: string; kind: IssueKind };
+const FILTERS = ANALYSIS_FILTER_KEYS;
+const CONTROL_FILTERS = Object.fromEntries(ANALYSIS_DIMENSIONS.map((dimension) => [dimension, SEMANTIC_DIMENSIONS[dimension].filter])) as Record<typeof ANALYSIS_DIMENSIONS[number], SemanticFilterKey>;
 const POPULATIONS = ["sales", "net", "recovery", "returns", "zero_sales"] as const;
 const GRAINS = ["line", "selected_order", "group", "unknown"] as const;
-const ISSUE_KINDS = ["task_coverage", "missing_evidence", "invalid_comparison", "unsupported_explanation", "unclear_action", "expression"] as const;
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 function fail(message: string): never { throw new Error(message); }
@@ -66,24 +64,6 @@ function filters(value: unknown, path: string): AnalysisFilters {
   }
   return result;
 }
-function constraints(value: unknown, path: string): AnalysisConstraints {
-  const item = object(value, path);
-  return { filters: filters(item.filters, `${path}筛选`), ...(item.period === undefined ? {} : { period: period(item.period, `${path}周期`) }) };
-}
-function parseTask(value: unknown): AnalysisTask {
-  const item = object(value, "分析任务");
-  const result: AnalysisTask = {
-    ...(item.mode === undefined ? {} : { mode: choice(item.mode, ["lookup", "analysis"] as const, "任务类型") }),
-    runId: text(item.runId, "运行编号"), question: text(item.question, "原始问题"), context: strings(item.context, "持续要求"),
-    needs: list(item.needs, (raw, path) => { const need = object(raw, path); return { id: text(need.id, `${path}编号`), userQuote: text(need.userQuote, `${path}用户原话`), judgement: text(need.judgement, `${path}待答判断`), status: choice(need.status, ["open", "supported", "conditional", "needs_business_input"] as const, `${path}状态`), conclusionIds: ids(need.conclusionIds, `${path}结论编号`) }; }, "待答事项"),
-    hardScope: constraints(item.hardScope, "用户硬范围"), assumptions: strings(item.assumptions, "分析假设"),
-    ...(item.focus === undefined ? {} : { focus: filters(item.focus, "焦点对象") }), ...(item.goal === undefined ? {} : { goal: text(item.goal, "业务目标") }),
-  };
-  unique(result.needs, "待答事项");
-  if (!result.needs.length) fail("分析任务至少需要一个待答事项");
-  for (const need of result.needs) if (![result.question, ...result.context].some((quote) => quote.includes(need.userQuote))) fail(`待答事项 ${need.id} 的原话不是用户真实子串`);
-  return result;
-}
 function expression(value: unknown, path: string, depth = 0): FactExpression {
   if (depth > 64) fail(`${path}派生表达式层级过深`);
   const item = object(value, path);
@@ -132,35 +112,6 @@ function parseEvidence(value: unknown): AnalysisEvidence {
   const result: AnalysisEvidence = { frames: list(item.frames, parseFrame, "证据范围"), facts: list(item.facts, parseFact, "事实"), objects: list(item.objects, parseObject, "业务对象"), methods: list(item.methods, parseMethod, "实际方法") };
   for (const [name, values] of Object.entries(result)) unique(values, `证据 ${name}`);
   return result;
-}
-function parseNode(value: unknown, path: string): AnalysisAnswerNode {
-  const item = object(value, path);
-  const kind = choice(item.kind, ["text", "fact_ref", "object_ref", "period_ref", "user_condition_ref", "trial_parameter_ref"] as const, `${path}节点类型`);
-  const key = { text: "text", fact_ref: "factId", object_ref: "objectId", period_ref: "frameId", user_condition_ref: "conditionId", trial_parameter_ref: "parameterId" }[kind];
-  if (Object.keys(item).some((field) => field !== "kind" && field !== key)) fail(`${path}不能覆盖引用的真实值或追加字段`);
-  const content = text(item[key], `${path}.${key}`, kind === "text");
-  return { kind, [key]: content } as AnalysisAnswerNode;
-}
-function parseConclusion(value: unknown, path: string): AnalysisConclusion {
-  const item = object(value, path);
-  return { id: text(item.id, `${path}编号`), needIds: ids(item.needIds, `${path}事项编号`), level: choice(item.level, ["observed", "comparison_supported", "hypothesis"] as const, `${path}证据级别`), judgement: text(item.judgement, `${path}判断`), factIds: ids(item.factIds, `${path}事实编号`), objectIds: ids(item.objectIds, `${path}对象编号`), methodIds: ids(item.methodIds, `${path}方法编号`), limitations: strings(item.limitations, `${path}限制`), ...(item.action === undefined ? {} : { action: text(item.action, `${path}建议`) }), ...(item.validation === undefined ? {} : { validation: text(item.validation, `${path}验证方式`) }) };
-}
-function parseDraft(value: unknown): AnalysisDraft {
-  const item = object(value, "回答草稿");
-  const userConditions = list<AnalysisUserCondition>(item.userConditions, (raw, at) => { const condition = object(raw, at); return { id: text(condition.id, `${at}编号`), quote: text(condition.quote, `${at}原话`) }; }, "用户条件");
-  const trialParameters = list<AnalysisTrialParameter>(item.trialParameters, (raw, at) => {
-    const parameter = object(raw, at);
-    return { id: text(parameter.id, `${at}编号`), kind: choice(parameter.kind, ["store_count", "duration_days"] as const, `${at}计划类型`), value: count(parameter.value, `${at}拟议值`), objectIds: ids(parameter.objectIds, `${at}候选编号`), conditions: strings(parameter.conditions, `${at}条件`), status: choice(parameter.status, ["proposed"] as const, `${at}计划状态`) };
-  }, "试点计划");
-  const conclusions = list(item.conclusions, parseConclusion, "结论");
-  const blocks = list<AnalysisAnswerBlock>(item.blocks, (raw, at) => { const block = object(raw, at); return { kind: choice(block.kind, ["paragraph", "bullet", "heading"] as const, `${at}段落类型`), nodes: list(block.nodes, parseNode, `${at}正文节点`), ...(block.conclusionId === undefined ? {} : { conclusionId: text(block.conclusionId, `${at}结论编号`) }) }; }, "回答正文");
-  unique(conclusions, "结论"); unique(userConditions, "用户条件"); unique(trialParameters, "试点计划");
-  const coverage = item.coverage === undefined ? undefined : list<NonNullable<AnalysisDraft["coverage"]>[number]>(item.coverage, (raw, at) => {
-    const entry = object(raw, at);
-    return { needId: text(entry.needId, `${at}事项编号`), status: choice(entry.status, ["open", "supported", "conditional", "needs_business_input"] as const, `${at}事项状态`), reason: text(entry.reason, `${at}状态依据`) };
-  }, "逐事项覆盖");
-  const visualizations = parseVisualizations(item.visualizations, blocks.length);
-  return { status: choice(item.status, ["answered", "conditional", "incomplete"] as const, "回答状态"), conclusions, blocks, questions: strings(item.questions, "业务追问"), userConditions, trialParameters, ...(coverage === undefined ? {} : { coverage }), ...(visualizations ? { visualizations } : {}) };
 }
 function same(value: unknown, other: unknown): boolean {
   function canonical(raw: unknown): unknown {
@@ -451,262 +402,4 @@ export function createEvidenceRegistry(): EvidenceRegistry {
     view: () => evidence,
     clear: () => { evidence = freezeEvidence({ frames: [], facts: [], objects: [], methods: [] }); operations = new Map(); },
   };
-}
-
-// 完成回答仅传其依赖的事实；未完成时保留已捕获依据，方便用户展开核对。
-export function selectAnalysisEvidence(draft: AnalysisDraft, evidence: AnalysisEvidence): AnalysisEvidence {
-  if (draft.status === "incomplete") return clone(evidence);
-  const facts = new Map(evidence.facts.map((fact) => [fact.id, fact]));
-  const objects = new Map(evidence.objects.map((object) => [object.id, object]));
-  const factIds = new Set(draft.conclusions.flatMap((conclusion) => conclusion.factIds));
-  const objectIds = new Set([...draft.conclusions.flatMap((conclusion) => conclusion.objectIds), ...draft.trialParameters.flatMap((parameter) => parameter.objectIds)]);
-  const methodIds = new Set(draft.conclusions.flatMap((conclusion) => conclusion.methodIds));
-  const frameIds = new Set<string>();
-  for (const spec of draft.visualizations?.items ?? []) {
-    const chart = resolveAnalysisVisualization(spec, evidence);
-    chart.factIds.forEach((id) => factIds.add(id)); chart.objectIds.forEach((id) => objectIds.add(id));
-  }
-  for (const block of draft.blocks) for (const node of block.nodes) {
-    if (node.kind === "fact_ref") factIds.add(node.factId);
-    if (node.kind === "object_ref") objectIds.add(node.objectId);
-    if (node.kind === "period_ref") frameIds.add(node.frameId);
-  }
-  // Set 迭代会包含中新加入的父引用，不递归展开长事实链。
-  const operationIds = new Set<string>();
-  for (const id of factIds) {
-    const fact = facts.get(id); if (!fact) fail(`最终证据投影缺少事实 ${id}`);
-    frameIds.add(fact.frameId); operationIds.add(fact.operationId); fact.objectIds.forEach((objectId) => objectIds.add(objectId));
-    analysisFactParents(fact).forEach((parentId) => factIds.add(parentId));
-  }
-  for (const id of objectIds) {
-    const object = objects.get(id); if (!object) fail(`最终证据投影缺少对象 ${id}`);
-    frameIds.add(object.frameId);
-  }
-  for (const method of evidence.methods) if (operationIds.has(method.operationId) || methodIds.has(method.id)) {
-    methodIds.add(method.id); method.frameIds.forEach((id) => frameIds.add(id));
-  }
-  for (const id of methodIds) if (!evidence.methods.some((method) => method.id === id)) fail(`最终证据投影缺少方法 ${id}`);
-  for (const id of frameIds) if (!evidence.frames.some((frame) => frame.id === id)) fail(`最终证据投影缺少数据范围 ${id}`);
-  return clone({ frames: evidence.frames.filter((frame) => frameIds.has(frame.id)), facts: evidence.facts.filter((fact) => factIds.has(fact.id)), objects: evidence.objects.filter((object) => objectIds.has(object.id)), methods: evidence.methods.filter((method) => methodIds.has(method.id)) });
-}
-
-// 时间指代不声明成交次数；除此之外保留数值守卫，活动或门店名称仍须用对象引用。
-function numberExpressions(value: string): string[] {
-  // 只豁免句首或标点后可独立识别的时间指代；嵌在动词补语内的“一次”仍声明数量。
-  const content = value.replace(/(?<![\p{L}\p{N}])(?:上|下|这|那)一次/gu, (text) => " ".repeat(text.length));
-  const expressions = [
-    /\p{N}+(?:[.,]\p{N}+)*/gu,
-    /百分之\s*(?:[零〇一二两三四五六七八九十百千万亿半][零〇一二两三四五六七八九十百千万亿点半]*|点[零〇一二两三四五六七八九十百千万亿]+)/g,
-    /[零〇一二两三四五六七八九十百千万亿]+分之[零〇一二两三四五六七八九十百千万亿]+|一半|半数|半价|过半/g,
-    /[零〇一二两三四五六七八九十百千万亿半][零〇一二两三四五六七八九十百千万亿点半]*\s*(?:个百分点|百分比|家|个|间|天|周|个月|月|年|日|元|块|分(?:钱|钟)|成|折|件|单|克|人|次|名|倍|%|％)/g,
-    /(?:第|前|后|排名|排行|TOP)\s*[零〇一二两三四五六七八九十百千万亿]+/gi,
-    /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|hundred|thousand|million)\s+(?:percent|stores?|days?|weeks?|months?|years?|orders?|grams?|yuan|dollars?|times)\b/gi,
-  ].flatMap((pattern) => [...content.matchAll(pattern)].map((match) => match[0]));
-  expressions.push(...(content.match(/[零〇一二两三四五六七八九十百千万亿]+/g) ?? []).filter((number) => number.length > 1 && /[十百千万亿]/.test(number)));
-  return [...new Set(expressions)];
-}
-const containsNumber = (value: string) => numberExpressions(value).length > 0;
-
-export function validateAnalysisDraft(task: AnalysisTask, draft: unknown, evidence: AnalysisEvidence): DraftValidation {
-  const issues: AnalysisReviewIssue[] = [];
-  const add = (kind: IssueKind, requirement: string, conclusion?: AnalysisConclusion, needIds: string[] = []) => issues.push({ kind, requirement, needIds: conclusion?.needIds ?? needIds, conclusionIds: conclusion ? [conclusion.id] : [] });
-  let t: AnalysisTask, d: AnalysisDraft, e: AnalysisEvidence;
-  try { t = parseTask(task); } catch (error) { add("task_coverage", error instanceof Error ? error.message : "分析任务格式不正确"); return { valid: false, issues }; }
-  try { e = parseEvidence(evidence); } catch (error) { add("missing_evidence", error instanceof Error ? error.message : "证据格式不正确"); return { valid: false, issues }; }
-  try { d = parseDraft(draft); } catch (error) { add("expression", error instanceof Error ? error.message : "回答草稿格式不正确"); return { valid: false, issues }; }
-  issues.push(...checkEvidence(e));
-  const frames = new Map(e.frames.map((entry) => [entry.id, entry])), facts = new Map(e.facts.map((entry) => [entry.id, entry])), objects = new Map(e.objects.map((entry) => [entry.id, entry])), methods = new Map(e.methods.map((entry) => [entry.id, entry]));
-  const conclusions = new Map(d.conclusions.map((entry) => [entry.id, entry]));
-  for (const spec of d.visualizations?.items ?? []) {
-    try {
-      if (spec.conclusionId && !conclusions.has(spec.conclusionId)) fail("图表关联的结论引用不存在");
-      resolveAnalysisVisualization(spec, e);
-    } catch (error) { add("expression", error instanceof Error ? error.message : "图表未通过核验"); }
-  }
-  const needs = new Map(t.needs.map((entry) => [entry.id, entry]));
-  const sourceLimits = new Set([...e.frames.flatMap((entry) => entry.limitations), ...e.facts.flatMap((entry) => entry.limitations), ...e.methods.flatMap((entry) => entry.limitations)]);
-  function qualitative(value: string, path: string, conclusion?: AnalysisConclusion): void {
-    const numbers = numberExpressions(value);
-    if (numbers.length) add("expression", `${path}含有未绑定证据的数值（${numbers.slice(0, 5).map((number) => `“${number}”`).join("、")}）；请使用事实、对象、周期、用户条件或计划引用`, conclusion);
-  }
-  const conditionMap = new Map(d.userConditions.map((entry) => [entry.id, entry]));
-  for (const condition of d.userConditions) if (![t.question, ...t.context].some((quote) => quote.includes(condition.quote))) add("expression", `用户条件 ${condition.id} 不是本轮问题或持续要求的真实子串`);
-  const parameterMap = new Map(d.trialParameters.map((entry) => [entry.id, entry]));
-  for (const parameter of d.trialParameters) {
-    if (parameter.value <= 0) add("expression", `计划 ${parameter.id} 只能是拟议正整数`);
-    if (!parameter.conditions.length) add("unclear_action", `计划 ${parameter.id} 必须说明尚需确认的业务条件`);
-    parameter.conditions.forEach((condition) => qualitative(condition, `计划 ${parameter.id} 的条件`));
-    for (const id of parameter.objectIds) if (!objects.has(id) || objects.get(id)?.dimension !== "store") add("missing_evidence", `计划 ${parameter.id} 的候选 ${id} 不是实际读取的门店对象`);
-    if (parameter.kind === "store_count") {
-      const selected = parameter.objectIds.map((id) => objects.get(id));
-      const count = new Set(selected.map((item) => item?.value).filter(Boolean)).size;
-      if (!parameter.objectIds.length || count !== parameter.objectIds.length || parameter.value !== count) add("expression", `计划 ${parameter.id} 的门店数量必须等于不同真实候选的引用数量，不能从门店编号推算或重复计数`);
-    }
-  }
-  for (const frame of e.frames) {
-    if (t.hardScope.period && (frame.scope.period.start < t.hardScope.period.start || frame.scope.period.end > t.hardScope.period.end)) add("missing_evidence", `数据范围 ${frame.id} 的周期超出用户硬范围`);
-    for (const key of FILTERS) {
-      const allowed = t.hardScope.filters[key];
-      if (allowed && (!frame.scope.filters[key]?.length || frame.scope.filters[key]?.some((value) => !allowed.includes(value)))) add("missing_evidence", `数据范围 ${frame.id} 的 ${key} 超出或解除了用户硬筛选`);
-    }
-  }
-  function ancestry(ids: string[]): Set<string> {
-    const result = new Set<string>();
-    const walk = (id: string) => { if (result.has(id)) return; result.add(id); const fact = facts.get(id); if (fact) analysisFactParents(fact).forEach(walk); };
-    ids.forEach(walk); return result;
-  }
-  if (d.coverage) {
-    const seen = new Set<string>();
-    for (const entry of d.coverage) {
-      if (!needs.has(entry.needId)) add("task_coverage", `逐事项覆盖引用了未知事项 ${entry.needId}`);
-      if (seen.has(entry.needId)) add("task_coverage", `逐事项覆盖重复声明事项 ${entry.needId}`, undefined, [entry.needId]);
-      seen.add(entry.needId);
-      if (containsNumber(entry.reason)) add("expression", `事项 ${entry.needId} 的状态依据包含未绑定证据的数值，请用定性说明`, undefined, [entry.needId]);
-      if (d.status === "answered" && entry.status !== "supported" || d.status === "conditional" && entry.status === "open") add("task_coverage", `事项 ${entry.needId} 的逐项状态与整体回答状态不一致`, undefined, [entry.needId]);
-      if (entry.status !== "open" && !d.conclusions.some((conclusion) => conclusion.needIds.includes(entry.needId))) add("task_coverage", `事项 ${entry.needId} 声称已处理但没有相关结论`, undefined, [entry.needId]);
-      if ((entry.status === "conditional" || entry.status === "needs_business_input") && !d.conclusions.some((conclusion) => conclusion.needIds.includes(entry.needId) && conclusion.limitations.length && conclusion.validation)) add("unclear_action", `事项 ${entry.needId} 的有条件判断必须说明限制与验证方式`, undefined, [entry.needId]);
-    }
-    for (const need of t.needs) if (!seen.has(need.id)) add("task_coverage", `逐事项覆盖遗漏事项 ${need.id}`, undefined, [need.id]);
-    if (d.status === "conditional" && !d.coverage.some((entry) => entry.status === "conditional" || entry.status === "needs_business_input")) add("task_coverage", "有条件回答必须声明具体有条件事项，不能把已支持事项一起降级");
-  }
-  for (const conclusion of d.conclusions) {
-    if (!conclusion.needIds.length) add("task_coverage", `结论 ${conclusion.id} 没有关联待答事项`, conclusion);
-    for (const id of conclusion.needIds) if (!needs.has(id)) add("task_coverage", `结论 ${conclusion.id} 引用了未知待答事项 ${id}`, conclusion);
-    qualitative(conclusion.judgement, `结论 ${conclusion.id} 的判断`, conclusion);
-    if (conclusion.action) qualitative(conclusion.action, `结论 ${conclusion.id} 的建议`, conclusion);
-    if (conclusion.validation) qualitative(conclusion.validation, `结论 ${conclusion.id} 的验证方式`, conclusion);
-    for (const limit of conclusion.limitations) if (!sourceLimits.has(limit)) qualitative(limit, `结论 ${conclusion.id} 的限制`, conclusion);
-    for (const id of conclusion.factIds) if (!facts.has(id)) add("missing_evidence", `结论 ${conclusion.id} 引用了未读取的事实 ${id}`, conclusion);
-    for (const id of conclusion.objectIds) if (!objects.has(id)) add("missing_evidence", `结论 ${conclusion.id} 引用了未读取的对象 ${id}`, conclusion);
-    for (const id of conclusion.methodIds) if (!methods.has(id)) add("missing_evidence", `结论 ${conclusion.id} 引用了未知方法 ${id}`, conclusion);
-    if (conclusion.level !== "hypothesis" && !conclusion.factIds.length) add("missing_evidence", `结论 ${conclusion.id} 的已观察判断需要真实事实`, conclusion);
-    if (conclusion.level === "hypothesis" && !conclusion.limitations.length) add("unsupported_explanation", `结论 ${conclusion.id} 的假设必须说明未验证的限制`, conclusion);
-    if (conclusion.level !== "hypothesis" && [...ancestry(conclusion.factIds)].some((id) => facts.get(id)?.assumption)) add("unsupported_explanation", `结论 ${conclusion.id} 含情景假设或其派生结果，不能标为真实观察或历史比较`, conclusion);
-    if (conclusion.action && conclusion.level === "hypothesis" && !conclusion.validation) add("unclear_action", `结论 ${conclusion.id} 的假设建议需要验证办法`, conclusion);
-    if (conclusion.level === "comparison_supported") {
-      const closure = ancestry(conclusion.factIds), usedFrames = new Set([...closure].map((id) => facts.get(id)?.frameId).filter((id): id is string => Boolean(id)));
-      const anchorMembers = new Map<string, Set<string>>();
-      // 实际比较派生必须关联同一代码配对的两个端点；基础比率的分子分母不是比较端点。
-      for (const id of closure) {
-        const anchor = facts.get(id); if (!anchor?.comparisonKey || !anchor.derivation || !["within_stratum", "standardized"].includes(anchor.comparisonRole ?? "")) continue;
-        const members = [...ancestry([id])].map((parentId) => facts.get(parentId)).filter((parent): parent is AnalysisFact => Boolean(parent && parent.comparisonKey === anchor.comparisonKey && parent.operationId === anchor.operationId));
-        const endpoints = members.filter((member) => member.id !== id && ![...ancestry([member.id])].some((parentId) => parentId !== member.id && facts.get(parentId)?.comparisonKey === anchor.comparisonKey));
-        if (endpoints.length < 2 || endpoints.some((endpoint) => endpoint.comparisonRole !== anchor.comparisonRole)) continue;
-        const controls = anchor.comparisonControls;
-        if (!controls || members.some((member) => !same([...(member.comparisonControls ?? [])].sort(), [...controls].sort()))) continue;
-        if (anchor.comparisonRole === "within_stratum" && members.some((member) => controls.some((dimension) => !anchor.comparisonValues?.[dimension] || member.comparisonValues?.[dimension] !== anchor.comparisonValues[dimension]))) {
-          add("invalid_comparison", `结论 ${conclusion.id} 的比较配对 ${anchor.comparisonKey} 混入不同或未知实际控制值`, conclusion); continue;
-        }
-        anchorMembers.set(anchor.comparisonKey, new Set(members.map((member) => member.id)));
-      }
-      for (const id of conclusion.factIds) {
-        const fact = facts.get(id); if (!fact) continue;
-        const ratioFamilies = new Set([...ancestry([id])].map((parentId) => facts.get(parentId)?.metricId.split(".")[0]).filter((metric) => metric === "amount_per_gram" || metric === "gap_per_gram" || metric === "amount_per_order"));
-        if (!ratioFamilies.size) continue;
-        const required = ratioFamilies.has("amount_per_gram") || ratioFamilies.has("gap_per_gram") ? ["category", "material"] as const : [];
-        if (fact.comparisonRole !== "within_stratum" && fact.comparisonRole !== "standardized") add("invalid_comparison", `结论 ${conclusion.id} 的比率依据 ${id} 是原始描述或未核对比较角色；必须引用实际同层或标准化事实，不能借用方法的控制记录`, conclusion);
-        else if (!fact.comparisonControls || required.some((dimension) => !fact.comparisonControls?.includes(dimension))) add("invalid_comparison", `结论 ${conclusion.id} 的比率依据 ${id} 缺少真实货类与材料控制，不能声称受控比较`, conclusion);
-        else {
-          const related = fact.comparisonKey ? anchorMembers.get(fact.comparisonKey)?.has(id) : [...ancestry([id])].some((parentId) => { const parent = facts.get(parentId); return Boolean(parent?.comparisonKey && anchorMembers.get(parent.comparisonKey)?.has(parentId)); });
-          if (!related) add("invalid_comparison", `结论 ${conclusion.id} 的比率依据 ${id} 未关联本结论引用的代码实际比较派生；请引用真实配对的差额、变化或标准化比较，不要拼接不同分层原值`, conclusion);
-          if (fact.comparisonRole === "within_stratum" && fact.comparisonControls.some((dimension) => !fact.comparisonValues?.[dimension])) add("invalid_comparison", `结论 ${conclusion.id} 的同层比率 ${id} 缺少完整实际控制值，不能仅凭维度名称比较`, conclusion);
-        }
-      }
-      const candidates = conclusion.methodIds.map((id) => methods.get(id)).filter((report): report is AnalysisMethodReport => Boolean(report));
-      const performed = candidates.filter((report) => report.status === "completed" && report.checks.some((check) => check.status === "performed") && [...closure].some((id) => facts.get(id)?.operationId === report.operationId));
-      const comparable = performed.filter((report) => ["compare", "scan", "robustness"].includes(report.method) || report.method === "decompose" && new Set(report.frameIds.map((id) => frames.get(id)).filter(Boolean).map((frame) => `${frame?.scope.period.start}/${frame?.scope.period.end}`)).size > 1);
-      if (!comparable.length) add("invalid_comparison", `结论 ${conclusion.id} 需要引用与事实匹配、实际 performed 的比较、扫描、稳健性或跨期拆解方法`, conclusion);
-      for (const report of comparable) {
-        const refs = report.frameIds.filter((id) => usedFrames.has(id)).map((id) => frames.get(id)).filter((ref): ref is AnalysisFrame => Boolean(ref));
-        const netComposition = report.method === "decompose" && refs.some((ref) => ref.scope.population === "net") && refs.every((ref) => ["net", "sales", "zero_sales", "returns"].includes(ref.scope.population)) && conclusion.factIds.some((id) => {
-          const fact = facts.get(id); return fact?.operationId === report.operationId && frames.get(fact.frameId)?.scope.population === "net";
-        });
-        if (new Set(refs.map((ref) => currency(ref.currency))).size > 1 || refs.some((ref) => !knownCurrency(ref.currency)) || new Set(refs.map((ref) => ref.grain)).size > 1 || refs.some((ref) => ref.grain === "unknown" || ref.scope.population === "unknown") || !netComposition && new Set(refs.map((ref) => ref.scope.population)).size > 1) add("invalid_comparison", `结论 ${conclusion.id} 的比较币种、粒度或人口口径不一致或尚未核对`, conclusion);
-        const definitions = new Map<string, { frames: Set<string>; definitions: Set<string>; units: Set<string> }>();
-        for (const id of closure) {
-          const fact = facts.get(id); if (!fact || fact.derivation || !report.frameIds.includes(fact.frameId)) continue;
-          const definition = definitions.get(fact.metricId) ?? { frames: new Set<string>(), definitions: new Set<string>(), units: new Set<string>() };
-          definition.frames.add(fact.frameId); definition.definitions.add(fact.definition); definition.units.add(JSON.stringify(Object.entries(unitSignature(fact.unit)).sort())); definitions.set(fact.metricId, definition);
-        }
-        for (const [metric, definition] of definitions) if (definition.frames.size > 1 && (definition.definitions.size > 1 || definition.units.size > 1)) add("invalid_comparison", `结论 ${conclusion.id} 的基础指标 ${metric} 定义或单位不同，不能以标签相同认定可比`, conclusion);
-      }
-    }
-    if (!d.blocks.some((block) => block.conclusionId === conclusion.id && block.nodes.some((node) => node.kind !== "text" || node.text.trim()))) add("task_coverage", `结论 ${conclusion.id} 没有出现在正文中`, conclusion);
-  }
-  for (const need of t.needs) if (!d.conclusions.some((conclusion) => conclusion.needIds.includes(need.id)) && d.status !== "incomplete") add("task_coverage", `待答事项 ${need.id} 尚无相关结论：${need.judgement}`, undefined, [need.id]);
-  if (!d.blocks.length || !d.blocks.some((block) => block.nodes.some((node) => node.kind !== "text" || node.text.trim()))) add("expression", "回答正文为空，不能作为完成结果");
-  for (const [blockIndex, block] of d.blocks.entries()) {
-    const conclusion = block.conclusionId ? conclusions.get(block.conclusionId) : undefined;
-    if (block.conclusionId && !conclusion) add("task_coverage", `段落 ${blockIndex} 引用了未知结论 ${block.conclusionId}`);
-    const allowedFacts = conclusion ? ancestry(conclusion.factIds) : undefined;
-    const allowedObjects = conclusion ? new Set([...conclusion.objectIds, ...[...(allowedFacts ?? [])].flatMap((id) => facts.get(id)?.objectIds ?? [])]) : undefined;
-    let textRun = "";
-    for (const node of block.nodes) {
-      if (node.kind === "text") textRun += node.text;
-      else { if (textRun) qualitative(textRun, `段落 ${blockIndex} 的连续文字`, conclusion); textRun = ""; }
-    }
-    if (textRun) qualitative(textRun, `段落 ${blockIndex} 的连续文字`, conclusion);
-    for (const [nodeIndex, node] of block.nodes.entries()) {
-      const at = `段落 ${blockIndex} 节点 ${nodeIndex}`;
-      if (node.kind === "text") continue;
-      else if (node.kind === "fact_ref") {
-        if (!facts.has(node.factId)) add("missing_evidence", `${at}引用了未读取的事实 ${node.factId}`, conclusion);
-        else if (allowedFacts && !allowedFacts.has(node.factId)) add("missing_evidence", `${at}的事实 ${node.factId} 没有登记为该结论依据`, conclusion);
-      } else if (node.kind === "object_ref") {
-        if (!objects.has(node.objectId)) add("missing_evidence", `${at}引用了未读取的对象 ${node.objectId}`, conclusion);
-        else if (allowedObjects && !allowedObjects.has(node.objectId)) add("missing_evidence", `${at}的对象 ${node.objectId} 没有登记为该结论对象`, conclusion);
-        let following = "";
-        for (const next of block.nodes.slice(nodeIndex + 1)) { if (next.kind !== "text") break; following += next.text; }
-        const suffix = /^\s*(个百分点|家|个|间|天|周|月|年|元|件|单|克|人|次|倍|%|％)/.exec(following);
-        const metricWord = suffix && (/^(件|单|克|人)$/.test(suffix[1]) && /^(数|量|价|额|重|均)/.test(following.slice(suffix[0].length)) || suffix[1] === "单" && /^日(?:实收|销售|成交|金额|毛利|订单|件数|克重)/.test(following.slice(suffix[0].length)));
-        if (suffix && !metricWord) add("expression", `${at}把对象名称或编号当作经营数量；数量必须引用事实或试点计划`, conclusion);
-      } else if (node.kind === "period_ref") { if (!frames.has(node.frameId)) add("missing_evidence", `${at}引用了不存在的周期 ${node.frameId}`, conclusion); }
-      else if (node.kind === "user_condition_ref") { if (!conditionMap.has(node.conditionId)) add("expression", `${at}引用了未知用户条件 ${node.conditionId}`, conclusion); }
-      else {
-        if (!parameterMap.has(node.parameterId)) add("expression", `${at}引用了未知计划 ${node.parameterId}`, conclusion);
-        const previous = block.nodes.slice(0, nodeIndex).filter((entry): entry is Extract<AnalysisAnswerNode, { kind: "text" }> => entry.kind === "text").map((entry) => entry.text).join("").slice(-60);
-        const next = block.nodes[nodeIndex + 1];
-        if (/(?:预计|预期|预测|保证|确保|有望|将会|将|能|可).*(?:增长|提升|收益|销售|回报|增收|达到)\s*[为约：:]?$/.test(previous) || next?.kind === "text" && /^\s*(?:%|％|个百分点|元|收益|销售额)/.test(next.text)) add("unsupported_explanation", `${at}不能把试点对象数或天数包装成增长或收益预测`, conclusion);
-      }
-    }
-  }
-  d.questions.forEach((question) => qualitative(question, "业务追问"));
-  const deduplicated = issues.filter((issue, index) => !issues.slice(0, index).some((prior) => same(prior, issue)));
-  return { valid: deduplicated.length === 0, issues: deduplicated };
-}
-
-function parseReview(value: unknown): AnalysisSemanticReview {
-  const item = object(value, "独立复核");
-  return { verdict: choice(item.verdict, ["accept", "revise", "accept_conditional"] as const, "复核结论"), issues: list(item.issues, (raw, at) => { const issue = object(raw, at); return { kind: choice(issue.kind, ISSUE_KINDS, `${at}问题类型`), needIds: ids(issue.needIds, `${at}事项编号`), conclusionIds: ids(issue.conclusionIds, `${at}结论编号`), requirement: text(issue.requirement, `${at}具体要求`) }; }, "复核问题") };
-}
-function parseTrace(value: unknown): ToolTrace {
-  if (!isToolTrace(value)) fail("执行过程记录格式不正确");
-  const trace: ToolTrace = { status: value.status, durationMs: value.durationMs, steps: value.steps.map((step) => ({ id: step.id, tool: step.tool, title: step.title, status: step.status, initiatedBy: step.initiatedBy, startedAt: step.startedAt, ...(step.summary === undefined ? {} : { summary: step.summary }), ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }) })), ...(value.timing ? { timing: { totalMs: value.timing.totalMs, analysisWaitingMs: value.timing.analysisWaitingMs, skillsToolsMs: value.timing.skillsToolsMs } } : {}) };
-  return trace;
-}
-
-export function validateAnalysisAnswer(value: unknown): AnalysisAnswer {
-  const item = object(value, "最终分析回答");
-  if (item.schema !== ANALYSIS_ANSWER_SCHEMA) fail("最终分析回答版本不正确，不从旧来源 metadata 补装新证据");
-  const task = parseTask(item.task), evidence = parseEvidence(item.evidence), draft = parseDraft(item), review = parseReview(item.review);
-  const checked = validateAnalysisDraft(task, draft, evidence);
-  if (!checked.valid) fail(checked.issues.map((issue) => issue.requirement).join("；"));
-  if (draft.status === "answered" && (review.verdict !== "accept" || review.issues.length) || draft.status === "conditional" && review.verdict !== "accept_conditional" || draft.status === "incomplete" && (review.verdict !== "revise" || !review.issues.length)) fail("回答状态与独立复核结论不一致");
-  const conclusionIds = new Set(draft.conclusions.map((conclusion) => conclusion.id));
-  const needIds = new Set(task.needs.map((need) => need.id));
-  for (const issue of review.issues) {
-    if (issue.needIds.some((id) => !needIds.has(id)) || issue.conclusionIds.some((id) => !conclusionIds.has(id))) fail("独立复核问题引用了不存在的事项或结论");
-  }
-  for (const need of task.needs) {
-    const actual = draft.conclusions.filter((conclusion) => conclusion.needIds.includes(need.id)).map((conclusion) => conclusion.id);
-    if (need.conclusionIds.some((id) => !conclusionIds.has(id)) || !same([...need.conclusionIds].sort(), actual.sort())) fail(`待答事项 ${need.id} 的结论覆盖关系不一致`);
-    if (draft.status === "answered" && need.status !== "supported" || draft.status === "conditional" && need.status === "open") fail(`待答事项 ${need.id} 尚未完成，不能以当前状态结束`);
-    const coverage = draft.coverage?.find((entry) => entry.needId === need.id);
-    if (coverage && coverage.status !== need.status) fail(`待答事项 ${need.id} 的最终任务状态与逐事项覆盖状态不一致`);
-  }
-  if (draft.status === "conditional" && !task.needs.some((need) => need.status === "conditional" || need.status === "needs_business_input")) fail("有条件回答必须标明具体有条件事项或待确认业务事实");
-  if (draft.status === "conditional") for (const need of task.needs.filter((need) => need.status === "conditional" || need.status === "needs_business_input")) {
-    if (!draft.conclusions.some((conclusion) => conclusion.needIds.includes(need.id) && conclusion.limitations.length && conclusion.validation)) fail(`有条件事项 ${need.id} 必须说明限制与验证方式`);
-  }
-  return { schema: ANALYSIS_ANSWER_SCHEMA, ...draft, task, evidence, review, ...(item.trace === undefined ? {} : { trace: parseTrace(item.trace) }) };
 }

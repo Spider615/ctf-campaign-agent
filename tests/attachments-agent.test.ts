@@ -549,6 +549,24 @@ test("只有提到历史经营数据时才开放历史分析工具", async (t) =
   assert.deepEqual(seen, { "分析一下这个活动": false, "结合历史经营数据看看": true });
 });
 
+test("文件回答系统提示不再提示放置历史分析图表", async (t) => {
+  const { config, item } = await setup(t); let prompt = "";
+  const query: AgentQuery = async function* ({ options }) {
+    const reviewing = Boolean(options?.mcpServers?.attachment_review); const client = await connect(options, reviewing ? "attachment_review" : "attachments");
+    try {
+      if (reviewing) { await approveAll(client); yield success; return; }
+      prompt = String(options?.systemPrompt ?? "");
+      await call(client, "read_attachment", { attachmentId: item.id });
+      await call(client, "submit_attachment_answer", { status: "answered", blocks: [{ text: "**结论**：预算300元。", sourceIds: ["s1"] }], limitations: [] }); yield success;
+    } finally { await client.close(); }
+  };
+  const run = createConversationRunner({ ...config, runAnalytics: async () => { throw new Error("不调用"); } }, { query });
+  await run(scope, { conversationId: scope.conversationId, question: "分析一下这个活动", history: [], attachmentIds: [item.id] }, undefined, undefined, "analysis-visualization/v1");
+  assert.ok(prompt.length > 0, "应捕获到系统提示");
+  assert.match(prompt, /present_analysis_chart/, "开启图表时应带上图表提示，否则下面的否定断言没有意义");
+  assert.doesNotMatch(prompt, /历史分析返回|已核验图|按 id 选择放置/);
+});
+
 test("时限用掉六成后取数工具退回，提示立即提交", async (t) => {
   const { config, item } = await setup(t); let refusal = "";
   const query: AgentQuery = async function* ({ options }) {

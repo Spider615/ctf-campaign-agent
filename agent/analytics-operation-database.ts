@@ -9,6 +9,7 @@ import type { AnalysisAggregateCell, AnalysisAggregateQuery, AnalysisCapabilitie
 import type { HistoryConnection } from "./analytics-database.ts";
 import type { AnalysisScenarioAggregate, AnalysisScenarioQuery } from "../app/lib/analytics/analysis-v2-types.ts";
 import { normalizeScenarioQuery } from "../app/lib/analytics/analysis-v2-scenarios.ts";
+import { ANALYSIS_DIMENSIONS, ANALYSIS_FILTER_DIMENSIONS, SEMANTIC_BASELINES, SEMANTIC_DATABASE_LIMITATIONS, SEMANTIC_DIMENSIONS, semanticDimensionCatalog, semanticFields, type SemanticDimensionSource, type SemanticFilterKey } from "../app/lib/analytics/semantic/model.ts";
 
 export type MysqlAnalysisConfig = { host: string; port: number; user: string; password: string; database: string; table: string; evidenceDir: string };
 // 单次完整查询保留资源上限；客户端额外留传输余量，避免合法慢查询清空整轮证据。
@@ -16,8 +17,30 @@ export const ANALYSIS_DATABASE_QUERY_TIMEOUT_MS = 60000;
 const ANALYSIS_DATABASE_IO_TIMEOUT_MS = ANALYSIS_DATABASE_QUERY_TIMEOUT_MS + 5000;
 
 type Dependencies = { connect: () => Promise<HistoryConnection>; pruneSource?: (connection: HistoryConnection, table: string, columns: readonly string[]) => Promise<string>; queryTimeoutMs?: number };
-const dimensionColumns: Partial<Record<AnalysisDimension, string>> = { day: "交易日期wid", store: "实体分店店号", region: "大区描述", district: "分区描述", category: "业务小类描述", material: "材料种类描述", offer: "优惠小类", memberFlag: "是否会员销售（1：是，0：否）", storeType: "分店性质", cityTier: "城市级别", mallGroup: "商场集团", sku: "sku号" };
-const filterColumns = { stores: "实体分店店号", regions: "大区描述", districts: "分区描述", categories: "业务小类描述", materials: "材料种类描述", offers: "优惠小类", memberFlags: "是否会员销售（1：是，0：否）", storeTypes: "分店性质", skus: "sku号" } as const;
+// 维度来源来自语义层；这里只负责把来源编译成 SQL 表达式和所需列。
+const sourceColumns = (source: SemanticDimensionSource): string[] => source.kind === "column" || source.kind === "coalesce" || source.kind === "age_band" || source.kind === "labels" ? [source.column] : source.kind === "composite" ? [...source.columns] : source.kind === "date_range" ? [source.start, source.end] : [source.sunday, source.weekend, source.workday];
+const sourceOf = (dimension: AnalysisDimension) => SEMANTIC_DIMENSIONS[dimension].source;
+// 店龄分段边界属于推断，见语义层定义。
+const AGE_BANDS = "CASE WHEN `{c}` IS NULL OR TRIM(`{c}`) = '' THEN NULL WHEN CAST(`{c}` AS SIGNED) <= 1 THEN '0-1年' WHEN CAST(`{c}` AS SIGNED) <= 3 THEN '2-3年' WHEN CAST(`{c}` AS SIGNED) <= 5 THEN '4-5年' WHEN CAST(`{c}` AS SIGNED) <= 10 THEN '6-10年' ELSE '10年以上' END";
+function dimensionExpression(dimension: AnalysisDimension, lengths: GroupLengths = {}): string {
+  const source = sourceOf(dimension); if (!source) throw new Error("数据库缺少分组维度字段");
+  if (source.kind === "column") return boundedField(source.column, lengths[dimension]);
+  if (source.kind === "coalesce") return `COALESCE(NULLIF(${quoted(source.column)}, ''), '${source.fallback}')`;
+  if (source.kind === "composite") return `CASE WHEN NULLIF(${quoted(source.columns[0])}, '') IS NULL OR NULLIF(${quoted(source.columns[1])}, '') IS NULL THEN NULL ELSE CONCAT(${quoted(source.columns[0])}, '/', ${quoted(source.columns[1])}) END`;
+  if (source.kind === "date_range") return `CASE WHEN NULLIF(${quoted(source.start)}, '') IS NULL OR NULLIF(${quoted(source.end)}, '') IS NULL THEN NULL ELSE CONCAT(LEFT(${quoted(source.start)}, 10), '至', LEFT(${quoted(source.end)}, 10)) END`;
+  if (source.kind === "age_band") return AGE_BANDS.replaceAll("{c}", source.column);
+  if (source.kind === "labels") {
+    // 映射值来自语义层常量，不含用户输入；仍按 SQL 字符串规则转义单引号。
+    const text = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    return `CASE ${quoted(source.column)} ${Object.entries(source.labels).map(([code, label]) => `WHEN ${text(code)} THEN ${text(label)}`).join(" ")} ELSE NULLIF(CAST(${quoted(source.column)} AS CHAR), '') END`;
+  }
+  return `CASE WHEN ${quoted(source.workday)} = 'Y' THEN '工作日' WHEN ${quoted(source.sunday)} = 'Y' THEN '周日' WHEN ${quoted(source.weekend)} = 'Y' THEN '周六' ELSE NULL END`;
+}
+const lengthMeasurable = (dimension: AnalysisDimension) => sourceOf(dimension)?.kind === "column";
+// 会话打开时列出全部取值的维度：取值有限、模型常写错的业务分类。日期、门店、商场、SKU 等不列。
+const DIMENSION_VALUE_LISTS: readonly AnalysisDimension[] = ["dayType", "festival", "region", "area", "district", "cityTier", "storeType", "storeGroup", "sameStore", "shopType", "storeComposition", "imageLevel", "salesLevel", "storeLevel", "retailExperience", "storeArea", "storeAge", "category", "productGroup", "material", "materialGroup", "priceBand", "seriesGroup", "keySeries", "campaignType", "memberFlag", "offer"];
+const MAX_DIMENSION_VALUES = 600;
+const dimensionValueCache = new Map<string, Map<string, string[]>>();
 const metricColumns = { amount: "实际销售金额", quantity: "销售件数", grams: "销售金重", profit: "零售毛利", tag_amount: "销售牌仔价" } as const;
 type GroupDimension = AnalysisAggregateQuery["by"][number];
 type LengthField = GroupDimension | "saleNo";
@@ -43,12 +66,17 @@ function numeric(value: unknown): number | null {
   const number = Number(value); if (!Number.isFinite(number) || Math.abs(number) > Number.MAX_SAFE_INTEGER) throw safeReadError("分析数据库指标超出安全计算范围"); return number;
 }
 function availableCapabilities(columns: readonly string[], currency: string, coverage: AnalysisCapabilities["coverage"]): AnalysisCapabilities {
-  const dimensions = (Object.keys(dimensionColumns) as AnalysisDimension[]).filter((dimension) => columns.includes(dimensionColumns[dimension]!));
+  const dimensions = ANALYSIS_DIMENSIONS.filter((dimension) => { const source = sourceOf(dimension); return Boolean(source && sourceColumns(source).every((name) => columns.includes(name))); });
   const metrics: AnalysisMetric[] = ["rows", "stores", ...(Object.keys(metricColumns) as Array<keyof typeof metricColumns>).filter((metric) => columns.includes(metricColumns[metric]))];
-  if (columns.includes("销售单号")) metrics.push("orders", "amount_per_order");
-  if (columns.includes("销售金重") && dimensions.includes("category") && dimensions.includes("material")) { metrics.push("amount_per_gram"); if (columns.includes("销售牌仔价")) metrics.push("gap_per_gram"); }
+  metrics.push("amount_per_day", "amount_per_item");
+  metrics.push("amount_per_store"); if (columns.includes("零售毛利")) metrics.push("profit_per_store");
+  if (columns.includes("销售单号")) metrics.push("orders", "amount_per_order", "orders_per_day");
+  if (columns.includes("零售毛利")) metrics.push("margin_rate");
+  if (columns.includes("销售牌仔价")) metrics.push("discount_rate");
+  if (columns.includes("销售金重") && dimensions.includes("category") && dimensions.includes("material")) { metrics.push("amount_per_gram"); if (columns.includes("销售牌仔价")) metrics.push("tag_per_gram", "gap_per_gram"); }
   return { mode: "database", name: "周大福历史经营数据", coverage, currency, provenance: "imported", dimensions, metrics: analysisMetricDefinitions(currency, metrics, "database"), methods: ["aggregate", "compare", "decompose", "scan", "robustness"], scenarios: /^(?:CNY|人民币|RMB|元)$/.test(currency) ? ["per_item", "amount_rate", ...(metrics.includes("grams") && dimensions.includes("category") && dimensions.includes("material") ? ["per_gram" as const] : []), ...(metrics.includes("orders") ? ["per_order" as const, "order_threshold" as const] : [])] : [],
-    limitations: ["探索口径尚未与Power BI对数；金额保留源币种，未换汇", "零售毛利直接使用源字段，不自动反推税率或毛利率", "共同观察门店不是正式同店；没有门店开闭店和营业状态", "只有是否会员销售标识，没有独立会员身份、复购和新老会员定义", "开单优惠名称不代表完整活动规则；历史相关不能证明因果或最优力度", "订单指当前筛选内成交部分；缺店号或单号则完整订单指标缺失"] };
+    dimensionCatalog: semanticDimensionCatalog(dimensions), baselines: SEMANTIC_BASELINES.filter((item) => item.id !== "same_store" || dimensions.includes("sameStore")).filter((item) => item.id !== "non_festival" || dimensions.includes("festival")).filter((item) => item.id !== "plain_order" || dimensions.includes("offer")).map((item) => ({ ...item })),
+    limitations: [...SEMANTIC_DATABASE_LIMITATIONS] };
 }
 
 export function buildAnalysisAggregateQuery(table: string, input: AnalysisAggregateQuery, columns: readonly string[], groupLengths: GroupLengths = {}, includeOrderIds = false) {
@@ -60,7 +88,10 @@ export function buildAnalysisAggregateQuery(table: string, input: AnalysisAggreg
   const requiredColumns = new Set(["交易日期wid", "实际销售金额", "销售件数", "实体分店店号"]);
   const clause = (column: string, values: string[], exclude = false) => { where.push(`${column} ${exclude ? "NOT IN" : "IN"} (${values.map(() => "?").join(",")})`); params.push(...values); };
   for (const [key, values] of Object.entries(query.scope.filters)) {
-    const column = filterColumns[key as keyof typeof filterColumns]; if (!column || !columns.includes(column)) throw new Error("数据库缺少筛选字段"); requiredColumns.add(column); clause(quoted(column), values!);
+    const dimension = ANALYSIS_FILTER_DIMENSIONS[key as SemanticFilterKey]; const source = dimension ? sourceOf(dimension) : undefined;
+    if (!source || sourceColumns(source).some((name) => !columns.includes(name))) throw new Error("数据库缺少筛选字段"); sourceColumns(source).forEach((name) => requiredColumns.add(name));
+    // 日期对外写作 2025-08-23，源字段 交易日期wid 存 20250823；分组输出已转回带横线的写法，筛选时反向转换。
+    clause(source.kind === "column" ? quoted(source.column) : `(${dimensionExpression(dimension)})`, dimension === "day" ? values!.map((value) => value.replaceAll("-", "")) : values!);
   }
   if (query.excludeStores?.length) clause("`实体分店店号`", query.excludeStores, true);
   if (query.excludeOrders?.length) { if (!columns.includes("销售单号")) throw new Error("当前数据缺少复合订单字段"); requiredColumns.add("销售单号"); clause(`(${orderExpression})`, query.excludeOrders, true); }
@@ -71,12 +102,13 @@ export function buildAnalysisAggregateQuery(table: string, input: AnalysisAggreg
   };
   const dimensions = query.by.map((dimension) => {
     if (dimension === "order") { requiredColumns.add("销售单号"); return `${groupLengths.order === undefined ? orderExpression : castGroup(orderExpression, dimension)} AS d_order`; }
-    const column = dimensionColumns[dimension]; if (!column || !columns.includes(column)) throw new Error("数据库缺少分组维度字段"); requiredColumns.add(column); return `${castGroup(quoted(column), dimension)} AS d_${dimension}`;
+    const source = sourceOf(dimension); if (!source || sourceColumns(source).some((name) => !columns.includes(name))) throw new Error("数据库缺少分组维度字段"); sourceColumns(source).forEach((name) => requiredColumns.add(name));
+    return `${source.kind === "column" ? castGroup(quoted(source.column), dimension) : `CAST(${dimensionExpression(dimension)} AS CHAR)`} AS d_${dimension}`;
   });
-  const selected = query.metrics ? new Set<AnalysisMetric>(query.metrics.flatMap((metric) => metric === "amount_per_order" ? ["amount", "orders"] : metric === "amount_per_gram" ? ["amount", "grams"] : metric === "gap_per_gram" ? ["amount", "grams", "tag_amount"] : [metric])) : null;
+  const selected = query.metrics ? new Set<AnalysisMetric>(query.metrics.flatMap((metric) => semanticFields(metric))) : null;
   const metrics = (Object.keys(metricColumns) as Array<keyof typeof metricColumns>).map((metric) => { const column = metricColumns[metric]; if (!columns.includes(column) || selected && !selected.has(metric)) return `NULL AS ${metric}`; requiredColumns.add(column); return `${completeSum(column, ["amount", "profit", "tag_amount"].includes(metric))} AS ${metric}`; });
   if (includeOrderIds && !columns.includes("销售单号")) throw new Error("当前数据缺少复合订单字段");
-  const orders = !includeOrderIds && columns.includes("销售单号") && (!selected || selected.has("orders")) ? `CASE WHEN COUNT(NULLIF(CAST(\`销售单号\` AS CHAR), '')) = COUNT(*) AND COUNT(NULLIF(CAST(\`实体分店店号\` AS CHAR), '')) = COUNT(*) THEN COUNT(DISTINCT ${boundedField("实体分店店号", groupLengths.store)}, ${boundedField("销售单号", groupLengths.saleNo)}) ELSE NULL END AS orders` : "NULL AS orders";
+  const orders = !includeOrderIds && columns.includes("销售单号") && (!selected || selected.has("orders")) ? `CASE WHEN SUM(CASE WHEN ${validOrderExpression} THEN 0 ELSE 1 END) = 0 THEN COUNT(DISTINCT ${boundedField("实体分店店号", groupLengths.store)}, ${boundedField("销售单号", groupLengths.saleNo)}) ELSE COUNT(DISTINCT CASE WHEN ${validOrderExpression} THEN CONCAT(CHAR_LENGTH(CAST(\`实体分店店号\` AS CHAR)), ':', CAST(\`实体分店店号\` AS CHAR), ':', CAST(\`销售单号\` AS CHAR)) END) END AS orders, SUM(CASE WHEN ${validOrderExpression} THEN 0 ELSE 1 END) AS orders_missing_rows` : "NULL AS orders";
   if (orders !== "NULL AS orders") requiredColumns.add("销售单号");
   if (includeOrderIds) requiredColumns.add("销售单号");
   const stores = !selected || selected.has("stores") ? `CASE WHEN COUNT(NULLIF(CAST(\`实体分店店号\` AS CHAR), '')) = COUNT(*) THEN COUNT(DISTINCT ${boundedField("实体分店店号", groupLengths.store)}) ELSE NULL END AS stores` : "NULL AS stores";
@@ -124,7 +156,7 @@ export function buildAnalysisOrderDistributionQuery(table: string, input: Analys
   if (!available.metrics.some((metric) => metric.id === "orders") || plan.query.scope.population !== "sales") throw new Error("订单分布仅支持带复合订单标识的销售正金额数据");
   if (input.metrics.some((metric) => !available.metrics.some((item) => item.id === metric) || metric.endsWith("per_gram"))) throw new Error("原生订单分布包含不支持的指标");
   const metrics = [...new Set(input.metrics)].sort(); const query = { scope: plan.query.scope, metrics };
-  const requiredColumns = new Set(["交易日期wid", "销售件数", "实际销售金额", "实体分店店号", "销售单号", ...Object.keys(query.scope.filters).map((key) => filterColumns[key as keyof typeof filterColumns])]);
+  const requiredColumns = new Set(["交易日期wid", "销售件数", "实际销售金额", "实体分店店号", "销售单号", ...plan.requiredColumns]);
   const rawMetrics = [...new Set(metrics.map((metric) => metric === "amount_per_order" ? "amount" : metric).filter((metric): metric is keyof typeof metricColumns => Object.hasOwn(metricColumns, metric)))];
   const selections = rawMetrics.map((metric) => { const column = metricColumns[metric]; requiredColumns.add(column); return `${completeSum(column, ["amount", "profit", "tag_amount"].includes(metric))} AS ${metric}`; });
   const validOrder = "(NULLIF(CAST(`实体分店店号` AS CHAR), '') IS NOT NULL AND NULLIF(CAST(`销售单号` AS CHAR), '') IS NOT NULL)";
@@ -193,13 +225,33 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
         if (!record || !numeric(record.rows_count) || numeric(record.rows_count) !== numeric(record.unique_rows) || !/^\d{8}$/.test(String(record.min_day)) || !/^\d{8}$/.test(String(record.max_day))) throw safeReadError("分析源行身份或日期异常，不能作为证据");
         if (numeric(record.currencies) !== 1 || numeric(record.missing_currency) !== 0 || typeof record.currency !== "string" || !record.currency.trim() || record.currency.length > 40) throw safeReadError("分析源币种混合或缺失，不能直接汇总");
         const date = (value: unknown) => String(value).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3"); const period = normalizeAnalysisPeriod({ start: date(record.min_day), end: date(record.max_day) });
-        await capture(sql, [], result); return { period, currency: record.currency };
+        await capture(sql, [], result); return { period, currency: record.currency, rows: numeric(record.rows_count) };
       });
       const capabilities = availableCapabilities(columns, coverage.currency, coverage.period);
+      // 取值不多的维度读出全部实际取值：模型写筛选值时照抄，校验时据此拦截写错的值。
+      // 一次 UNION 查询读完，同一张表同一行数在进程内只读一次。
+      const catalog = capabilities.dimensionCatalog ?? [];
+      const listed = catalog.filter((item) => DIMENSION_VALUE_LISTS.includes(item.id));
+      if (listed.length) {
+        const cacheKey = `${config.database}.${config.table}:${coverage.rows}:${coverage.period.start}:${coverage.period.end}`;
+        let cached = dimensionValueCache.get(cacheKey);
+        if (!cached) {
+          const relation = dependencies.pruneSource ? await resource(() => dependencies.pruneSource!(connection!, config.table, listed.flatMap((item) => sourceColumns(sourceOf(item.id)!)))) : quoted(config.table);
+          // 每个维度各取去重值，合并成一条查询；超过上限的维度不列取值。
+          const parts = listed.map((item, index) => `(SELECT '${item.id}' AS d, v FROM (SELECT CAST(${dimensionExpression(item.id)} AS CHAR) AS v FROM ${relation} GROUP BY v LIMIT ${MAX_DIMENSION_VALUES + 1}) AS t${index})`);
+          const sql = `SELECT /*+ MAX_EXECUTION_TIME(${ANALYSIS_DATABASE_QUERY_TIMEOUT_MS}) */ d, v FROM (${parts.join(" UNION ALL ")}) AS dimension_values`;
+          const [result] = await resource(() => connection!.execute(sql));
+          const found = new Map<string, string[]>();
+          for (const row of rows(result)) { const value = row.v; if (typeof value !== "string" || !value.trim()) continue; const list = found.get(String(row.d)) ?? []; list.push(value); found.set(String(row.d), list); }
+          cached = new Map([...found].filter(([, values]) => values.length <= MAX_DIMENSION_VALUES).map(([id, values]) => [id, values.sort()]));
+          dimensionValueCache.set(cacheKey, cached);
+        }
+        for (const item of listed) { const values = cached.get(item.id); if (values) item.values = [...values]; }
+      }
       const prepareRelation = async (requiredColumns: readonly string[], by: GroupDimension[], querySignal?: AbortSignal) => {
         const currentRelation = dependencies.pruneSource ? await resource(() => dependencies.pruneSource!(connection!, config.table, requiredColumns), querySignal) : quoted(config.table);
-        const lengthColumn = (field: LengthField) => field === "saleNo" ? "销售单号" : dimensionColumns[field as AnalysisDimension]!;
-        const candidates = new Set<LengthField>([...by, ...(requiredColumns.includes("实体分店店号") ? ["store" as const] : []), ...(requiredColumns.includes("销售单号") ? ["saleNo" as const] : [])]);
+        const lengthColumn = (field: LengthField) => { if (field === "saleNo") return "销售单号"; const source = sourceOf(field as AnalysisDimension); return source?.kind === "column" ? source.column : ""; };
+        const candidates = new Set<LengthField>([...by.filter((dimension) => dimension === "order" || lengthMeasurable(dimension)), ...(requiredColumns.includes("实体分店店号") ? ["store" as const] : []), ...(requiredColumns.includes("销售单号") ? ["saleNo" as const] : [])]);
         const measure = [...candidates].filter((dimension) => !groupLengths.has(dimension) && (dimension === "order" ? ["实体分店店号", "销售单号"].some((column) => variableColumns.has(column)) : variableColumns.has(lengthColumn(dimension))));
         if (measure.length) {
           // TEXT 分组先测量同一快照全源长度；超出优化范围仍保留完整值，不用采样或固定长度截断。
@@ -259,7 +311,7 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
               if (n === null || !Number.isSafeInteger(n) || n < 0) throw safeReadError("分析源明细数量不正确");
               const dimensions: AnalysisAggregateCell["dimensions"] = {};
               for (const dimension of query.by) { const value = record[`d_${dimension}`]; if (value !== null && value !== undefined && String(value).trim()) dimensions[dimension] = dimension === "day" ? String(value).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3") : String(value); }
-              cells.push({ dimensions, rows: n, amount: numeric(record.amount), quantity: numeric(record.quantity), grams: numeric(record.grams), profit: numeric(record.profit), orders: numeric(record.orders), stores: numeric(record.stores), tag_amount: numeric(record.tag_amount) });
+              cells.push({ dimensions, rows: n, amount: numeric(record.amount), quantity: numeric(record.quantity), grams: numeric(record.grams), profit: numeric(record.profit), orders: numeric(record.orders), stores: numeric(record.stores), tag_amount: numeric(record.tag_amount), orderMissingRows: numeric(record.orders_missing_rows ?? null) });
             }
             await resource(() => capture(sql, plan.params, data, query), querySignal); assertActive(); return cells;
           });
@@ -302,7 +354,7 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
               const orderIds = [...new Set(ids as Array<string | null>)]; for (const id of orderIds) if (id !== null) allOrders.add(id);
               const dimensions: AnalysisAggregateCell["dimensions"] = {};
               for (const dimension of query.by) { const value = record[`d_${dimension}`]; if (value !== null && value !== undefined && String(value).trim()) dimensions[dimension] = dimension === "day" ? String(value).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3") : String(value); }
-              cells.push({ dimensions, rows: n, amount: numeric(record.amount), quantity: numeric(record.quantity), grams: numeric(record.grams), profit: numeric(record.profit), orders: orderIds.includes(null) ? null : orderIds.length, stores: numeric(record.stores), tag_amount: numeric(record.tag_amount), orderIds });
+              cells.push({ dimensions, rows: n, amount: numeric(record.amount), quantity: numeric(record.quantity), grams: numeric(record.grams), profit: numeric(record.profit), orders: orderIds.includes(null) ? null : orderIds.length, stores: numeric(record.stores), tag_amount: numeric(record.tag_amount), orderMissingRows: (ids as Array<string | null>).filter((id) => id === null).length, orderIds });
             }
             await resource(() => capture(sql, plan.params, data, query), querySignal); assertActive();
             // 复合字符串必须与源数据库全范围去重一一对应；排序规则等导致不一致时回到逐单算法。

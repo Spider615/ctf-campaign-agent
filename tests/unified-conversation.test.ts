@@ -26,7 +26,7 @@ test("分析后的点头不会采纳旧活动提议，活动自身的点头仍�
   assert.equal(routing.conversationRoute("你好", true, false), "analysis");
 });
 
-test("新建对话保留旧记录、隔离筛选与活动，迟到回调不能写进新对话", () => {
+test("新建对话保留旧记录、隔离筛选与活动，切走后仍在跑的回答写回原对话", () => {
   assert.equal(typeof storage.createHistoryConversationStore, "function");
   const values = new Map<string, string>();
   const persistence = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
@@ -36,10 +36,10 @@ test("新建对话保留旧记录、隔离筛选与活动，迟到回调不能�
   assert.equal(store.bindCampaign("campaign-test", "创建一场活动", original), true);
   const next = store.newConversation(); assert.notEqual(next, original);
   assert.deepEqual(store.snapshot(), []); assert.deepEqual(store.context(), []); assert.equal(store.campaignId(), null);
-  store.update(() => [{ id: "late", role: "assistant", text: "旧回答", createdAt: "2026-10-13T00:01:00Z" }], original);
+  store.update((items) => [...items, { id: "late", role: "assistant", text: "旧回答", createdAt: "2026-10-13T00:01:00Z" }], original);
   assert.deepEqual(store.snapshot(), []); assert.equal(store.bindCampaign("late-campaign", "迟到活动", original), false);
   assert.equal(store.selectConversation(original), true); assert.equal(store.campaignId(), "campaign-test");
-  assert.equal(store.snapshot()[0].text, "只看华北门店"); assert.deepEqual(store.context(), ["只看华北门店"]);
+  assert.deepEqual(store.snapshot().map((message) => message.text), ["只看华北门店", "旧回答"]); assert.deepEqual(store.context(), ["只看华北门店"]);
   const restored = storage.createHistoryConversationStore(persistence); assert.equal(restored.activeId(), original); assert.equal(restored.campaignId(), "campaign-test");
   assert.deepEqual(restored.context(), ["只看华北门店"]);
 });
@@ -48,4 +48,19 @@ test("分析消息按实际活动消息锚点插入，跨进程时钟偏差不�
   assert.equal(typeof storage.mergeConversationTimeline, "function");
   const timeline = storage.mergeConversationTimeline([{ id: "campaign-1" }, { id: "campaign-2" }], [{ id: "analysis-before" }, { id: "analysis-between", afterMessageId: "campaign-1" }, { id: "analysis-after", afterMessageId: "campaign-2" }]);
   assert.deepEqual(timeline.map((item) => item.message.id), ["analysis-before", "campaign-1", "analysis-between", "campaign-2", "analysis-after"]);
+});
+
+test("切换对话不结束另一条对话里进行中的回答", () => {
+  const values = new Map<string, string>();
+  const store = storage.createHistoryConversationStore({ getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } });
+  const first = store.activeId();
+  store.update(() => [{ id: "q", role: "user", text: "8月销售额", createdAt: "2026-10-13T00:00:00Z" }, { id: "a", role: "assistant", text: "", status: "running", createdAt: "2026-10-13T00:00:00Z" }], first);
+  const second = store.newConversation();
+  store.update((items) => items.map((message) => message.id === "a" ? { ...message, status: "done", text: "8月销售额 100 万" } : message), first);
+  assert.equal(store.activeId(), second); assert.deepEqual(store.snapshot(), []);
+  assert.equal(store.selectConversation(first), true);
+  assert.deepEqual(store.snapshot().map((message) => [message.status, message.text]), [[undefined, "8月销售额"], ["done", "8月销售额 100 万"]]);
+  // 刷新页面才算真的断开：未完成的回答在恢复时标为已结束。
+  store.update((items) => items.map((message) => message.id === "a" ? { ...message, status: "running" } : message), first);
+  assert.equal(storage.createHistoryConversationStore({ getItem: (key: string) => values.get(key) ?? null, setItem: () => {} }).snapshot().at(-1)?.status, "cancelled");
 });

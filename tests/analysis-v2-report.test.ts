@@ -12,13 +12,13 @@ import type { AnalyticsAnswerResult } from "../app/lib/analytics/stream.ts";
 import { TurnCancelledError } from "../app/lib/cancellation.ts";
 import { consumeAnalyticsStream } from "../app/lib/analytics/stream.ts";
 import { reportSource } from "../app/lib/analytics/advisor.ts";
-import { simulatedAnswer } from "./helpers/analysis-v2-answer.ts";
+import { simulatedPlanAnswer } from "./helpers/plan-answer.ts";
 
 const owner = "11111111-1111-4111-8111-111111111111";
 const dataset = sampleDataset();
 const report: AnalysisReport = { ...runAnalysis(dataset, { period: { start: "2026-08-01", end: "2026-09-30" }, filters: {} }), id: "simulated-report", createdAt: "2026-10-13T00:00:00Z" };
 function answer() {
-  const result = simulatedAnswer(); result.evidence.frames[0].mode = "snapshot";
+  const result = simulatedPlanAnswer(); result.evidence.frames[0].mode = "snapshot";
   result.evidence.frames[0].datasetVersion = report.datasetVersion;
   result.evidence.frames[0].scope.period = { ...report.query.period };
   return result;
@@ -28,11 +28,11 @@ function explain() {
   assert.equal(typeof method, "function", "导入报告应使用严格校验的 v2 客户端入口"); return method!;
 }
 
-test("导入报告客户端发送精确 v2，读取新正文且保持原报告不变", async (t) => {
+test("导入报告客户端发送精确 v3，读取新正文且保持原报告不变", async (t) => {
   const original = structuredClone(report); let sent: { headers?: Headers; body?: unknown } = {};
   t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => { sent = { headers: new Headers(options.headers), body: JSON.parse(String(options.body)) }; return Response.json({ explanation: answer() }); });
   assert.deepEqual(await explain()(report, "先核对哪些门店？"), answer());
-  assert.equal(sent.headers?.get("x-analytics-answer-schema"), "analysis-answer/v2");
+  assert.equal(sent.headers?.get("x-analytics-answer-schema"), "analysis-answer/v3");
   assert.equal(sent.headers?.get("content-type"), "application/json"); assert.deepEqual(sent.body, { question: "先核对哪些门店？" });
   assert.deepEqual(report, original);
 });
@@ -46,12 +46,12 @@ test("通用分析请求的可选头不会覆盖 JSON 编码或原取消信号",
   assert.equal(new Headers(sent?.headers).get("content-type"), "application/json"); assert.equal(sent?.signal, controller.signal); assert.equal(sent?.credentials, "same-origin");
 });
 
-test("报告客户端兼容 v1 返回，损坏 v2 引用不能进入界面", async (t) => {
+test("报告客户端兼容 v1 返回，损坏 v3 引用不能进入界面", async (t) => {
   t.mock.method(globalThis, "fetch", async () => Response.json({ explanation: quickAnalyticsReply("你好") }));
   assert.deepEqual(await explain()(report, "你好"), quickAnalyticsReply("你好"));
-  const invalid = answer(); invalid.blocks[0].nodes.push({ kind: "fact_ref", factId: "not-read" });
+  const invalid = answer(); invalid.headline!.factIds.push("not-read");
   t.mock.method(globalThis, "fetch", async () => Response.json({ explanation: invalid }));
-  await assert.rejects(explain()(report, "继续核对"), /引用|事实|证据/);
+  await assert.rejects(explain()(report, "继续核对"), /引用|事实|证据|不存在/);
 });
 
 test("报告 JSON 读取期间停止，迟到答案不能作为成功返回", async (t) => {
@@ -93,7 +93,7 @@ test("报告流在 Node 静默等待时返回一个保活空行，取消清理�
   let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
   t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream<Uint8Array>({ start(output) { upstream = output; } })));
   const controller = new AbortController(); let response: Response | undefined; let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  const pending = loaded.default.fetch(new Request("http://localhost/report", { method: "POST", headers: { ...headers, accept: "application/x-ndjson", "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify({ question: "核对当前报告" }), signal: controller.signal })).then((value) => { response = value; });
+  const pending = loaded.default.fetch(new Request("http://localhost/report", { method: "POST", headers: { ...headers, accept: "application/x-ndjson", "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify({ question: "核对当前报告" }), signal: controller.signal })).then((value) => { response = value; });
   try {
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.ok(response, "静默服务仍应先返回流以便代理检测浏览器断连"); await pending;
@@ -106,24 +106,26 @@ test("报告流在 Node 静默等待时返回一个保活空行，取消清理�
   assert.ok(cleared.mock.callCount() > 0, "停止后清理保活计时器");
 });
 
-test("真实报告 API 转发 v2，旧无头及未知头保留 v1，用户数据与访问隔离不变", { timeout: 10000 }, async () => {
+test("真实报告 API 转发 v3，无头保留 v1，v2 头返回 400 提示刷新，用户数据与访问隔离不变", { timeout: 10000 }, async () => {
   const calls: Array<{ schema: string | undefined; body: unknown }> = [];
   const server = createServer(async (request, response) => {
     let body = ""; for await (const part of request) body += part.toString("utf8");
     const schema = request.headers["x-analytics-answer-schema"] as string | undefined; calls.push({ schema, body: JSON.parse(body) });
-    response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(schema === "analysis-answer/v2" ? answer() : quickAnalyticsReply("你好")));
+    response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(schema === "analysis-answer/v3" ? answer() : quickAnalyticsReply("你好")));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); assert.ok(address && typeof address === "object");
   const worker = await reportWorker(`http://127.0.0.1:${address.port}`);
   try {
-    for (const schema of ["analysis-answer/v2", undefined, "analysis-answer/v3"]) {
+    for (const schema of ["analysis-answer/v3", undefined]) {
       const response = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, ...(schema ? { "X-Analytics-Answer-Schema": schema } : {}) }, body: JSON.stringify({ question: "先核对哪些门店？" }) });
       assert.equal(response.status, 200); const body = await response.json() as { explanation: unknown };
-      assert.deepEqual(body.explanation, schema === "analysis-answer/v2" ? answer() : quickAnalyticsReply("你好"));
+      assert.deepEqual(body.explanation, schema === "analysis-answer/v3" ? answer() : quickAnalyticsReply("你好"));
     }
-    assert.deepEqual(calls.map((call) => call.schema), ["analysis-answer/v2", undefined, undefined]);
+    assert.deepEqual(calls.map((call) => call.schema), ["analysis-answer/v3", undefined]);
+    const stale = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify({ question: "先核对哪些门店？" }) });
+    assert.equal(stale.status, 400); assert.deepEqual(await stale.json(), { error: "页面版本已更新，请刷新页面后重试" }); assert.equal(calls.length, 2, "v2 头不能到达分析服务");
     assert.deepEqual((calls[0].body as { report: unknown }).report, report); assert.deepEqual((calls[0].body as { dataset: unknown }).dataset, dataset);
-    const denied = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, cookie: "ctf_analytics_owner=22222222-2222-4222-8222-222222222222", "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify({ question: "继续核对" }) });
-    assert.equal(denied.status, 404); assert.equal(calls.length, 3);
+    const denied = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, cookie: "ctf_analytics_owner=22222222-2222-4222-8222-222222222222", "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify({ question: "继续核对" }) });
+    assert.equal(denied.status, 404); assert.equal(calls.length, 2);
   } finally { await worker.dispose(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });

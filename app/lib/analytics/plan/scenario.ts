@@ -1,24 +1,23 @@
-import { createHash } from "node:crypto";
-import { z } from "zod";
-import type { AnalysisDataSession, AnalysisEvidence, AnalysisFact, AnalysisOperationResult, FactExpression } from "../app/lib/analytics/analysis-v2-types.ts";
-import { analysisArgumentsInvalid } from "../app/lib/analytics/analysis-v2-operations.ts";
-import { normalizeNetChanges, normalizeScenarioAdjustment } from "../app/lib/analytics/analysis-v2-scenarios.ts";
-import { scenarioCents, scenarioRevenue } from "../app/lib/analytics/scenario-decimal.ts";
-import { throwIfTurnCancelled } from "../app/lib/cancellation.ts";
+import type { AnalysisAdjustment, AnalysisDataSession, AnalysisEvidence, AnalysisFact, AnalysisOperationResult, FactExpression } from "../analysis-v2-types.ts";
+import { analysisArgumentsInvalid } from "../analysis-v2-operations.ts";
+import { normalizeNetChanges, normalizeScenarioAdjustment } from "../analysis-v2-scenarios.ts";
+import { scenarioCents, scenarioRevenue } from "../scenario-decimal.ts";
+import { throwIfTurnCancelled } from "../../cancellation.ts";
 
-const decimal = z.string().regex(/^\d{1,13}(?:\.\d{1,6})?$/);
-export const scenarioSchema = z.object({
-  needIds: z.array(z.string().min(1).max(120)).min(1).max(12), purpose: z.string().min(1).max(500), baselineFactId: z.string().min(1).max(120),
-  adjustment: z.discriminatedUnion("kind", [z.object({ kind: z.literal("per_gram"), amount: decimal }).strict(), z.object({ kind: z.literal("per_item"), amount: decimal }).strict(), z.object({ kind: z.literal("per_order"), amount: decimal }).strict(), z.object({ kind: z.literal("amount_rate"), rate: decimal }).strict(), z.object({ kind: z.literal("order_threshold"), amount: decimal, threshold: decimal }).strict()]),
-  netVolumeChanges: z.array(z.string().max(30)).min(1).max(20), reason: z.string().min(1).max(1000),
-}).strict();
+// 计划里的情景节点参数；基线由执行器从所指 measure 的总体实收事实取得，模型不能指定。
+export type PlanScenarioInput = { id: string; adjustment: AnalysisAdjustment; netVolumeChanges: string[]; reason: string };
+
+async function digest(value: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 // 规则和净增只是假设；真正的逐行或逐单损失由当前授权快照计算，模型不能填写结果。
-export async function simulateAnalysis(raw: unknown, evidence: AnalysisEvidence, session: AnalysisDataSession, hasReadFact: (id: string) => boolean, signal?: AbortSignal): Promise<AnalysisOperationResult & { progressKey: string }> {
-  const parsed = scenarioSchema.safeParse(raw); if (!parsed.success) throw analysisArgumentsInvalid("情景参数不正确，请使用已读总体引用和固定规则");
-  const input = parsed.data; const adjustment = normalizeScenarioAdjustment(input.adjustment), changes = normalizeNetChanges(input.netVolumeChanges);
-  const base = evidence.facts.find((fact) => fact.id === input.baselineFactId); const frame = evidence.frames.find((item) => item.id === base?.frameId);
-  if (!base || !hasReadFact(base.id)) throw analysisArgumentsInvalid("情景基线必须是实际已读取的原始实收依据");
+export async function simulatePlanScenario(input: PlanScenarioInput, baselineFactId: string, evidence: AnalysisEvidence, session: AnalysisDataSession, signal?: AbortSignal): Promise<AnalysisOperationResult> {
+  if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw analysisArgumentsInvalid("情景需要写明假设理由");
+  const adjustment = normalizeScenarioAdjustment(input.adjustment), changes = normalizeNetChanges(input.netVolumeChanges);
+  const base = evidence.facts.find((fact) => fact.id === baselineFactId); const frame = evidence.frames.find((item) => item.id === base?.frameId);
+  if (!base) throw analysisArgumentsInvalid("情景基线必须是实际已读取的原始实收依据");
   if (base.metricId !== "amount" || base.derivation || base.assumption || base.objectIds.length || !frame || frame.scope.population !== "sales" || frame.mode === "historical" || base.value === null || base.value <= 0) throw analysisArgumentsInvalid("请先按目标范围读取销售正金额的总体 amount 基线，分组、历史参考及假设不能替代");
   if (frame.snapshotId !== session.snapshotId || frame.datasetVersion !== session.datasetVersion) throw analysisArgumentsInvalid("情景不能使用旧快照基线，请在当前范围重新读取");
   if (!session.scenario || !session.capabilities.scenarios?.includes(adjustment.kind)) throw analysisArgumentsInvalid("当前数据源没有声明该情景能力，不能以聚合算术代替逐行规则");
@@ -28,7 +27,8 @@ export async function simulateAnalysis(raw: unknown, evidence: AnalysisEvidence,
   throwIfTurnCancelled(signal); session.assertActive?.();
   if (scenarioCents(base.value) !== BigInt(measured.amountCents) || !measured.sampleRows) throw analysisArgumentsInvalid("同范围情景重算与原始基线不一致，不能继续发布");
   const signature = JSON.stringify({ frame: frame.id, base: base.id, adjustment, changes, reason: input.reason });
-  const operationId = `scenario-${createHash("sha256").update(signature).digest("hex").slice(0, 24)}`;
+  const operationId = `scenario-${(await digest(signature)).slice(0, 24)}`;
+  throwIfTurnCancelled(signal);
   const orderBased = adjustment.kind === "per_order" || adjustment.kind === "order_threshold";
   const limits = [...new Set([...frame.limitations, "显式情景计算，不是需求预测、今年业绩或已执行活动；收入持平不等于毛利或现金持平", "价格环境、商品及优惠结构固定，净成交量变化相对不调整方案，排除跨活动、货品、门店和日期的成交挪动", "额外让利按行或订单成交部分到分，实收最低为零；未重算退货、回收与成本", ...(orderBased ? ["按店号与单号聚合当前筛选内销售成交部分，门槛也仅作用于该部分；不是完整订单或真实资格核验"] : [])])];
   const facts: AnalysisFact[] = [];
@@ -49,7 +49,7 @@ export async function simulateAnalysis(raw: unknown, evidence: AnalysisEvidence,
     const threshold: FactExpression = { op: "multiply", args: [{ op: "divide", args: [{ factId: loss.id }, { factId: remaining.id }] }, { constant: 100 }] };
     add("break-even", "scenario.break_even_pct", "收入持平所需净成交量增幅", remaining.value! > 0 ? 100 * loss.value! / remaining.value! : null, "%", { derivation: threshold });
     changes.forEach((change, index) => {
-      const rate = add(`rate-${index}`, "assumption.net_volume_change", `假设净成交量变化情景`, Number(change) * 100, "%", hypothetical);
+      const rate = add(`rate-${index}`, "assumption.net_volume_change", "假设净成交量变化情景", Number(change) * 100, "%", hypothetical);
       const result = scenarioRevenue(measured.amountCents, measured.lossCents!, change);
       const scenario = { kind: "revenue" as const, baselineFactId: base.id, lossFactId: loss.id, rateFactId: rate.id, netChange: change };
       add(`after-${index}`, "scenario.revenue_after", "条件测算实收", result.afterCents / 100, frame.currency, { ...hypothetical, scenario });
@@ -57,6 +57,5 @@ export async function simulateAnalysis(raw: unknown, evidence: AnalysisEvidence,
     });
   }
   const method = { id: `${operationId}-method`, operationId, method: "aggregate" as const, status: completed ? "completed" as const : "unsupported" as const, frameIds: [frame.id], controls: [...frame.controls], checks: [{ name: "完整情景计算", status: completed ? "performed" as const : "unavailable" as const, result: completed ? `按${orderBased ? "复合订单成交部分" : "完整销售行"}计算并逐项到分与封顶；核对原始总体实收一致，覆盖全部有效范围` : "缺失单位不能补零或静默丢弃，未生成收入结果" }], sampleRows: measured.sampleRows, groupCount: completed ? changes.length : 0, limitations: limits };
-  const progressKey = `scenario-${createHash("sha256").update(JSON.stringify({ scope: frame.scope, adjustment, changes, measured })).digest("hex")}`;
-  return { operationId, method: "aggregate", status: method.status, needIds: input.needIds, purpose: input.purpose, frames: [frame], facts, objects: [], methods: [method], limitations: limits, progressKey };
+  return { operationId, method: "aggregate", status: method.status, needIds: ["plan"], purpose: `scenario ${input.id}`, frames: [frame], facts, objects: [], methods: [method], limitations: limits };
 }

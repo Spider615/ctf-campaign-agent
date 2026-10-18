@@ -6,7 +6,6 @@ import { AttachmentRequestError, attachmentUrl, getAttachment } from "../../lib/
 import { MarkdownText } from "../chat/markdown-text";
 import { resolveConversationVisualization } from "../../lib/attachments/answer.ts";
 import { VisualizationCard } from "../analytics/visualization-card.tsx";
-import { AnalysisSourceData } from "../analytics/analysis-answer.tsx";
 
 function FileSource({ source, index, conversationId }: { source: AttachmentSource; index: number; conversationId: string }) {
   const [opened, setOpened] = useState(false); const [status, setStatus] = useState<"checking" | "available" | "unavailable" | "error">(source.kind === "database" ? "available" : "checking");
@@ -47,9 +46,8 @@ function FileSource({ source, index, conversationId }: { source: AttachmentSourc
 export function FileAnswer({ answer, conversationId }: { answer: ConversationAnswer; conversationId: string }) {
   return <div className="min-w-0 space-y-4 select-text">
     {answer.blocks.map((block, index) => <div key={index} className="space-y-3"><MarkdownText text={block.text} />
-      {(answer.visualizations?.items ?? []).filter((spec) => spec.afterBlockIndex === index).map((spec) => {
-        const database = spec.source.kind === "analysis" ? answer.databaseAnswers?.find((item) => item.visualizations?.items.some((original) => original.id === spec.id)) : undefined;
-        return <VisualizationCard key={spec.id} chart={resolveConversationVisualization(spec, answer)} conversationId={conversationId} files={(answer.calculations ?? []).filter((calculation) => spec.source.kind === "attachment" && spec.source.calculationIds.includes(calculation.id)).map((calculation) => ({ id: calculation.attachmentId, version: calculation.version }))} sourceContent={database ? <AnalysisSourceData answer={database} /> : undefined} />;
+      {(answer.visualizations?.items ?? []).filter((spec) => spec.afterBlockIndex === index && spec.source.kind === "attachment").map((spec) => {
+        return <VisualizationCard key={spec.id} chart={resolveConversationVisualization(spec, answer)} conversationId={conversationId} files={(answer.calculations ?? []).filter((calculation) => spec.source.kind === "attachment" && spec.source.calculationIds.includes(calculation.id)).map((calculation) => ({ id: calculation.attachmentId, version: calculation.version }))} />;
       })}
     </div>)}
     <div className="space-y-2 pt-1">

@@ -1,4 +1,3 @@
-import { visualizationCapability } from "../app/lib/analytics/visualization.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { isAgentRequest } from "../app/lib/agent/protocol.ts";
@@ -9,7 +8,7 @@ import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, type AgentTrac
 import type { AgentTurnRunner } from "./run-turn.ts";
 import { isAnalyticsExplainRequest } from "../app/lib/analytics/explain.ts";
 import type { AnalyticsRunner } from "./analytics-run-turn.ts";
-import type { GeneralAnalyticsRunner } from "./general-analytics-run-turn.ts";
+import type { PlanAnalyticsRunner } from "./analysis-plan-run-turn.ts";
 import { isDatabaseExplainRequest, type AnalyticsDatabase } from "../app/lib/analytics/database.ts";
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
@@ -17,7 +16,7 @@ import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/li
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
   runAnalyticsTurn?: AnalyticsRunner;
-  runGeneralAnalyticsTurn?: GeneralAnalyticsRunner;
+  runPlanAnalyticsTurn?: PlanAnalyticsRunner;
   database?: AnalyticsDatabase;
   token: string;
   model: string;
@@ -47,7 +46,7 @@ function publicError(message: string): string {
   return mentionsUnderlyingModel(message) ? "Agent 执行出错" : message;
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runGeneralAnalyticsTurn, database, token, model, logger = console, attachmentHandler }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler }: AgentHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
     const isTurn = request.method === "POST" && request.url === "/turn";
@@ -86,8 +85,9 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runGene
       if (requestController.signal.aborted) return;
       if (isAnalytics || isDatabase || isDatabaseStream) {
         const schema = request.headers["x-analytics-answer-schema"];
-        if (schema !== undefined && schema !== "analysis-answer/v2") return send(response, 400, { error: "不支持这个分析回答版本" });
-        const runner = schema === "analysis-answer/v2" ? runGeneralAnalyticsTurn : runAnalyticsTurn;
+        if (schema === "analysis-answer/v2") return send(response, 400, { error: "页面版本已更新，请刷新页面后重试" });
+        if (schema !== undefined && schema !== "analysis-answer/v3") return send(response, 400, { error: "不支持这个分析回答版本" });
+        const runner: PlanAnalyticsRunner | AnalyticsRunner | undefined = schema === "analysis-answer/v3" ? runPlanAnalyticsTurn : runAnalyticsTurn;
         if (!(isDatabase || isDatabaseStream ? isDatabaseExplainRequest(body) : isAnalyticsExplainRequest(body))) return send(response, 400, { error: "分析请求内容不完整" });
         const analyticsRequest = body as Parameters<AnalyticsRunner>[0];
         if ((isDatabase || isDatabaseStream) && !database && !quickAnalyticsReply(analyticsRequest.question)) return send(response, 503, { error: "历史数据库尚未启用" });
@@ -98,7 +98,7 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runGene
           response.flushHeaders();
           const emit = (event: AnalyticsStreamEvent) => { if (!requestController.signal.aborted && !response.destroyed && !response.writableEnded) response.write(encodeAnalyticsStreamEvent(event)); };
           try {
-            const result = await runner(analyticsRequest, requestController.signal, emit, visualizationCapability(typeof request.headers["x-analytics-visuals"] === "string" ? request.headers["x-analytics-visuals"] : undefined));
+            const result = await runner(analyticsRequest, requestController.signal, emit);
             if (!requestController.signal.aborted) { emit({ type: "result", result }); response.end(); }
           } catch (error) {
             if (!requestController.signal.aborted && !isTurnCancelled(error)) {
@@ -110,7 +110,7 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runGene
           return;
         }
         try {
-          const result = await runner(analyticsRequest, requestController.signal, undefined, visualizationCapability(typeof request.headers["x-analytics-visuals"] === "string" ? request.headers["x-analytics-visuals"] : undefined));
+          const result = await runner(analyticsRequest, requestController.signal, undefined);
           if (!requestController.signal.aborted) send(response, 200, result);
         } catch (error) {
           if (!requestController.signal.aborted && !isTurnCancelled(error)) send(response, 502, { error: publicError(error instanceof Error ? error.message : "AI 解读失败") });

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { analysisMetricDefinitions } from "../../app/lib/analytics/analysis-v2-operations.ts";
 import { createEvidenceRegistry } from "../../app/lib/analytics/analysis-v2-evidence.ts";
-import { analysisEvidencePage } from "../../agent/analytics-evidence-context.ts";
 import type { AnalysisAggregateCell, AnalysisDataSession } from "../../app/lib/analytics/analysis-v2-types.ts";
 
 // 独立进程使用完整模拟分组，限制堆大小验证计算、登记与分页，不能靠删事实避开内存回归。
@@ -22,8 +21,9 @@ assert.equal(result.facts.length, 416015);
 const registry = createEvidenceRegistry(); await registry.ingestAsync(result);
 assert.equal(registry.view().facts.length, 416015);
 assert.equal(registry.view().facts[0], result.facts[0]);
-const page = analysisEvidencePage(registry.view(), { operationId: result.operationId, limit: 12, includeParents: false });
-assert.equal(page.paging.totalFacts, 416015); assert.equal(page.rootFactIds.length, 12);
+// 登记后的只读视图直接切片，不复制全量事实。
+const page = { facts: registry.view().facts.filter((fact) => fact.operationId === result.operationId).slice(0, 12) };
+assert.equal(page.facts.length, 12);
 const reused = await operations.execute({ ...request, needIds: ["need-2"], purpose: "复用已有证据" });
 assert.equal(reused.facts, result.facts); assert.equal(reused.cached, true);
 console.log(JSON.stringify({ groups: 8000, facts: registry.view().facts.length, pageFacts: page.facts.length, modelCalls: 0, databaseCalls: 0 }));

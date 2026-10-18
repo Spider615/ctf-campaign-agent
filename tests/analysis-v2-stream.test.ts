@@ -7,7 +7,7 @@ import * as stream from "../app/lib/analytics/stream.ts";
 import { postHistoryStream } from "../app/lib/client/history-stream.ts";
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { TurnCancelledError } from "../app/lib/cancellation.ts";
-import { largeSimulatedAnswer, simulatedAnswer } from "./helpers/analysis-v2-answer.ts";
+import { largeSimulatedPlanAnswer, simulatedPlanAnswer } from "./helpers/plan-answer.ts";
 import { createAgentHttpHandler } from "../agent/http-handler.ts";
 
 const request = { mode: "database" as const, question: "先核对哪些门店？", history: [] };
@@ -20,14 +20,14 @@ function networkStream(text: string) {
   const bytes = new TextEncoder().encode(text); let offset = 0;
   return new Response(new ReadableStream<Uint8Array>({ pull(output) { if (offset < bytes.length) { output.enqueue(bytes.slice(offset, offset + 65536)); offset += 65536; } else output.close(); } }));
 }
-function resultChunks(answer = simulatedAnswer()) {
+function resultChunks(answer = simulatedPlanAnswer()) {
   const json = JSON.stringify({ type: "result", result: answer }); const middle = Math.floor(json.length / 2);
   return [{ type: "result_chunk", index: 0, delta: json.slice(0, middle) }, { type: "result_chunk", index: 1, delta: json.slice(middle) }, { type: "result_end", chunks: 2, length: json.length }];
 }
 const wireText = (events: unknown[]) => events.map((event) => JSON.stringify(event) + "\n").join("");
 
 test("全量方法检查超过单条消息上限时，分块无损交付完整已核验答案", async () => {
-  const answer = largeSimulatedAnswer(); const events: stream.AnalyticsProgressEvent[] = [];
+  const answer = largeSimulatedPlanAnswer(); const events: stream.AnalyticsProgressEvent[] = [];
   assert.ok(JSON.stringify(answer).length > 2_000_000);
   const encoded = stream.encodeAnalyticsStreamEvent({ type: "result", result: answer });
   const result = await stream.consumeAnalyticsStream(networkStream(`${JSON.stringify(progress)}\n${encoded}`), (event) => events.push(event));
@@ -37,13 +37,13 @@ test("全量方法检查超过单条消息上限时，分块无损交付完整�
 
 test("最终结果分块缺失、重复、乱序或缺少结束帧均不能交付", async () => {
   const [first, second, end] = resultChunks();
-  for (const events of [[second, first, end], [first, first, second, end], [first, end], [first, second], [end], [first, second, { ...end, length: end.length! + 1 }], [first, second, { ...end, chunks: 3 }], [first, progress, second, end], [first, { type: "result", result: simulatedAnswer() }]]) {
+  for (const events of [[second, first, end], [first, first, second, end], [first, end], [first, second], [end], [first, second, { ...end, length: end.length! + 1 }], [first, second, { ...end, chunks: 3 }], [first, progress, second, end], [first, { type: "result", result: simulatedPlanAnswer() }]]) {
     await assert.rejects(stream.consumeAnalyticsStream(networkStream(wireText(events))), /分块|完整/);
   }
 });
 
 test("结果分块只在收齐后核验，伪造引用、终态后追加和上游错误均被拒绝", async () => {
-  const answer = simulatedAnswer(); answer.blocks[1].nodes.push({ kind: "fact_ref", factId: "invented" });
+  const answer = simulatedPlanAnswer(); answer.headline!.factIds = ["invented"];
   await assert.rejects(stream.consumeAnalyticsStream(networkStream(wireText(resultChunks(answer)))), /invented|事实|引用/);
   await assert.rejects(stream.consumeAnalyticsStream(networkStream(wireText([...resultChunks(), progress]))), /最终结果/);
   await assert.rejects(stream.consumeAnalyticsStream(networkStream(wireText([resultChunks()[0], { type: "error", error: "上游已停止" }]))), /上游已停止/);
@@ -59,14 +59,15 @@ test("结果分块尚未收齐时停止仍取消上游，不交付部分答案",
   await rejected; assert.equal(cancelled, true);
 });
 
-test("v2 最终答案逐字节跨 UTF8 分帧，只有真实过程提前出现", async () => {
-  const answer = simulatedAnswer(); const events: stream.AnalyticsProgressEvent[] = [];
+test("最终答案逐字节跨 UTF8 分帧，只有真实过程提前出现", async () => {
+  const answer = simulatedPlanAnswer(); const events: stream.AnalyticsProgressEvent[] = [];
   const result = await stream.consumeAnalyticsStream(byteStream(`${JSON.stringify(progress)}\n${JSON.stringify({ type: "result", result: answer })}`), (event) => events.push(event));
   assert.deepEqual(events, [progress]); assert.deepEqual(result, answer);
 });
 
-test("v2 未知引用和未知 schema 不会落到旧解析器或进入结果", () => {
-  const answer = simulatedAnswer(); answer.blocks[1].nodes.push({ kind: "fact_ref", factId: "invented" });
+test("未知引用、已退役的 v2 和未知 schema 不会落到旧解析器或进入结果", () => {
+  const answer = simulatedPlanAnswer(); answer.headline!.factIds = ["invented"];
+  assert.throws(() => stream.decodeAnalyticsStreamLine(JSON.stringify({ type: "result", result: { ...answer, schema: "analysis-answer/v2" } })), /合同|版本/);
   assert.throws(() => stream.decodeAnalyticsStreamLine(JSON.stringify({ type: "result", result: answer })));
   assert.throws(() => stream.decodeAnalyticsStreamLine(JSON.stringify({ type: "result", result: { ...quickAnalyticsReply("你好"), schema: "analysis-answer/future" } })), /合同|版本|schema/);
 });
@@ -78,12 +79,12 @@ test("旧 v1 寒暄及旧最终回答仍能解析", async () => {
 });
 
 test("最终结果后不接受迟到过程或第二个结果，正文草稿增量被拒绝", async () => {
-  const line = JSON.stringify({ type: "result", result: simulatedAnswer() });
+  const line = JSON.stringify({ type: "result", result: simulatedPlanAnswer() });
   await assert.rejects(stream.consumeAnalyticsStream(byteStream(`${line}\n${JSON.stringify(progress)}\n`)), /最终结果/);
   assert.throws(() => stream.decodeAnalyticsStreamLine(JSON.stringify({ type: "text_delta", text: "未核验的经营判断" })), /类型/);
 });
 
-test("停止 v2 读取会取消上游 reader，迟到结果不能返回", async () => {
+test("停止读取会取消上游 reader，迟到结果不能返回", async () => {
   const controller = new AbortController(); let cancelled = false;
   const response = new Response(new ReadableStream<Uint8Array>({ start(output) { output.enqueue(new TextEncoder().encode(`${JSON.stringify(progress)}\n`)); }, cancel() { cancelled = true; } }));
   const result = stream.consumeAnalyticsStream(response, () => controller.abort(), controller.signal);
@@ -110,22 +111,22 @@ test("回答传输断开时显示可操作的中文提示，不能把阶段过�
 
 test("JSON 回退读取期间取消，完整答案仍不能作为成功返回", async (t) => {
   const controller = new AbortController();
-  t.mock.method(globalThis, "fetch", async () => ({ ok: true, headers: new Headers({ "content-type": "application/json" }), async json() { controller.abort(); return { explanation: simulatedAnswer() }; } }));
+  t.mock.method(globalThis, "fetch", async () => ({ ok: true, headers: new Headers({ "content-type": "application/json" }), async json() { controller.abort(); return { explanation: simulatedPlanAnswer() }; } }));
   await assert.rejects(postHistoryStream(request, () => {}, controller.signal), TurnCancelledError);
 });
 
-test("新版历史客户端精确发送 v2 协商头，JSON 兼容返回仍严格核验", async (t) => {
+test("新版历史客户端精确发送 v3 协商头，JSON 兼容返回仍严格核验", async (t) => {
   let observed: Headers | undefined;
-  t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => { observed = new Headers(options.headers); return Response.json({ explanation: simulatedAnswer() }); });
+  t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => { observed = new Headers(options.headers); return Response.json({ explanation: simulatedPlanAnswer() }); });
   const result = await postHistoryStream(request, () => {});
-  assert.equal(observed?.get("x-analytics-answer-schema"), "analysis-answer/v2"); assert.deepEqual(result, simulatedAnswer());
+  assert.equal(observed?.get("x-analytics-answer-schema"), "analysis-answer/v3"); assert.deepEqual(result, simulatedPlanAnswer());
 });
 
-test("只允许精确版本声明，未知头不提升到 v2", () => {
+test("只允许精确版本声明，未知头不提升到 v3", () => {
   const normalize = (stream as unknown as { normalizeAnalyticsAnswerSchema: (value: string | null | undefined) => string | undefined }).normalizeAnalyticsAnswerSchema;
   assert.equal(typeof normalize, "function");
-  assert.equal(normalize("analysis-answer/v2"), "analysis-answer/v2");
-  for (const value of [null, undefined, "", "analysis-answer/v3", "ANALYSIS-ANSWER/V2", "v2", "analysis-answer/v2, analysis-answer/v1"]) assert.equal(normalize(value), undefined);
+  assert.equal(normalize("analysis-answer/v3"), "analysis-answer/v3");
+  for (const value of [null, undefined, "", "analysis-answer/v2", "ANALYSIS-ANSWER/V3", "v3", "analysis-answer/v3, analysis-answer/v1"]) assert.equal(normalize(value), undefined);
 });
 
 async function historyRouteScript(upstream: string) {
@@ -143,31 +144,30 @@ async function historyRouteScript(upstream: string) {
 async function historyWorker(upstream: string) { return new Miniflare({ modules: true, compatibilityDate: "2026-05-15", compatibilityFlags: ["nodejs_compat", "enable_request_signal"], script: await historyRouteScript(upstream) }); }
 const routeHeaders = { "content-type": "application/json", accept: "application/x-ndjson", cookie: "ctf_analytics_owner=11111111-1111-4111-8111-111111111111" };
 test("真实 Node 到 Workers 再到客户端的大答案分块完整通过两次边界核验", { timeout: 10000 }, async () => {
-  const answer = largeSimulatedAnswer();
-  const server = createServer(createAgentHttpHandler({ token: "", model: "test", runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runGeneralAnalyticsTurn: async (_request, _signal, emit) => { emit?.({ type: "phase", phase: "writing", at: 1 }); return answer; } }));
+  const answer = largeSimulatedPlanAnswer();
+  const server = createServer(createAgentHttpHandler({ token: "", model: "test", runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runPlanAnalyticsTurn: async (_request, _signal, emit) => { emit?.({ type: "phase", phase: "writing", at: 1 }); return answer; } }));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); assert.ok(address && typeof address === "object");
   const worker = await historyWorker(`http://127.0.0.1:${address.port}`);
   try {
-    const response = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify({ ...request, question: "你好" }) });
+    const response = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify({ ...request, question: "你好" }) });
     assert.equal(response.status, 200); const events: stream.AnalyticsProgressEvent[] = [];
     const result = await stream.consumeAnalyticsStream(new Response(response.body as ReadableStream<Uint8Array>), (event) => events.push(event));
     assert.deepEqual(result, answer); assert.deepEqual(events, [{ type: "phase", phase: "writing", at: 1 }]);
   } finally { await worker.dispose(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
 
-test("图表能力与已核验预览通过真实 Node、Workers、客户端整条链路，最终关联保持不变", { timeout: 10000 }, async () => {
-  const answer = simulatedAnswer();
-  answer.visualizations = { schema: "analysis-visualization/v1", items: [{ id: "verified-chart", revision: 1, kind: "bar", renderer: "html", afterBlockIndex: 1, conclusionId: "conclusion", source: { kind: "analysis", operationId: "operation", metricId: "amount", dimension: "store" }, selection: { mode: "all" } }] };
-  const preview: stream.AnalyticsProgressEvent = { type: "visualization", schema: "analysis-visualization/v1", runId: answer.task.runId, epoch: 0, action: "upsert", preview: { spec: answer.visualizations.items[0], evidence: answer.evidence } };
-  let capability: string | undefined;
-  const server = createServer(createAgentHttpHandler({ token: "", model: "test", runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runGeneralAnalyticsTurn: async (_request, _signal, emit, visuals) => { capability = visuals; emit?.(preview); return answer; } }));
+test("可视化能力头经 Workers 转发时不影响 v3 答案，计划运行器不收到图表预览能力", { timeout: 10000 }, async () => {
+  const answer = simulatedPlanAnswer(); let calls = 0; let forwardedVisuals: string | undefined;
+  const handler = createAgentHttpHandler({ token: "", model: "test", runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runPlanAnalyticsTurn: async (...args) => { calls++; assert.equal(args.length <= 3, true); return answer; } });
+  const server = createServer((req, res) => { forwardedVisuals = req.headers["x-analytics-visuals"] as string | undefined; return handler(req, res); });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); assert.ok(address && typeof address === "object");
   const worker = await historyWorker(`http://127.0.0.1:${address.port}`);
   try {
-    const response = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, "X-Analytics-Answer-Schema": "analysis-answer/v2", "X-Analytics-Visuals": "analysis-visualization/v1" }, body: JSON.stringify({ ...request, question: "你好" }) });
-    assert.equal(response.status, 200); const events: stream.AnalyticsProgressEvent[] = [];
-    const final = await stream.consumeAnalyticsStream(new Response(response.body as ReadableStream<Uint8Array>), (event) => events.push(event));
-    assert.equal(capability, "analysis-visualization/v1"); assert.deepEqual(events, [preview]); assert.deepEqual(final, answer);
+    const response = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, "X-Analytics-Answer-Schema": "analysis-answer/v3", "X-Analytics-Visuals": "analysis-visualization/v1" }, body: JSON.stringify({ ...request, question: "你好" }) });
+    assert.equal(response.status, 200);
+    const final = await stream.consumeAnalyticsStream(new Response(response.body as ReadableStream<Uint8Array>));
+    assert.deepEqual(final, answer); assert.equal(calls, 1);
+    assert.equal(forwardedVisuals, "analysis-visualization/v1", "Workers 仍把可视化能力头转发给 Agent 服务（附件问答要用）");
   } finally { await worker.dispose(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
 
@@ -197,7 +197,7 @@ test("静默等待时营销流只排队一个保活空行，恢复读取与取�
   assert.ok(clear.mock.callCount() > 0, "取消后应清理保活计时器");
 });
 
-test("真实 Workers 只转发精确 v2 版本声明，访问隔离仍生效", { timeout: 10000 }, async () => {
+test("真实 Workers 只转发精确 v3 版本声明，访问隔离仍生效", { timeout: 10000 }, async () => {
   const observed: Array<string | undefined> = [];
   const server = createServer(async (req, response) => { for await (const part of req) { void part; }
     observed.push(req.headers["x-analytics-answer-schema"] as string | undefined);
@@ -206,13 +206,15 @@ test("真实 Workers 只转发精确 v2 版本声明，访问隔离仍生效", {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); assert.ok(address && typeof address === "object");
   const worker = await historyWorker(`http://127.0.0.1:${address.port}`);
   try {
-    for (const schema of [undefined, "analysis-answer/v2", "analysis-answer/v3"]) {
+    for (const schema of [undefined, "analysis-answer/v3"]) {
       const response = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, ...(schema ? { "X-Analytics-Answer-Schema": schema } : {}) }, body: JSON.stringify(request) });
       assert.equal(response.status, 200); assert.deepEqual(await stream.consumeAnalyticsStream(new Response(response.body as ReadableStream<Uint8Array>)), quickAnalyticsReply("你好"));
     }
-    assert.deepEqual(observed, [undefined, "analysis-answer/v2", undefined]);
-    const denied = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, origin: "https://other.invalid", "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify(request) });
-    assert.equal(denied.status, 403); assert.equal(observed.length, 3);
+    assert.deepEqual(observed, [undefined, "analysis-answer/v3"]);
+    const stale = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify(request) });
+    assert.equal(stale.status, 400); assert.deepEqual(await stale.json(), { error: "页面版本已更新，请刷新页面后重试" }); assert.equal(observed.length, 2, "v2 头不能到达分析服务");
+    const denied = await worker.dispatchFetch("http://localhost/api/analytics/history", { method: "POST", headers: { ...routeHeaders, origin: "https://other.invalid", "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify(request) });
+    assert.equal(denied.status, 403); assert.equal(observed.length, 2);
   } finally { await worker.dispose(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
 
@@ -225,7 +227,7 @@ test("真实 Workers 静默等待时停止仍取消外部营销服务", { timeou
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); assert.ok(address && typeof address === "object");
   const worker = await historyWorker(`http://127.0.0.1:${address.port}`); const controller = new AbortController(); let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    const response = await fetch(new URL("/api/analytics/history", await worker.ready), { method: "POST", headers: { ...routeHeaders, "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify(request), signal: controller.signal });
+    const response = await fetch(new URL("/api/analytics/history", await worker.ready), { method: "POST", headers: { ...routeHeaders, "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify(request), signal: controller.signal });
     reader = response.body!.getReader(); await deadline(started.promise, "外部服务未开始");
     controller.abort(); await reader.read().catch(() => undefined); await deadline(closed.promise, "静默外部服务没有收到停止");
   } finally { controller.abort(); await reader?.cancel().catch(() => undefined); reader?.releaseLock(); await worker.dispose(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }

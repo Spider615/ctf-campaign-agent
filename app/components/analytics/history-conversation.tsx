@@ -10,6 +10,7 @@ import { postHistoryStream } from "../../lib/client/history-stream";
 import { reduceVisualizationProgress } from "../../lib/analytics/visualization-progress";
 import { analyticsAnswerText } from "../../lib/analytics/stream";
 import { createSessionRequest, notifySessionsChanged } from "../../lib/client/api";
+import { analysisTurns } from "../../lib/client/background-turns";
 import { mergeTraceEvent } from "../../lib/tool-trace";
 import type { Snapshot } from "../../lib/server/turns";
 import { messageToText } from "../../lib/campaign/ics1811/messages";
@@ -41,45 +42,46 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
   const messages = useSyncExternalStore(historyConversation.subscribe, historyConversation.snapshot, historyConversation.serverSnapshot);
   const campaignId = useSyncExternalStore(historyConversation.subscribe, historyConversation.campaignId, noCampaign);
   const setMessages = (change: (messages: HistoryMessage[]) => HistoryMessage[]) => historyConversation.update(change, conversationId);
-  const [input, setInput] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  const [input, setInput] = useState(""); const [error, setError] = useState("");
+  // 进行中的回答按对话 id 登记在模块里：切到别的对话不会中止，回来接着看；其他对话照常提问。
+  const liveTurn = useSyncExternalStore(analysisTurns.subscribe, () => analysisTurns.get(conversationId), () => undefined);
+  const busy = Boolean(liveTurn); const pendingCreation = liveTurn?.state.pendingCreation ?? null;
   const [executionBusy, setExecutionBusy] = useState(false); const executionLock = useRef(false);
   const executionBusyChanged = useCallback((value: boolean) => { executionLock.current = value; setExecutionBusy(value); }, []);
-  const [pendingCreation, setPendingCreation] = useState<string | null>(null);
   const attachments = useAttachmentDraft(conversationId);
   const markUnavailable = useCallback((ids: string[]) => historyConversation.update((items) => items.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => ids.includes(file.id) ? { ...file, unavailable: true } : file) } : {}) })), conversationId), [conversationId]);
   useAttachmentAvailability(conversationId, messages, markUnavailable);
-  const active = useRef<{ controller: AbortController; replyId?: string; clock: number } | null>(null);
   const end = useRef<HTMLDivElement>(null); const followBottom = useRef(true);
-  useEffect(() => () => { active.current?.controller.abort(); historyConversation.update((items) => items.map((m) => m.status === "running" ? { ...m, status: "cancelled", text: "上次等待已结束，可以继续追问或重新分析。" } : m), conversationId); }, [conversationId]);
   const last = messages.at(-1);
   useEffect(() => { if (last && followBottom.current) end.current?.scrollIntoView({ block: "end" }); }, [last]);
-  const owns = (controller: AbortController) => active.current?.controller === controller && !controller.signal.aborted && historyConversation.activeId() === conversationId;
+  const owns = (token: symbol) => analysisTurns.isLive(conversationId, token);
 
   const perform = async (request: DatabaseExplainRequest | ConversationRequest, replyId: string, retryFiles = false) => {
-    if (active.current || executionLock.current || historyConversation.activeId() !== conversationId) return;
-    const controller = new AbortController(); const clock = now(); active.current = { controller, replyId, clock }; setBusy(true); setError("");
+    if (executionLock.current) return;
+    const clock = now(); const entry = analysisTurns.begin(conversationId, { replyId, clock }); if (!entry) return;
+    const { controller, token } = entry; setError("");
     setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "running", text: "", answer: undefined, visualizationState: undefined, trace: [], phase: "analyzing", startedAt: Date.now(), durationMs: undefined } : m));
     try {
       await analyticsRequest("/api/analytics/access", undefined, controller.signal);
       if (retryFiles && "attachmentIds" in request) request = await retryConversationAttachments(request, (previousId, file) => {
-        if (owns(controller)) setMessages((items) => replaceHistoryAttachment(items, previousId, file));
+        if (owns(token)) setMessages((items) => replaceHistoryAttachment(items, previousId, file));
       }, controller.signal);
       const progress: Parameters<typeof postHistoryStream>[1] = (event) => {
-        if (!owns(controller)) return;
+        if (!owns(token)) return;
         setMessages((items) => items.map((m) => m.id !== replyId ? m : event.type === "trace" ? { ...m, trace: mergeTraceEvent(m.trace ?? [], event.event) } : event.type === "visualization" ? { ...m, visualizationState: reduceVisualizationProgress(m.visualizationState, event) } : { ...m, phase: event.phase }));
       };
       const explanation = "attachmentIds" in request ? await postAttachmentStream(request, progress, controller.signal) : await postHistoryStream(request, progress, controller.signal);
-      if (owns(controller)) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "done", answer: explanation, visualizationState: undefined, createdAt: new Date().toISOString(), durationMs: now() - clock,
+      if (owns(token)) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "done", answer: explanation, visualizationState: undefined, createdAt: new Date().toISOString(), durationMs: now() - clock,
         text: analyticsAnswerText(explanation) } : m));
     } catch (caught) {
       if (caught instanceof UnavailableAttachmentsError) markUnavailable(caught.ids);
       const detail = caught instanceof Error ? caught.message : "本次回答暂未完成，可以重试";
       const text = /数据库|连接|视图|字段映射|访问标识/.test(detail) ? "这次回答暂时无法完成，你的问题已保留，可以稍后重试。" : detail;
-      if (owns(controller)) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "failed", text, durationMs: now() - clock } : m));
-    } finally { if (active.current?.controller === controller) { active.current = null; setBusy(false); } }
+      if (owns(token)) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "failed", text, durationMs: now() - clock } : m));
+    } finally { analysisTurns.end(conversationId, token); }
   };
   const analyze = (text: string, snapshot?: Snapshot, newAttachments: AttachmentReference[] = []) => {
-    if (active.current || busy || executionLock.current || historyConversation.activeId() !== conversationId) return;
+    if (analysisTurns.has(conversationId) || executionLock.current) return;
     const question = text.trim().slice(0, 500); if (!question) return;
     const createdAt = new Date().toISOString(); const replyId = crypto.randomUUID(); const afterMessageId = snapshot?.messages.at(-1)?.id;
     const timeline = mergeConversationTimeline(snapshot?.messages ?? [], messages);
@@ -95,27 +97,28 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
     void perform(request, replyId);
   };
   const createCampaign = async (text: string) => {
-    if (active.current || busy || historyConversation.activeId() !== conversationId) return;
-    const controller = new AbortController(); active.current = { controller, clock: now() }; setBusy(true); setError(""); setPendingCreation(text);
+    const entry = analysisTurns.begin(conversationId, { clock: now(), pendingCreation: text }); if (!entry) return;
+    const { controller, token } = entry; setError("");
     try {
       // 只传本次明确执行的用户原话，分析建议及历史参数不能反写成执行事实。
       const snapshot = await createSessionRequest({ entryMode: "new", text }, controller.signal);
-      if (owns(controller)) { historyConversation.bindCampaign(snapshot.session.id, text, conversationId); notifySessionsChanged(); }
+      if (owns(token)) { historyConversation.bindCampaign(snapshot.session.id, text, conversationId); notifySessionsChanged(); }
     } catch (caught) {
-      if (owns(controller)) { setError(caught instanceof Error ? caught.message : "这次活动暂未准备好，可以重试"); setInput((current) => current || text); }
-    } finally { if (active.current?.controller === controller) { active.current = null; setPendingCreation(null); setBusy(false); } }
+      // 切走后失败时界面已不在，原话放不回输入框；只在本界面还开着时提示。
+      if (owns(token) && historyConversation.activeId() === conversationId) { setError(caught instanceof Error ? caught.message : "这次活动暂未准备好，可以重试"); setInput((current) => current || text); }
+    } finally { analysisTurns.end(conversationId, token); }
   };
   const send = () => {
-    if (active.current || busy || (!input.trim() && !attachments.ready) || attachments.files.length && !attachments.ready) return;
+    if (analysisTurns.has(conversationId) || (!input.trim() && !attachments.ready) || attachments.files.length && !attachments.ready) return;
     const selected = attachments.references(); const { question: text } = attachmentSubmission(input, selected); setInput("");
     if (selected.length) { analyze(text, undefined, selected); attachments.clear(); }
     else if (conversationRoute(text) === "execution") void createCampaign(text); else analyze(text);
   };
   const stop = () => {
-    const turn = active.current; if (!turn) return;
-    turn.controller.abort(); active.current = null; setBusy(false);
-    if (turn.replyId) setMessages((items) => items.map((m) => m.id === turn.replyId ? { ...m, status: "cancelled", text: "已停止本次回答，你可以继续追问。", durationMs: now() - turn.clock } : m));
-    else { setInput((current) => current || pendingCreation || ""); setPendingCreation(null); }
+    const turn = analysisTurns.abort(conversationId); if (!turn) return;
+    const { replyId, clock, pendingCreation: creation } = turn.state;
+    if (replyId) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "cancelled", text: "已停止本次回答，你可以继续追问。", durationMs: now() - clock } : m));
+    else setInput((current) => current || creation || "");
   };
   const retry = (message: HistoryMessage) => { if (message.request) { followBottom.current = true; void perform(message.request, message.id, true); } };
   const fileDeleted = (id: string) => setMessages((items) => items.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => file.id === id ? { ...file, deleted: true } : file) } : {}) })));

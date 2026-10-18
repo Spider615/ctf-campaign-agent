@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { selectAnalysisEvidence } from "../app/lib/analytics/analysis-v2-evidence.ts";
-import type { AnalysisDraft, AnalysisEvidence } from "../app/lib/analytics/analysis-v2-types.ts";
-import { parseVisualizationSpec, resolveAnalysisVisualization, resolveAttachmentVisualization } from "../app/lib/analytics/visualization.ts";
+import { parseVisualizationSpec, resolveAttachmentVisualization } from "../app/lib/analytics/visualization.ts";
 import { VISUALIZATION_SCHEMA, VISUALIZATION_LIMITS, type AttachmentCalculation, type VisualizationFileSource, type VisualizationProgressEvent, type VisualizationSpec } from "../app/lib/analytics/visualization-types.ts";
 
 type Placement = { id: string; afterBlockIndex: number; conclusionId?: string };
 type Input = Pick<VisualizationSpec, "kind" | "source"> & Partial<Pick<VisualizationSpec, "renderer" | "selection" | "title">> & { id?: string };
-export function createVisualizationRegistry(options: { runId: string; enabled: boolean; emit?: (event: VisualizationProgressEvent) => void; analysisEvidence?: () => AnalysisEvidence; attachmentEvidence?: () => { calculations: AttachmentCalculation[]; sources: VisualizationFileSource[] }; audit?: (kind: string, data: unknown) => void; maxCharts?: number }) {
+export function createVisualizationRegistry(options: { runId: string; enabled: boolean; emit?: (event: VisualizationProgressEvent) => void; attachmentEvidence?: () => { calculations: AttachmentCalculation[]; sources: VisualizationFileSource[] }; audit?: (kind: string, data: unknown) => void; maxCharts?: number }) {
   let epoch = 0; const items = new Map<string, VisualizationSpec>(); const signatures = new Map<string, string>();
   return {
     present(rawInput: Input) {
@@ -19,22 +17,15 @@ export function createVisualizationRegistry(options: { runId: string; enabled: b
       const spec = parseVisualizationSpec({ id: known?.id ?? randomUUID(), revision: known ? known.revision + (signature === JSON.stringify({ kind: known.kind, renderer: known.renderer, source: known.source, selection: known.selection, title: known.title }) ? 0 : 1) : 1, kind: input.kind, renderer: input.renderer, source: input.source, selection: input.selection, afterBlockIndex: 0, ...(input.title ? { title: input.title } : {}) });
       const maxCharts = options.maxCharts ?? VISUALIZATION_LIMITS.charts;
       if (!known && items.size >= maxCharts) throw new Error(`本轮最多准备 ${maxCharts} 张图，请复用已有图表或用文字说明`);
-      const evidence = options.analysisEvidence?.(); const attachment = options.attachmentEvidence?.();
-      const chart = spec.source.kind !== "attachment" && evidence ? resolveAnalysisVisualization(spec, evidence) : spec.source.kind === "attachment" && attachment ? resolveAttachmentVisualization(spec, attachment.calculations, attachment.sources) : (() => { throw new Error("图表来源不属于本轮已读取的证据"); })();
+      const attachment = options.attachmentEvidence?.();
+      // 只服务附件问答：图表来源必须是本轮完整表格计算。
+      const chart = spec.source.kind === "attachment" && attachment ? resolveAttachmentVisualization(spec, attachment.calculations, attachment.sources) : (() => { throw new Error("图表来源不属于本轮已读取的证据"); })();
       if (!known || spec.revision !== known.revision) {
         for (const [key, id] of signatures) if (id === spec.id) signatures.delete(key);
         items.set(spec.id, spec); signatures.set(signature, spec.id);
-        let preview;
-        if (spec.source.kind !== "attachment" && evidence) {
-          const projected = selectAnalysisEvidence({ status: "answered", conclusions: [], blocks: [{ kind: "paragraph", nodes: [{ kind: "text", text: "图表预览" }] }], questions: [], userConditions: [], trialParameters: [], visualizations: { schema: VISUALIZATION_SCHEMA, items: [spec] } } as AnalysisDraft, evidence);
-          // 预览保留数值父链与实际检查样本；完整方法记录继续保存在最终证据。
-          projected.methods = projected.methods.map((method) => ({ ...method, checks: method.checks.filter((check) => check.status === "performed").slice(0, 1) }));
-          preview = { spec, evidence: projected };
-        } else {
-          const ids = spec.source.kind === "attachment" ? spec.source.calculationIds : [];
-          const calculations = attachment!.calculations.filter((item) => ids.includes(item.id)); const sourceIds = new Set(calculations.flatMap((item) => item.groups.map((group) => group.sourceId)));
-          preview = { spec, calculations, sources: attachment!.sources.filter((item) => sourceIds.has(item.id)) };
-        }
+        const ids = spec.source.kind === "attachment" ? spec.source.calculationIds : [];
+        const calculations = attachment!.calculations.filter((item) => ids.includes(item.id)); const sourceIds = new Set(calculations.flatMap((item) => item.groups.map((group) => group.sourceId)));
+        const preview = { spec, calculations, sources: attachment!.sources.filter((item) => sourceIds.has(item.id)) };
         const event: VisualizationProgressEvent = { type: "visualization", schema: VISUALIZATION_SCHEMA, runId: options.runId, epoch, action: "upsert", preview };
         if (JSON.stringify(event).length <= 2_000_000) options.emit?.(event);
         options.audit?.("visualization", { spec, epoch });

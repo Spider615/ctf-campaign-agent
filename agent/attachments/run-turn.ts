@@ -2,14 +2,14 @@ import { mkdir } from "node:fs/promises";
 import { createSdkMcpServer, query, tool, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { AgentQuery, AgentRuntimeConfig } from "../run-turn.ts";
-import type { GeneralAnalyticsRunner } from "../general-analytics-run-turn.ts";
+import type { PlanAnalyticsRunner } from "../analysis-plan-run-turn.ts";
 import { analyticsSdkModel } from "../analytics-model.ts";
-import { validateAnalysisAnswer } from "../../app/lib/analytics/analysis-v2-evidence.ts";
+import { validatePlanAnswer } from "../../app/lib/analytics/plan/answer.ts";
 import { resolveConversationVisualization, unsupportedLimitationNumbers, validateConversationAnswer, validateConversationDraft, validateConversationRequest } from "../../app/lib/attachments/answer.ts";
 import { ATTACHMENT_LIMITS, ATTACHMENT_PREPARATION_TRACE_TOOL, ATTACHMENT_TOOL_LABELS, type AttachmentSource, type ConversationAnswer, type ConversationDraft } from "../../app/lib/attachments/types.ts";
 import { finishTraceEvent, harnessTimingSummary, startTraceEvent, type AgentTraceEvent } from "../../app/lib/tool-trace.ts";
 import { relayAbort, throwIfTurnCancelled, TurnCancelledError } from "../../app/lib/cancellation.ts";
-import type { AnalysisAnswer } from "../../app/lib/analytics/analysis-v2-types.ts";
+import type { PlanAnswer } from "../../app/lib/analytics/analysis-v2-types.ts";
 import { createAttachmentTools } from "./tools.ts";
 import type { AttachmentStore } from "./store.ts";
 import type { ConversationRunner } from "./http.ts";
@@ -18,7 +18,7 @@ import { VISUALIZATION_SCHEMA, type ResolvedVisualization } from "../../app/lib/
 import { createVisualizationRegistry } from "../visualization-runtime.ts";
 import { chartRequestShape, chartPlacementsSchema } from "../visualization-schema.ts";
 
-type Config = AgentRuntimeConfig & { store: AttachmentStore; runAnalytics?: GeneralAnalyticsRunner; visionModel?: string; answerTimeMs?: number };
+type Config = AgentRuntimeConfig & { store: AttachmentStore; runAnalytics?: PlanAnalyticsRunner; visionModel?: string; answerTimeMs?: number };
 type VisionInput = { data: string; mime: string; question: string };
 type Dependencies = { query: AgentQuery; vision?: (input: VisionInput, signal: AbortSignal) => Promise<string> };
 const draftSchema = z.object({ visualizations: chartPlacementsSchema.optional(), status: z.enum(["answered", "partial"]), blocks: z.array(z.object({ text: z.string().trim().min(1).max(6000), sourceIds: z.array(z.string().max(120)).min(1).max(30).describe("本段实际用到的来源，最多 30 个；只放支撑本段数字和判断的那几个") }).strict()).min(1).max(20), limitations: z.array(z.string().min(1).max(1500)).max(20) }).strict();
@@ -85,7 +85,7 @@ const ATTACHMENT_CHART_PROMPT = `
 - 时间趋势（按月、按日）：kind=line，分组列必须是日期或月份。
 - 构成（同一个总量里各部分的占比）：先用 derive_attachment 算出各部分占总量的比率再画 bar；只有在两个维度交叉（如类型×月份）时才用 stacked_bar。
 - 不要画：单个数字、两三个数的比较、单位不明的指标、把「无活动/常态」基线行和活动混在一起排名。
-每张图给一个业务标题 title，直接说这张图回答什么（如「各类活动扣费贡献」「各类活动毛利率」）。分组列用名称（活动名称、活动类型），不用 ID。图放在它支撑的 block 之后，一般是「### 关键发现」那个 block：submit_attachment_answer 的 visualizations 为 {schema:"${VISUALIZATION_SCHEMA}",items:[{id:真实visualizationId,afterBlockIndex:block下标}]}。绘图失败就用文字回答，不重复尝试。历史分析返回的已核验图也可按 id 选择放置。`;
+每张图给一个业务标题 title，直接说这张图回答什么（如「各类活动扣费贡献」「各类活动毛利率」）。分组列用名称（活动名称、活动类型），不用 ID。图放在它支撑的 block 之后，一般是「### 关键发现」那个 block：submit_attachment_answer 的 visualizations 为 {schema:"${VISUALIZATION_SCHEMA}",items:[{id:真实visualizationId,afterBlockIndex:block下标}]}。绘图失败就用文字回答，不重复尝试。`;
 
 // 过程摘要里的数字给人看：大数写成万或亿，比率写成百分数。
 function readableNumber(value: string, ratio: boolean): string {
@@ -104,7 +104,7 @@ export function createConversationRunner(config: Config, dependencies: Dependenc
     const stopDeleted = config.store.onRemove((removedScope, id) => { if (removedScope.owner === scope.owner && removedScope.conversationId === scope.conversationId && request.attachmentIds.includes(id)) { charts.reset("source_unavailable"); controller.abort(); } });
     const files = createAttachmentTools(config.store, scope, request.attachmentIds, { captureCalculations: visualsEnabled });
     const charts = createVisualizationRegistry({ runId: crypto.randomUUID(), enabled: visualsEnabled, maxCharts: ANSWER_BUDGET.charts, emit: (event) => { if (!controller.signal.aborted) emit?.(event); }, attachmentEvidence: files.visualizationEvidence });
-    const started = Date.now(); const monotonic = performance.now(); const trace: AgentTraceEvent[] = []; const databaseAnswers: AnalysisAnswer[] = [];
+    const started = Date.now(); const monotonic = performance.now(); const trace: AgentTraceEvent[] = []; const databaseAnswers: PlanAnswer[] = [];
     let accepted: ConversationAnswer | undefined; let submitting = false; let visionCount = 0; let lastIssue = ""; let lastDraft: unknown; let hardDraftValidated = false;
     // 时限从附件准备完成、开始分析时算起，大文件解析不占分析时间。
     // 复核次数用完后还允许按最后一次意见改一稿：改完通过数字核验就交付，不再复核。
@@ -255,8 +255,8 @@ export function createConversationRunner(config: Config, dependencies: Dependenc
         const context = [...(request.context ?? [])];
         if (context.length < 200) context.push(`文件问答提出的历史核对方向，仅用于理解，不能替代持续要求或扩大业务范围：${focus}`.slice(0, 500));
         const historySignal = AbortSignal.any([controller.signal, AbortSignal.timeout(Math.max(1, wrapUpAt() - Date.now()))]);
-        const raw = await config.runAnalytics({ mode: "database", question: request.question, history: request.history, context }, historySignal, emit, visualizationSchema);
-        const answer = validateAnalysisAnswer(raw); databaseAnswers.push(answer); const sources = await files.recordDatabase(answer); return { answer, sources };
+        const raw = await config.runAnalytics({ mode: "database", question: request.question, history: request.history, context }, historySignal, emit);
+        const answer = validatePlanAnswer(raw); databaseAnswers.push(answer); const sources = await files.recordDatabase(answer); return { answer, sources };
       })))] : []),
       tool("submit_attachment_answer", "提交最终回答，必须逐段引用实际读到的来源；数字来自原文或计算，不写 source 内容", draftSchema.shape, async (input) => {
         if (submitting || accepted) return result({ error: "回答正在核验或已经完成" }, true);
@@ -285,12 +285,11 @@ export function createConversationRunner(config: Config, dependencies: Dependenc
           const limitations = [...new Set([...incomplete, ...coverage.flatMap((file) => file.warnings), ...draft.limitations])].slice(0, 30);
           if (/概括|总结|全文|全部|这些文件/.test(request.question)) for (const file of coverage) if (file.readTextBlocks < file.textBlocks || file.readImages < file.images) { draft = { ...draft, status: "partial" }; limitations.push(`${file.name}：已读文字块 ${file.readTextBlocks}/${file.textBlocks}，已读图像 ${file.readImages}/${file.images}；当前仅概括已读取范围。`); }
           draft = { ...draft, limitations: limitations.slice(0, 30), status: limitations.length ? "partial" : draft.status };
-          const imports = databaseAnswers.flatMap((database) => (database.visualizations?.items ?? []).map((spec) => ({ ...spec, conclusionId: undefined })));
-          const visualizations = parseVisualizations(charts.place(input.visualizations?.items, imports), draft.blocks.length);
+          const visualizations = parseVisualizations(charts.place(input.visualizations?.items), draft.blocks.length);
           const available = files.visualizationEvidence();
           const calculationIds = new Set((visualizations?.items ?? []).flatMap((spec) => spec.source.kind === "attachment" ? spec.source.calculationIds : []));
           const calculations = available.calculations.filter((item) => calculationIds.has(item.id));
-          const chartViews = (visualizations?.items ?? []).map((spec) => resolveConversationVisualization(spec, { ...draft, calculations, sources: files.sources(), databaseAnswers }));
+          const chartViews = (visualizations?.items ?? []).map((spec) => resolveConversationVisualization(spec, { ...draft, calculations, sources: files.sources() }));
           const ids = new Set([...draft.blocks.flatMap((block) => block.sourceIds), ...chartViews.flatMap((chart) => chart.sourceIds)]); const sources = files.sources().filter((source) => ids.has(source.id));
           lastDraft = { ...input, ...draft }; hardDraftValidated = true; fallback = { draft, sources, visualizations, calculations };
           if (timeSpent() || reviewsExhausted()) { revisedAfterReviews = reviewsExhausted(); finishAnswer(); return result({ accepted: false, issues: ["已按现有稿交付"] }); }

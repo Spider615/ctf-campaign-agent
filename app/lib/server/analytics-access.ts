@@ -1,4 +1,10 @@
 import { AnalyticsError } from "./analytics-store.ts";
+import { RETIRED_ANALYSIS_ANSWER_SCHEMA } from "../analytics/analysis-v2-types.ts";
+
+// 旧页面仍发 v2 头时直接提示刷新，不静默降级为旧版回答。
+export function rejectStaleAnswerSchema(request: Request) {
+  if (request.headers.get("X-Analytics-Answer-Schema") === RETIRED_ANALYSIS_ANSWER_SCHEMA) throw new AnalyticsError("页面版本已更新，请刷新页面后重试", 400);
+}
 
 export function analyticsAccess(request: Request, bootstrap = false) {
   if (!["GET", "HEAD"].includes(request.method)) {

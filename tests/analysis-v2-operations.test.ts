@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import type { AnalyticsDataset, SalesRow } from "../app/lib/analytics/types.ts";
-import type { AnalysisAggregateCell, AnalysisDataSession, AnalysisDraft, AnalysisOperationRequest, AnalysisOperationResult, AnalysisScope, AnalysisTask } from "../app/lib/analytics/analysis-v2-types.ts";
+import type { AnalysisAggregateCell, AnalysisDataSession, AnalysisOperationRequest, AnalysisOperationResult, AnalysisScope } from "../app/lib/analytics/analysis-v2-types.ts";
 
 const before = { start: "2025-08-01", end: "2025-08-01" };
 const after = { start: "2025-08-02", end: "2025-08-02" };
@@ -43,10 +43,10 @@ test("分组概览优先交付主要经营样本，完整小样本与缺失值�
   const f = await setup([row({ campaignId: "A-小样本", orderId: "small", netSales: 5 }), row({ campaignId: "Z-主要样本", orderId: "large", netSales: 2000 })]);
   try {
     const result = await f.operations.execute(request({ by: ["offer"], metrics: ["amount", "orders"] }));
-    const { analysisEvidencePage } = await import("../agent/analytics-evidence-context.ts");
-    const page = analysisEvidencePage(result, { limit: 2, includeParents: false });
-    assert.equal(page.objects[0].value, "Z-主要样本");
-    assert.equal(page.facts.find((value) => value.metricId === "amount")!.value, 2000);
+    // 计算层按经营规模排序交付：第一条分组事实就是主要样本。
+    const first = result.facts[0];
+    assert.equal(result.objects.find((object) => object.id === first.objectIds[0])?.value, "Z-主要样本");
+    assert.equal(result.facts.find((value) => value.metricId === "amount")!.value, 2000);
     assert.equal(result.methods[0].groupCount, 2);
     assert.ok(result.facts.some((value) => value.value === 5));
   } finally { await f.session.close(); }
@@ -86,11 +86,10 @@ test("全分组扫描优先交付偏离候选，第一页也保留全量参照�
     assert.equal(scanned.facts[0].metricId, "amount.relative_deviation");
     assert.equal(scanned.facts[0].value, 150);
     assert.equal(scanned.objects.find((object) => object.id === scanned.facts[0].objectIds[0])?.value, "A");
-    const { analysisEvidencePage } = await import("../agent/analytics-evidence-context.ts");
-    const page = analysisEvidencePage(scanned, { limit: 1 });
-    assert.equal(page.paging.totalFacts, scanned.facts.length);
-    assert.ok(page.facts.some((item) => item.value === 1200), "全范围金额保留为候选偏离的真实父事实");
-    assert.equal(page.directory[0].groupCount, 3);
+    const { analysisFactParents } = await import("../app/lib/analytics/analysis-v2-fact-links.ts");
+    const index = new Map(scanned.facts.map((item) => [item.id, item])); const chain = new Set<string>(); const queue = [scanned.facts[0]];
+    while (queue.length) { const item = queue.pop()!; if (chain.has(item.id)) continue; chain.add(item.id); for (const id of analysisFactParents(item)) { const parent = index.get(id); if (parent) queue.push(parent); } }
+    assert.ok([...chain].some((id) => index.get(id)!.value === 1200), "全范围金额保留为候选偏离的真实父事实");
   } finally { await f.session.close(); }
 });
 
@@ -363,7 +362,9 @@ test("控制层充分统计量保留跨子组同单、缺指标和缺控制值�
   const direct = await createAnalysisOperations(session, { filters: {} }).execute({ ...input, commonStores: true });
   const inspect = (result: AnalysisOperationResult) => result.facts.map((value) => ({ metric: value.metricId, label: value.label, objects: scanObjects(result, value), value: value.value }));
   assert.deepEqual(inspect(optimized), inspect(direct));
-  assert.equal(fact(optimized, "amount", "父组").value, null); assert.equal(fact(optimized, "orders", "父组").value, null);
+  // 缺单号的行不计入订单，并在订单事实上注明排除行数，不让整体订单数失效。
+  assert.equal(fact(optimized, "amount", "父组").value, null); assert.equal(fact(optimized, "orders", "父组").value, 8);
+  assert.ok(fact(optimized, "orders", "父组").limitations.some((text) => /1 行缺店号或销售单号/.test(text)));
   assert.ok(optimized.facts.filter((value) => value.metricId === "amount_per_order.relative_deviation").every((value) => value.value !== null));
   assert.ok(optimized.methods[0].checks.some((check) => check.name === "参与样本" && /参照参与 16 \/ 17 行/.test(check.result)));
   await f.session.close();
@@ -645,16 +646,14 @@ test("每单均额也按实际订单权重标准化，raw不能借分类控制�
   const adjusted = fact(result, "amount_per_order.standardized_delta"); assert.ok(Math.abs(adjusted.value! + 1.9) < 1e-12); assert.equal(adjusted.comparisonRole, "standardized"); assert.deepEqual(adjusted.comparisonControls, ["category"]);
 });
 
-test("操作事实经registry往返后，描述比率结论被拒、实际标准化结论通过", async () => {
-  const { createEvidenceRegistry, validateAnalysisDraft } = await import("../app/lib/analytics/analysis-v2-evidence.ts"); const operations = await priceMixOperations();
+test("操作事实经registry往返后保留描述与标准化比较角色", async () => {
+  const { createEvidenceRegistry } = await import("../app/lib/analytics/analysis-v2-evidence.ts"); const operations = await priceMixOperations();
   const result = await operations.execute(request({ method: "compare", metrics: ["amount_per_gram"], controls: ["category", "material"], reference: { period: before, population: "sales", filters: {} } }));
   const registry = createEvidenceRegistry(); registry.ingest(result); const evidence = registry.bundle();
   const raw = fact(result, "amount_per_gram.delta"); const adjusted = fact(result, "amount_per_gram.standardized_delta");
   assert.equal(evidence.facts.find((f) => f.id === raw.id)?.comparisonRole, "descriptive");
-  const task: AnalysisTask = { runId: "ratio-review", question: "控制品类和材料后单位实收如何变化", context: [], needs: [{ id: "need-1", userQuote: "单位实收如何变化", judgement: "解释可比的单位实收差异", status: "open", conclusionIds: [] }], hardScope: { filters: {} }, assumptions: [] };
-  const draft = (factId: string): AnalysisDraft => ({ status: "answered", conclusions: [{ id: "conclusion-1", needIds: ["need-1"], level: "comparison_supported", judgement: "控制后的单位实收变低", factIds: [factId], objectIds: [], methodIds: [result.methods[0].id], limitations: [] }], blocks: [{ kind: "paragraph", conclusionId: "conclusion-1", nodes: [{ kind: "text", text: "控制后的单位实收差为" }, { kind: "fact_ref", factId }] }], questions: [], userConditions: [], trialParameters: [], coverage: [{ needId: "need-1", status: "supported", reason: "实际可比差异已经计算" }] });
-  const wrong = validateAnalysisDraft(task, draft(raw.id), evidence); assert.equal(wrong.valid, false); assert.ok(wrong.issues.some((v) => v.kind === "invalid_comparison"));
-  const correct = validateAnalysisDraft(task, draft(adjusted.id), evidence); assert.equal(correct.valid, true, correct.issues.map((v) => v.requirement).join("；"));
+  assert.equal(evidence.facts.find((f) => f.id === adjusted.id)?.comparisonRole, "standardized");
+  assert.deepEqual(evidence.facts.find((f) => f.id === adjusted.id)?.comparisonControls, ["category", "material"]);
 });
 
 function scanFixtureRows(reference = false): SalesRow[] {
@@ -760,4 +759,18 @@ test("target与reference口径不同是可修错误，不能读取后偷偷解�
   assert.equal(reads, 0); assert.deepEqual(input, original);
   const repaired = await f.operations.execute({ ...input, reference: { ...input.reference!, population: "net" } }); assert.equal(fact(repaired, "amount.delta").value, -20); assert.ok(repaired.frames.every((frame) => frame.scope.population === "net"));
   const decomposition = await f.operations.execute({ ...input, method: "decompose", reference: { ...input.reference!, population: "net" } }); assert.equal(fact(decomposition, "amount.decomposed_change").value, -20);
+});
+
+test("分组汇总登记去重计数为实测事实，回答「有多少个活动」不用借情景假设", async () => {
+  const f = await setup([row({ campaignId: "国庆", orderId: "1" }), row({ campaignId: "国庆", orderId: "2" }), row({ campaignId: "中秋", orderId: "3" }), row({ campaignId: "七夕", orderId: "4", store: "B" })]);
+  try {
+    const result = await f.operations.execute(request({ by: ["offer"], metrics: ["rows"] }));
+    const count = fact(result, "distinct_count");
+    assert.equal(count.value, 3); assert.equal(count.unit, "个"); assert.equal(count.label, "优惠个数");
+    assert.equal(count.assumption, undefined); assert.equal(count.derivation, undefined);
+    const { validateAnalysisEvidence } = await import("../app/lib/analytics/analysis-v2-evidence.ts");
+    assert.doesNotThrow(() => validateAnalysisEvidence({ frames: result.frames, objects: result.objects, methods: result.methods, facts: result.facts }));
+    const total = await f.operations.execute(request({ metrics: ["rows"] }));
+    assert.ok(!total.facts.some((value) => value.metricId === "distinct_count"), "不分组时没有分组个数");
+  } finally { await f.session.close(); }
 });

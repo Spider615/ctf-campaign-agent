@@ -1,4 +1,5 @@
 import { ANALYSIS_DIMENSIONS, type AnalysisEvidence, type AnalysisFrame } from "./analysis-v2-types.ts";
+import { ANALYSIS_METRICS, SEMANTIC_DIMENSIONS, SEMANTIC_METRICS } from "./semantic/model.ts";
 import { VISUALIZATION_SCHEMA, VISUALIZATION_LIMITS, type AttachmentCalculation, type ResolvedVisualization, type VisualizationFileSource, type Visualizations, type VisualizationSpec, type VisualizationValue } from "./visualization-types.ts";
 import { analysisFactParents } from "./analysis-v2-fact-links.ts";
 import { validateAnalysisEvidence } from "./analysis-v2-evidence.ts";
@@ -10,8 +11,8 @@ function object(value: unknown, keys: string[]): Record<string, unknown> { if (!
 function text(value: unknown, max = 120): string { return typeof value === "string" && value.trim() && value.length <= max ? value : fail("引用不正确"); }
 function integer(value: unknown, min: number, max: number): number { return Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max ? Number(value) : fail("数量或位置不正确"); }
 function ids(value: unknown, max = 2000): string[] { if (!Array.isArray(value) || !value.length || value.length > max) fail("引用集合不正确"); const result = (value as unknown[]).map((v) => text(v)); if (new Set(result).size !== result.length) fail("引用重复"); return result; }
-const dimensionLabels: Record<string, string> = { store: "门店", region: "大区", district: "分区", category: "货类", material: "材料", offer: "活动", memberFlag: "会员标识", storeType: "门店类型", cityTier: "城市层级", mallGroup: "商场", day: "日期", sku: "货品", memberSegment: "会员分组", period: "周期" };
-const metricLabels: Record<string, string> = { amount: "销售金额", quantity: "销售件数", grams: "销售克重", profit: "源字段零售毛利", orders: "当前筛选内订单数", stores: "观察门店数", rows: "记录数", tag_amount: "牌价金额", amount_per_order: "当前筛选内每单金额", amount_per_gram: "每克实收", gap_per_gram: "每克牌价与实收差额" };
+const dimensionLabels: Record<string, string> = { ...Object.fromEntries(ANALYSIS_DIMENSIONS.map((dimension) => [dimension, SEMANTIC_DIMENSIONS[dimension].label])), period: "周期" };
+const metricLabels: Record<string, string> = Object.fromEntries(ANALYSIS_METRICS.map((metric) => [metric, SEMANTIC_METRICS[metric].label]));
 const populationLabels: Record<string, string> = { sales: "销售正金额行", net: "销售与退货净额", recovery: "回收抵扣候选", returns: "退货", zero_sales: "零元销售", unknown: "口径待确认" };
 const additive = new Set(["amount", "quantity", "grams", "profit", "rows", "tag_amount"]);
 function realDate(value: string): boolean { const time = Date.parse(`${value}T00:00:00Z`); return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value; }

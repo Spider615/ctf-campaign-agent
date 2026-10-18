@@ -1,16 +1,9 @@
-import type { AnalysisAnswer } from "../../app/lib/analytics/analysis-v2-types.ts";
+import { RETIRED_ANALYSIS_ANSWER_SCHEMA, type AnalysisEvidence } from "../../app/lib/analytics/analysis-v2-types.ts";
 
-// 脚本化复核的合同夹具；真实语义质量不由该夹具评分，缺项拒绝由独立运行时测试覆盖。
-export const simulatedDecisionQuality = {
-  directAnswer: { status: "supported" as const, reason: "合成回合已核对原问题与开头的回答" },
-  evidenceFit: { status: "supported" as const, reason: "合成回合已核对所引对象、范围及方法的适用性" },
-  actionValue: { status: "supported" as const, reason: "合成回合已核对建议与目标和依据的联系" },
-};
-
-// 专用合成数据；不包含客户真实经营信息。
-export function simulatedAnswer(): AnalysisAnswer {
+// 旧会话里存着的 v2 答案（合同已退役，只用于测试恢复时降级为纯文字）；专用合成数据，不含客户真实经营信息。
+export function storedV2Answer() {
   return {
-    schema: "analysis-answer/v2", status: "answered",
+    schema: RETIRED_ANALYSIS_ANSWER_SCHEMA, status: "answered",
     task: {
       runId: "synthetic-run", question: "先核对哪些门店？", context: [], hardScope: { filters: {} }, assumptions: [],
       needs: [{ id: "need", userQuote: "先核对哪些门店", judgement: "识别值得核对的对象", status: "supported", conclusionIds: ["conclusion"] }],
@@ -33,9 +26,5 @@ export function simulatedAnswer(): AnalysisAnswer {
   };
 }
 
-// 复现全量扫描留下大量方法检查、最终回答超过单条流消息上限的情况。
-export function largeSimulatedAnswer(): AnalysisAnswer {
-  const answer = simulatedAnswer();
-  answer.evidence.methods[0].checks = Array.from({ length: 29046 }, (_, index) => ({ name: "参与样本", status: "performed", result: `模拟分组 ${index}：共同控制分层与参照权重均已核对；保留原文、引号\"、反斜杠\\及补充字符😀，不删除重复检查。` }));
-  return answer;
-}
+// 带门店对象的证据图（证据合同 v2 与 v3 共用），供图表用例按门店维度画图。
+export const storeChartEvidence = (): AnalysisEvidence => storedV2Answer().evidence as AnalysisEvidence;

@@ -2,7 +2,7 @@
 
 import { Loader2, PanelRight } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -16,12 +16,14 @@ import {
   ApiError,
   fetchSnapshot,
   notifySessionsChanged,
+  notifySessionUpdated,
   postTurn,
   postTurnStream,
   SESSION_UPDATED,
   type TurnBody,
 } from "../../lib/client/api";
 import { appendLiveReply, emptyLiveReply } from "../../lib/client/live-reply";
+import { campaignLiveTurn, campaignTurns, newerSnapshot } from "../../lib/client/background-turns";
 import { createTurnOwnership, type TurnOwner } from "../../lib/client/turn-ownership";
 import { reconcileSubmittedText, turnWasCommitted } from "../../lib/client/turn-result";
 import { CAMPAIGN_STAGE_LABEL, DEFAULT_WORKSPACE_TAB } from "../../lib/client/campaign-workspace";
@@ -67,6 +69,8 @@ const XL = "(min-width: 1280px)";
 const SHEET_PANEL_ID = "sheet";
 const LAYOUT_KEY = "ics1811-panel-layout";
 const EMPTY_ADDITIONAL_MESSAGES: readonly AdditionalChatMessage[] = [];
+const NO_TRACE: AgentTraceEvent[] = [];
+const EMPTY_LIVE_REPLY = emptyLiveReply();
 
 // 宽度自己存。不能用库的 useDefaultLayout / usePanelRef：它们是裸 hook，会在 RSC/SSR 渲染
 // 这个组件时执行，打到空的 React dispatcher，整个会话页 500（已用二分确认）。
@@ -98,21 +102,22 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "legacy" | "error">("loading");
-  const [busy, setBusy] = useState<TurnKind | null>(null);
-  const [stopping, setStopping] = useState(false);
   const [interpretationStopped, setInterpretationStopped] = useState(false);
   const [inFlightTurn] = useState(() => createTurnOwnership(sessionId));
   const [turnLease] = useState(createClientTurnLease);
   // 渲染时就更换代次，关闭会话切换到 Effect 清理之间的旧闭包窗口。
   const sessionOwner = inFlightTurn.visit(sessionId);
-  const activeTurn = useRef<{ owner: TurnOwner; controller: AbortController; kind: TurnKind } | null>(null);
+  // 进行中的回合登记在模块里（background-turns.ts），不随组件卸载中止：切走后接着跑完落库，切回来接着看实时进度。
+  const liveTurn = useSyncExternalStore(campaignTurns.subscribe, () => campaignTurns.get(sessionId), () => undefined);
+  const busy: TurnKind | null = liveTurn?.state.kind ?? null;
+  const stopping = liveTurn?.state.stopping ?? false;
+  const pendingText = liveTurn?.state.pendingText ?? null;
+  const pendingAt = liveTurn?.state.pendingAt ?? null;
+  const liveTrace: AgentTraceEvent[] = liveTurn?.state.trace ?? NO_TRACE;
+  const liveReply = liveTurn?.state.reply ?? EMPTY_LIVE_REPLY;
+  const livePhase = liveTurn?.state.phase ?? null;
+  const runStartedAt = liveTurn?.state.startedAt ?? null;
   const autoStarted = useRef<string | null>(null);
-  const [pendingText, setPendingText] = useState<string | null>(null);
-  const [pendingAt, setPendingAt] = useState<string | null>(null);
-  const [liveTrace, setLiveTrace] = useState<AgentTraceEvent[]>([]);
-  const [liveReply, setLiveReply] = useState(emptyLiveReply);
-  const [livePhase, setLivePhase] = useState<"analyzing" | "writing" | null>(null);
-  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [input, setInput] = useState("");
   const attachments = useAttachmentDraft(attachmentConversationId ?? sessionId);
   const fileChat = useAttachmentChat(sessionId);
@@ -131,28 +136,22 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
   const stateOf = (caught: unknown) => (caught instanceof ApiError && caught.status === 404 ? "missing" : caught instanceof ApiError && caught.status === 410 ? "legacy" : "error");
 
   const stopGeneration = useCallback(() => {
-    const current = activeTurn.current;
-    if (!current || !inFlightTurn.ownsTurn(current.owner) || current.controller.signal.aborted) return;
-    setStopping(true);
-    current.controller.abort();
-    setPendingText(null);
-    setPendingAt(null);
-    setLiveTrace([]);
-    setLiveReply(emptyLiveReply());
-    setLivePhase(null);
-    setRunStartedAt(null);
-    if (current.kind === "interpret") setInterpretationStopped(true);
-  }, [inFlightTurn]);
+    const current = campaignTurns.get(sessionId);
+    if (!current || current.controller.signal.aborted) return;
+    // 停止后登记保留到请求自己收尾，期间仍算忙，免得新回合和正在取消的回合抢同一个版本号。
+    campaignTurns.abort(sessionId, {
+      keep: true,
+      change: (state) => ({ ...state, stopping: true, pendingText: null, pendingAt: null, trace: [], reply: emptyLiveReply(), phase: null, startedAt: null }),
+    });
+    if (current.state.kind === "interpret") setInterpretationStopped(true);
+  }, [sessionId]);
 
   useEffect(() => {
     inFlightTurn.activate(sessionOwner);
     autoStarted.current = null;
     // 路由用 key={id} 隔离会话，界面状态由新实例的 useState 初始值重置。
+    // 卸载（切到别的会话）不中止进行中的回合，只让这个实例不再改界面。
     return () => {
-      if (activeTurn.current?.owner.generation === sessionOwner.generation) {
-        activeTurn.current.controller.abort();
-        activeTurn.current = null;
-      }
       inFlightTurn.deactivate(sessionOwner);
     };
   }, [inFlightTurn, sessionOwner]);
@@ -176,7 +175,8 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
     fetchSnapshot(sessionId)
       .then((next) => {
         if (cancelled || !inFlightTurn.ownsSession(sessionOwner)) return;
-        setSnapshot(next);
+        // 后台回合可能在这次读取期间落库并推来更新的快照，不能被这次较早的读取盖回去。
+        setSnapshot((current) => newerSnapshot(current, next));
         setLoadState("ready");
       })
       .catch((caught: unknown) => {
@@ -204,88 +204,76 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
   }, [messageCount, busy, liveTrace.length, liveReply.text, loadState, extraMessages, fileChat.messages]);
 
   const send = async (body: TurnBody): Promise<{ snapshot: Snapshot; committed: boolean } | null> => {
-    if (!inFlightTurn.ownsSession(sessionOwner) || !snapshot || snapshot.session.id !== sessionId || busy || externalBusy) return null;
+    if (!inFlightTurn.ownsSession(sessionOwner) || !snapshot || snapshot.session.id !== sessionId || campaignTurns.has(sessionId) || externalBusy) return null;
     const streams = WAITING_KINDS.includes(body.type);
     const requestSessionId = sessionId;
-    const controller = streams ? new AbortController() : null;
-    const turn = inFlightTurn.begin(sessionOwner, controller?.signal);
+    const controller = new AbortController();
+    const turn = inFlightTurn.begin(sessionOwner, streams ? controller.signal : undefined);
     if (!turn) return null;
+    const entry = campaignTurns.begin(requestSessionId, campaignLiveTurn(body.type, streams, body.type === "text" ? body.text : undefined), controller);
+    if (!entry) {
+      inFlightTurn.finish(turn);
+      return null;
+    }
     const clientTurnId = turnLease.acquire(body);
-    if (controller) activeTurn.current = { owner: turn, controller, kind: body.type };
+    // 界面归属：这个组件实例还开着同一个会话。实时进度不看它，只看登记有没有被停止或替换。
     const ownsUi = () => inFlightTurn.ownsTurn(turn);
-    const isCurrent = () => inFlightTurn.isCurrent(turn);
-    setBusy(body.type);
+    const live = () => campaignTurns.isLive(requestSessionId, entry.token);
+    const patch = (change: Parameters<typeof campaignTurns.patch>[2]) => {
+      if (live()) campaignTurns.patch(requestSessionId, entry.token, change);
+    };
     onBusyChange?.(true);
     setError("");
-    if (body.type === "text") {
-      setPendingText(body.text);
-      setPendingAt(new Date().toISOString());
-    }
-    if (streams) {
-      setLiveTrace([]);
-      setLiveReply(emptyLiveReply());
-      setLivePhase("analyzing");
-      setRunStartedAt(Date.now());
-    }
     try {
       const payload = { ...body, expectedSeq: snapshot.latest.seq, clientTurnId };
       const next = streams
         ? await postTurnStream(requestSessionId, payload, {
-            onTrace: (event) => {
-              if (isCurrent()) setLiveTrace((current) => mergeTraceEvent(current, event));
-            },
-            onPhase: (phase) => {
-              if (isCurrent()) setLivePhase(phase);
-            },
+            onTrace: (event) => patch((state) => ({ ...state, trace: mergeTraceEvent(state.trace, event) })),
+            onPhase: (phase) => patch((state) => ({ ...state, phase })),
             onTextDelta: (delta) => {
-              if (!isCurrent()) return;
               const arrivedAt = new Date().toISOString();
-              setLiveReply((current) => appendLiveReply(current, delta, arrivedAt));
+              patch((state) => ({ ...state, reply: appendLiveReply(state.reply, delta, arrivedAt) }));
             },
-            onTextReset: () => {
-              if (isCurrent()) setLiveReply(emptyLiveReply());
-            },
-          }, controller?.signal)
+            onTextReset: () => patch((state) => ({ ...state, reply: emptyLiveReply() })),
+          }, controller.signal)
         : await postTurn(requestSessionId, payload);
       turnLease.complete(clientTurnId);
-      if (!isCurrent()) return null;
+      if (controller.signal.aborted) return null;
+      notifySessionsChanged();
+      if (!ownsUi()) {
+        // 用户已经切走：结果已落库，通知可能已切回来的新界面重新读取。
+        notifySessionUpdated(requestSessionId);
+        return null;
+      }
       setSnapshot(next);
       if (next.flow.pendingInterpretation === false) setInterpretationStopped(false);
-      notifySessionsChanged();
       return {
         snapshot: next,
         committed: turnWasCommitted(next, clientTurnId, body.type === "text" ? body.text : undefined),
       };
     } catch (caught) {
-      if (isTurnCancelled(caught) || controller?.signal.aborted) {
+      if (isTurnCancelled(caught) || controller.signal.aborted) {
         if (ownsUi() && body.type === "interpret") setInterpretationStopped(true);
         return null;
       }
-      if (ownsUi()) {
-        if (caught instanceof ApiError && caught.status === 409) {
-          const reconciled = await load(turn);
-          if (reconciled) turnLease.complete(clientTurnId);
-          return reconciled ? {
-            snapshot: reconciled,
-            committed: turnWasCommitted(reconciled, clientTurnId, body.type === "text" ? body.text : undefined),
-          } : null;
-        }
-        setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
+      if (!ownsUi()) {
+        // 不在场时失败：Agent 失败会落一条可重试的消息，让切回来的界面读到它。
+        notifySessionUpdated(requestSessionId);
+        return null;
       }
+      if (caught instanceof ApiError && caught.status === 409) {
+        const reconciled = await load(turn);
+        if (reconciled) turnLease.complete(clientTurnId);
+        return reconciled ? {
+          snapshot: reconciled,
+          committed: turnWasCommitted(reconciled, clientTurnId, body.type === "text" ? body.text : undefined),
+        } : null;
+      }
+      setError(caught instanceof Error ? caught.message : "没保存成功，可以重试");
       return null;
     } finally {
-      if (inFlightTurn.finish(turn)) {
-        if (activeTurn.current?.owner.token === turn.token) activeTurn.current = null;
-        setStopping(false);
-        setBusy(null);
-        onBusyChange?.(false);
-        setPendingText(null);
-        setPendingAt(null);
-        setLiveTrace([]);
-        setLiveReply(emptyLiveReply());
-        setLivePhase(null);
-        setRunStartedAt(null);
-      }
+      campaignTurns.end(requestSessionId, entry.token);
+      if (inFlightTurn.finish(turn)) onBusyChange?.(false);
     }
   };
 

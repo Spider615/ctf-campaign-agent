@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { AgentQuery } from "../agent/run-turn.ts";
 import type { SDKMessage } from "../agent/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts";
 import { visualizationHtml, visualizationSvg } from "../app/lib/analytics/visualization-html.ts";
-import { simulatedAnswer } from "./helpers/analysis-v2-answer.ts";
+import { simulatedPlanAnswer } from "./helpers/plan-answer.ts";
 
 const attachmentId = "11111111-1111-4111-8111-111111111111";
 const scope = { owner: attachmentId, conversationId: "22222222-2222-4222-8222-222222222222" };
@@ -104,39 +104,36 @@ test("文件 MCP 回合把图表实际数据交给独立复核，最终保留计
   assert.ok(events.some((event) => (event as { type: string }).type === "visualization"));
 });
 
-test("混合文件回合只放置明确引用的经营图，最终段落复核看到相同图文与全量数据", async (t) => {
+test("混合文件回合记录经营数据来源，但经营答案的图不再导入文件回答", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "ctf-mixed-chart-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const summary = { id: attachmentId, version: "a".repeat(64), name: "合成.csv", status: "ready", entries: [], warnings: [] };
   const document = { tables: [], blocks: [], images: [] };
   const store = { document: async () => ({ summary, document }), get: async () => summary, onRemove: () => () => {} } as unknown as AttachmentStore;
-  const database = simulatedAnswer();
-  database.visualizations = { schema: "analysis-visualization/v1", items: ["amount", "profit"].map((metricId, index) => ({ id: `database-chart-${index}`, revision: 1, kind: "bar", renderer: "native", afterBlockIndex: index, conclusionId: "conclusion", source: { kind: "analysis", operationId: "operation", metricId, dimension: "store" }, selection: { mode: "all" } })) };
-  let reviewed = false;
+  const database = simulatedPlanAnswer();
+  let reviewed = false; let rejectedImport = "";
   const query: AgentQuery = async function* ({ options }) {
     const review = Boolean(options?.mcpServers?.attachment_review); const server = options!.mcpServers![review ? "attachment_review" : "attachments"]; assert.ok("instance" in server);
     const [a, b] = InMemoryTransport.createLinkedPair(); const client = new Client({ name: "混合图表回合", version: "1" }); await server.instance.connect(b); await client.connect(a);
-    const call = async (name: string, args: Record<string, unknown> = {}) => { const result = await client.callTool({ name, arguments: args }); assert.notEqual(result.isError, true, JSON.stringify(result)); return JSON.parse((result.content as Array<{ text: string }>)[0].text); };
+    const call = async (name: string, args: Record<string, unknown> = {}, allowError = false) => { const result = await client.callTool({ name, arguments: args }); if (!allowError) assert.notEqual(result.isError, true, JSON.stringify(result)); return JSON.parse((result.content as Array<{ text: string }>)[0].text); };
     try {
       if (review) {
-        const first = await call("read_attachment_review", { blockIndex: 0 }); assert.equal(first.visualizations.length, 0);
         const second = await call("read_attachment_review", { blockIndex: 1 });
-        assert.equal(second.visualizations.length, 1); assert.equal(second.visualizations[0].id, "database-chart-0");
-        assert.equal(second.visualizations[0].afterBlockIndex, 1); assert.equal(second.visualizations[0].series[0].values[0].exact, "1234.56");
-        assert.equal(second.block.text, "历史经营数据的金额比较见图，先核对口径。"); reviewed = true;
-        await call("submit_attachment_review", { verdict: "accept", checks: [0, 1].map((blockIndex) => ({ blockIndex, sourceIds: ["s1"], verdict: "supported", reason: "已核对该段与明确关联的经营图，没有插入未引用图表" })) });
+        assert.equal(second.visualizations.length, 0); assert.equal(second.block.text, "历史经营数据的金额见来源，先核对口径。"); reviewed = true;
+        await call("submit_attachment_review", { verdict: "accept", checks: [0, 1].map((blockIndex) => ({ blockIndex, sourceIds: ["s1"], verdict: "supported", reason: "已核对该段与经营数据来源" })) });
       } else {
-        await call("analyze_attachment_history", { focus: "核对同范围历史金额" });
-        const accepted = await call("submit_attachment_answer", { status: "answered", blocks: [{ text: "当前资料需要结合相同范围的历史经营数据核对。", sourceIds: ["s1"] }, { text: "历史经营数据的金额比较见图，先核对口径。", sourceIds: ["s1"] }], limitations: [], visualizations: { schema: "analysis-visualization/v1", items: [{ id: "database-chart-0", afterBlockIndex: 1 }] } });
+        const history = await call("analyze_attachment_history", { focus: "核对同范围历史金额" }); assert.equal(history.answer.runId, database.runId);
+        const imported = await call("submit_attachment_answer", { status: "answered", blocks: [{ text: "当前资料需要结合相同范围的历史经营数据核对。", sourceIds: ["s1"] }, { text: "历史经营数据的金额见来源，先核对口径。", sourceIds: ["s1"] }], limitations: [], visualizations: { schema: "analysis-visualization/v1", items: [{ id: "database-chart-0", afterBlockIndex: 1 }] } }, true);
+        rejectedImport = String(imported.error ?? "");
+        const accepted = await call("submit_attachment_answer", { status: "answered", blocks: [{ text: "当前资料需要结合相同范围的历史经营数据核对。", sourceIds: ["s1"] }, { text: "历史经营数据的金额见来源，先核对口径。", sourceIds: ["s1"] }], limitations: [] });
         assert.equal(accepted.accepted, true);
       }
       yield { type: "result", subtype: "success", is_error: false, result: "" } as SDKMessage;
     } finally { await client.close(); }
   };
   const answer = await createConversationRunner({ model: "test", apiKey: "test", modelBaseUrl: "https://example.invalid", runtimeDir: directory, pluginDir: join(process.cwd(), "agent/analytics-plugin"), store, runAnalytics: async () => database }, { query })(scope, { conversationId: scope.conversationId, question: "结合资料核对历史金额", history: [], attachmentIds: [attachmentId] }, undefined, undefined, "analysis-visualization/v1");
-  assert.ok(reviewed); assert.equal(answer.visualizations?.items.length, 1); assert.equal(answer.visualizations?.items[0].afterBlockIndex, 1);
-  assert.match(conversationAnswerText(answer), /1234\.56/); assert.doesNotMatch(conversationAnswerText(answer), /成本 · 按门店/);
-  const changed = structuredClone(answer); changed.visualizations!.items[0].selection = { mode: "top", limit: 1 };
-  assert.throws(() => validateConversationAnswer(changed), /图表|引用|经营/);
+  assert.ok(reviewed); assert.ok(rejectedImport, "引用经营答案的图必须被拒绝"); assert.equal(answer.visualizations, undefined);
+  assert.equal(answer.databaseAnswers?.[0].runId, database.runId); assert.equal(answer.sources[0].databaseRunId, database.runId);
+  assert.match(conversationAnswerText(answer), /核对口径/);
 });
 
 test("文件高精度小数按精确值排序，图形使用受限近似坐标，提示表格和复制保留原值", async () => {

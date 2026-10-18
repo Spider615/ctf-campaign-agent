@@ -25,7 +25,7 @@ function cellsFor(rows: SalesRow[], by: Array<AnalysisDimension | "order">): Ana
     };
     return { dimensions, rows: selected.length, amount: total((row) => row.netSales, true), quantity: total((row) => row.quantity), grams: total((row) => row.weightGrams),
       profit: selected.every((row) => row.cost !== null) ? selected.reduce((sum, row) => sum + analysisMoneyCents(row.netSales) - analysisMoneyCents(row.cost!), 0) / 100 : null,
-      orders: selected.every((row) => orderKey(row)) ? new Set(selected.map(orderKey)).size : null,
+      orders: new Set(selected.map(orderKey).filter(Boolean)).size, orderMissingRows: selected.filter((row) => !orderKey(row)).length,
       stores: selected.every((row) => row.store?.trim()) ? new Set(selected.map((row) => row.store)).size : null, tag_amount: null };
   });
 }

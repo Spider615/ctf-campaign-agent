@@ -8,7 +8,7 @@ import { createAttachmentStore } from "../agent/attachments/store.ts";
 import { createAttachmentsHttpHandler, type ConversationRunner } from "../agent/attachments/http.ts";
 import { createAgentHttpHandler } from "../agent/http-handler.ts";
 import { consumeAnalyticsStream } from "../app/lib/analytics/stream.ts";
-import { largeSimulatedAnswer } from "./helpers/analysis-v2-answer.ts";
+import { largeSimulatedPlanAnswer } from "./helpers/plan-answer.ts";
 
 const owner = "11111111-1111-4111-8111-111111111111"; const conversationId = "22222222-2222-4222-8222-222222222222";
 const headers = { authorization: "Bearer test", "x-attachments-owner": owner, "content-type": "application/octet-stream" };
@@ -52,7 +52,7 @@ test("超大文件、空文件与非法路径在上传入口明确拒绝", async
 });
 
 test("文件与经营数据混合回答的大证据也经统一分块完整交付", async (t) => {
-  const answer = { schema: "conversation-answer/v1" as const, status: "answered" as const, blocks: [{ text: "已核对文件与经营数据，具体口径见来源。", sourceIds: ["source"] }], limitations: [], sources: [{ id: "source", attachmentId: owner, version: "a".repeat(64), name: "模拟资料.custom", location: "文件正文", kind: "document" as const, excerpt: "已核对文件与经营数据，具体口径见来源。" }], databaseAnswers: [largeSimulatedAnswer()] };
+  const answer = { schema: "conversation-answer/v1" as const, status: "answered" as const, blocks: [{ text: "已核对文件与经营数据，具体口径见来源。", sourceIds: ["source"] }], limitations: [], sources: [{ id: "source", attachmentId: owner, version: "a".repeat(64), name: "模拟资料.custom", location: "文件正文", kind: "document" as const, excerpt: "已核对文件与经营数据，具体口径见来源。" }], databaseAnswers: [largeSimulatedPlanAnswer()] };
   const { base } = await start(t, async () => answer);
   const uploaded = await fetch(`${base}/attachments?conversationId=${conversationId}&name=example.custom`, { method: "POST", headers, body: "模拟文件正文" });
   const { attachment } = await uploaded.json() as { attachment: { id: string } }; answer.sources[0].attachmentId = attachment.id;

@@ -3,19 +3,18 @@ import test from "node:test";
 import { sampleDataset } from "../app/lib/analytics/sample.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
 import { createAnalysisOperations } from "../app/lib/analytics/analysis-v2-operations.ts";
-import { createEvidenceRegistry, selectAnalysisEvidence, validateAnalysisEvidence } from "../app/lib/analytics/analysis-v2-evidence.ts";
-import { simulateAnalysis } from "../agent/analytics-scenarios.ts";
+import { createEvidenceRegistry, validateAnalysisEvidence } from "../app/lib/analytics/analysis-v2-evidence.ts";
+import { simulatePlanScenario } from "../app/lib/analytics/plan/scenario.ts";
 import { resolveAnalysisVisualization } from "../app/lib/analytics/visualization.ts";
 import { visualizationHtml, visualizationSvg } from "../app/lib/analytics/visualization-html.ts";
-import { createVisualizationRegistry } from "../agent/visualization-runtime.ts";
 import { resolveVisualizationPreview } from "../app/lib/analytics/visualization-progress.ts";
-import type { VisualizationSpec, VisualizationProgressEvent } from "../app/lib/analytics/visualization-types.ts";
+import type { VisualizationSpec } from "../app/lib/analytics/visualization-types.ts";
 
 async function fixture(netVolumeChanges = ["-0.01", "0", "0.01", "0.03"]) {
   const dataset = sampleDataset(); const period = { start: dataset.minDate, end: dataset.maxDate };
   const session = await createSnapshotAnalysisProvider(dataset).open(); const registry = createEvidenceRegistry();
   const baseline = await createAnalysisOperations(session, { filters: {} }).execute({ needIds: ["need"], purpose: "基线", method: "aggregate", scope: { period, population: "sales", filters: {} }, metrics: ["amount"] }); registry.ingest(baseline);
-  const outcome = await simulateAnalysis({ needIds: ["need"], purpose: "优惠情景", baselineFactId: baseline.facts[0].id, adjustment: { kind: "per_item", amount: "0.005" }, netVolumeChanges, reason: "同结构、固定价格、排除成交挪动的假设" }, registry.view(), session, () => true); registry.ingest(outcome);
+  const outcome = await simulatePlanScenario({ id: "scenario", adjustment: { kind: "per_item", amount: "0.005" }, netVolumeChanges, reason: "同结构、固定价格、排除成交挪动的假设" }, baseline.facts[0].id, registry.view(), session); registry.ingest(outcome);
   const spec: VisualizationSpec = { id: "scenario-chart", revision: 1, kind: "line", renderer: "native", afterBlockIndex: 0, source: { kind: "scenario", operationId: outcome.operationId, metricId: "scenario.revenue_change" }, selection: { mode: "all" } };
   return { session, registry, baseline, outcome, spec };
 }
@@ -31,8 +30,7 @@ test("情景图只取受控计算的完整假设与结果，保留数值横轴�
     const xs = [...svg.matchAll(/<circle cx="([^"]+)"/g)].slice(0, 4).map((match) => Number(match[1]));
     assert.ok(Math.abs((xs[1] - xs[0]) / (xs[3] - xs[0]) - .25) < 1e-10, "横轴必须按真实比例间距，不按数组等距");
     assert.match(visualizationHtml(chart), /假设净成交量/);
-    const projected = selectAnalysisEvidence({ status: "answered", conclusions: [], blocks: [{ kind: "paragraph", nodes: [{ kind: "text", text: "条件情景见图" }] }], questions: [], userConditions: [], trialParameters: [], visualizations: { schema: "analysis-visualization/v1", items: [f.spec] } }, f.registry.view());
-    validateAnalysisEvidence(projected); assert.ok(projected.facts.some((item) => item.id === f.baseline.facts[0].id));
+    const checked = validateAnalysisEvidence(f.registry.bundle()); assert.ok(checked.facts.some((item) => item.id === f.baseline.facts[0].id));
   } finally { await f.session.close(); }
 });
 
@@ -51,14 +49,11 @@ test("错配情景、丢失父引用或伪造金额不能绘图，也不能覆�
   } finally { await f.session.close(); }
 });
 
-test("情景图预览与最终结果用同一证据合同，范围变更撤回旧图", async () => {
+test("旧会话保存的情景图预览恢复时按同一证据重新解析", async () => {
   const f = await fixture();
   try {
-    const events: VisualizationProgressEvent[] = []; const charts = createVisualizationRegistry({ runId: "run", enabled: true, analysisEvidence: () => f.registry.view(), emit: (event) => events.push(event) });
-    const created = charts.present({ kind: f.spec.kind, renderer: f.spec.renderer, source: f.spec.source, selection: f.spec.selection }); assert.equal(created.chart.categories.length, 4);
-    const event = events[0]; assert.equal(event.action, "upsert");
-    if (event.action === "upsert") assert.deepEqual(resolveVisualizationPreview(event.preview).series, created.chart.series);
-    charts.reset("scope_changed"); assert.equal(events.at(-1)!.action, "retract");
+    const chart = resolveAnalysisVisualization(f.spec, f.registry.view());
+    assert.deepEqual(resolveVisualizationPreview({ spec: f.spec, evidence: f.registry.bundle() }).series, chart.series);
   } finally { await f.session.close(); }
 });
 

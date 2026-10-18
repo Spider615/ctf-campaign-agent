@@ -1,6 +1,6 @@
-import { validateAnalysisAnswer } from "../analytics/analysis-v2-evidence.ts";
+import { validatePlanAnswer } from "../analytics/plan/answer.ts";
 import { isToolTrace } from "../tool-trace.ts";
-import { parseAttachmentCalculations, parseVisualizationSpec, parseVisualizations, resolveAnalysisVisualization, resolveAttachmentVisualization, visualizationText } from "../analytics/visualization.ts";
+import { parseAttachmentCalculations, parseVisualizations, resolveAttachmentVisualization, visualizationText } from "../analytics/visualization.ts";
 import type { ResolvedVisualization, VisualizationSpec } from "../analytics/visualization-types.ts";
 import { CONVERSATION_ANSWER_SCHEMA, validAttachmentId, type AttachmentSource, type ConversationAnswer, type ConversationDraft, type ConversationRequest } from "./types.ts";
 
@@ -110,15 +110,11 @@ export function validateConversationDraft(value: unknown, sources: readonly Atta
   return { status: value.status as ConversationDraft["status"], blocks, limitations };
 }
 
-export function resolveConversationVisualization(spec: VisualizationSpec, answer: Pick<ConversationAnswer, "blocks" | "sources" | "calculations" | "databaseAnswers">): ResolvedVisualization {
+export function resolveConversationVisualization(spec: VisualizationSpec, answer: Pick<ConversationAnswer, "blocks" | "sources" | "calculations">): ResolvedVisualization {
   if (spec.conclusionId) fail("文件图表不能引用不存在的分析结论");
   if (spec.source.kind === "attachment") return resolveAttachmentVisualization(spec, answer.calculations ?? [], answer.sources);
-  const matches = (answer.databaseAnswers ?? []).flatMap((database) => (database.visualizations?.items ?? []).filter((original) => original.id === spec.id && JSON.stringify(parseVisualizationSpec({ ...original, afterBlockIndex: spec.afterBlockIndex, conclusionId: undefined })) === JSON.stringify(parseVisualizationSpec(spec))).map(() => database));
-  if (matches.length !== 1) fail("经营图表必须引用已通过核验的原图，不能修改数据或选择范围");
-  const database = matches[0]; const block = answer.blocks[spec.afterBlockIndex];
-  if (!block?.sourceIds.some((id) => answer.sources.some((source) => source.id === id && source.kind === "database" && source.databaseRunId === database.task.runId))) fail("经营图表没有关联本段实际引用的经营范围");
-  const chart = resolveAnalysisVisualization(spec, database.evidence);
-  return { ...chart, sourceIds: answer.sources.filter((source) => source.databaseRunId === database.task.runId && chart.factIds.includes(source.databaseFactId ?? "")).map((source) => source.id) };
+  // 经营数据答案的图不再导入文件回答，只认文件表格计算生成的图。
+  return fail("文件回答不能引用经营数据图表");
 }
 
 export function validateConversationAnswer(value: unknown): ConversationAnswer {
@@ -130,13 +126,13 @@ export function validateConversationAnswer(value: unknown): ConversationAnswer {
   const calculations = value.calculations === undefined ? undefined : parseAttachmentCalculations(value.calculations);
   if (calculations && new Set(calculations.map((item) => item.id)).size !== calculations.length) fail("表格计算标识重复");
   if (value.trace !== undefined && !isToolTrace(value.trace)) fail("文件回答过程记录不正确");
-  const databaseAnswers = value.databaseAnswers === undefined ? undefined : Array.isArray(value.databaseAnswers) && value.databaseAnswers.length <= 5 ? value.databaseAnswers.map(validateAnalysisAnswer) : fail("经营数据引用不正确");
+  const databaseAnswers = value.databaseAnswers === undefined ? undefined : Array.isArray(value.databaseAnswers) && value.databaseAnswers.length <= 5 ? value.databaseAnswers.map(validatePlanAnswer) : fail("经营数据引用不正确");
   for (const item of sources.filter((item) => item.kind === "database")) {
-    const answer = databaseAnswers?.find((answer) => answer.task.runId === item.databaseRunId);
+    const answer = databaseAnswers?.find((answer) => answer.runId === item.databaseRunId);
     const fact = answer?.evidence.facts.find((fact) => fact.id === item.databaseFactId);
-    if (!answer || !fact || answer.review.verdict === "revise") fail("经营数据引用没有通过原始核验");
+    if (!answer || !fact) fail("经营数据引用没有通过原始核验");
   }
-  for (const spec of visualizations?.items ?? []) resolveConversationVisualization(spec, { ...draft, calculations, sources, databaseAnswers });
+  for (const spec of visualizations?.items ?? []) resolveConversationVisualization(spec, { ...draft, calculations, sources });
   return { schema: CONVERSATION_ANSWER_SCHEMA, ...draft, sources, ...(databaseAnswers ? { databaseAnswers } : {}), ...(visualizations ? { visualizations } : {}), ...(calculations ? { calculations } : {}), ...(value.trace ? { trace: value.trace as ConversationAnswer["trace"] } : {}) };
 }
 

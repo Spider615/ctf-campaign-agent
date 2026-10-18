@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { createGeneralAnalyticsRunner, privateAnalysisDirectory } from "./general-analytics-run-turn.ts";
+import { createPlanAnalyticsRunner, privateAnalysisDirectory } from "./analysis-plan-run-turn.ts";
 import { analyticsBenchmarks } from "../tests/fixtures/general-analytics.ts";
 import { runAnalysis } from "../app/lib/analytics/engine.ts";
-import { analysisAnswerText } from "../app/lib/analytics/analysis-v2-evidence.ts";
+import { planAnswerText } from "../app/lib/analytics/plan/answer.ts";
+import { isPlanAnswer } from "../app/lib/analytics/stream.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
 
 const envPath = fileURLToPath(new URL("../.dev.vars", import.meta.url));
@@ -20,7 +21,7 @@ const output = privateAnalysisDirectory(process.env.ANALYTICS_EVAL_DIR || join(t
 mkdirSync(output, { recursive: true, mode: 0o700 });
 const results: unknown[] = [];
 const model = process.env.AGENT_MODEL || "deepseek-flash";
-const versionFiles = ["agent/analytics-evaluation.ts", "tests/fixtures/general-analytics.ts", "agent/general-analytics-run-turn.ts", "agent/analytics-review-support.ts", "agent/analytics-review-cache.ts", "agent/analytics-audit.ts", "agent/analytics-model.ts", "agent/analytics-evidence-context.ts", "agent/analysis-v2-history.ts", "app/lib/analytics/analysis-v2-types.ts", "app/lib/analytics/analysis-v2-operations.ts", "app/lib/analytics/analysis-v2-snapshot.ts", "app/lib/analytics/analysis-v2-evidence.ts", "app/lib/analytics/analysis-v2-format.ts", "agent/analytics-plugin/skills/analysis-review/SKILL.md", "agent/analytics-plugin/skills/ctf-marketing-advisor/SKILL.md"];
+const versionFiles = ["agent/analytics-evaluation.ts", "tests/fixtures/general-analytics.ts", "agent/analysis-plan-run-turn.ts", "agent/analytics-system-prompt.ts", "agent/analytics-model.ts", "app/lib/analytics/analysis-v2-types.ts", "app/lib/analytics/analysis-v2-operations.ts", "app/lib/analytics/analysis-v2-snapshot.ts", "app/lib/analytics/analysis-v2-evidence.ts", "app/lib/analytics/plan/validate.ts", "app/lib/analytics/plan/execute.ts", "app/lib/analytics/plan/bind.ts", "app/lib/analytics/plan/answer.ts", "app/lib/analytics/plan/prompt.ts", "app/lib/analytics/plan/scenario.ts"];
 const readVersions = () => Object.fromEntries(versionFiles.map((path) => [path, createHash("sha256").update(readFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)))).digest("hex")]));
 const controller = new AbortController();
 process.once("SIGTERM", () => controller.abort()); process.once("SIGINT", () => controller.abort());
@@ -28,11 +29,12 @@ for (const item of cases) {
   if (controller.signal.aborted) break;
   let calls = 0; const started = performance.now(); const versions = readVersions();
   const responseIds = new Set<string>(); const responseUsage = new Map<string, unknown>();
-  const sessions: Array<{ id: number; role: "analysis" | "review"; responseIds: string[] }> = [];
+  // 计划流程每一步是一次独立 SDK 会话（计划、复核、措辞等），按调用顺序记录。
+  const sessions: Array<{ id: number; role: "step"; responseIds: string[] }> = [];
   const syntheticMessages: Array<{ sessionId: number; error?: string; model: string }> = [];
   const observedQuery: typeof query = (args) => {
     calls++;
-    const session = { id: calls, role: Array.isArray(args.options?.tools) && args.options.tools.includes("Skill") ? "analysis" as const : "review" as const, responseIds: [] as string[] }; sessions.push(session);
+    const session = { id: calls, role: "step" as const, responseIds: [] as string[] }; sessions.push(session);
     const recordResponse = (id: string, usage: unknown) => { responseIds.add(id); if (!session.responseIds.includes(id)) session.responseIds.push(id); responseUsage.set(id, { role: session.role, usage }); };
     const stream = query({ ...args, options: { ...args.options, includePartialMessages: true } });
     // 只留响应标识和计费用量；不捕获隐藏思维、系统提示或完整模型消息。
@@ -60,17 +62,17 @@ for (const item of cases) {
       };
     } });
   };
-  const runner = createGeneralAnalyticsRunner({ model: process.env.AGENT_MODEL || "deepseek-flash", modelBaseUrl: process.env.AGENT_MODEL_BASE_URL || "https://api.deepseek.com/anthropic", apiKey: process.env.DEEPSEEK_API_KEY!, pluginDir: fileURLToPath(new URL("./analytics-plugin", import.meta.url)), runtimeDir: join(output, "runtime"), auditDirectory: join(output, "audit") }, { query: observedQuery, ...(item.context?.length ? { provider: createSnapshotAnalysisProvider(item.dataset) } : {}) });
+  const runner = createPlanAnalyticsRunner({ model: process.env.AGENT_MODEL || "deepseek-flash", modelBaseUrl: process.env.AGENT_MODEL_BASE_URL || "https://api.deepseek.com/anthropic", apiKey: process.env.DEEPSEEK_API_KEY!, pluginDir: fileURLToPath(new URL("./analytics-plugin", import.meta.url)), runtimeDir: join(output, "runtime"), auditDirectory: join(output, "audit") }, { query: observedQuery, ...(item.context?.length ? { provider: createSnapshotAnalysisProvider(item.dataset) } : {}) });
   try {
     // 数据版本授权来自报告或注入的同版本只读合成适配器；期望不传入模型。
     // 带持续条件的用例走实际对话 context/history 协议，不拼回本轮问题冒充上下文。
     const report = { ...runAnalysis(item.dataset, { period: { start: item.dataset.minDate, end: item.dataset.maxDate }, filters: {} }), id: `eval-${item.id}`, createdAt: new Date().toISOString() };
     const request = item.context?.length ? { mode: "database" as const, question: item.question, context: item.context, history: item.context.map((text) => ({ role: "user" as const, text })) } : { report, dataset: item.dataset, question: item.question };
     const answer = await runner(request, controller.signal, (event) => { if (event.type === "trace" && event.event.status !== "started") console.log(JSON.stringify({ id: item.id, action: event.event.title, status: event.event.status })); });
-    if (!("schema" in answer)) throw new Error("分析评估未返回通用结构化结果");
+    if (!isPlanAnswer(answer)) throw new Error("分析评估未返回计划式结构化结果");
     const failures = item.check(answer);
     const endingVersions = readVersions(); const changedFiles = versionFiles.filter((path) => versions[path] !== endingVersions[path]);
-    const result = { id: item.id, family: item.family, model, versions, endingVersions, changedFiles, calls, sessions, modelResponses: responseIds.size, syntheticMessages, responseUsage: Object.fromEntries(responseUsage), callCountDefinition: "calls为SDK会话数，modelResponses为已收到唯一真实模型响应数；SDK合成API错误及无响应的上游重试不计入", usageDefinition: "SDK起始块和assistant块的用量元数据可能不是最终总计，不用于费用核算", durationMs: Math.round(performance.now() - started), status: answer.status, passed: failures.length === 0, manualBusinessReview: "required", expectation: item.expectation, failures, text: analysisAnswerText(answer), answer };
+    const result = { id: item.id, family: item.family, model, versions, endingVersions, changedFiles, calls, sessions, modelResponses: responseIds.size, syntheticMessages, responseUsage: Object.fromEntries(responseUsage), callCountDefinition: "calls为SDK会话数，modelResponses为已收到唯一真实模型响应数；SDK合成API错误及无响应的上游重试不计入", usageDefinition: "SDK起始块和assistant块的用量元数据可能不是最终总计，不用于费用核算", durationMs: Math.round(performance.now() - started), status: answer.status, passed: failures.length === 0, manualBusinessReview: "required", expectation: item.expectation, failures, text: planAnswerText(answer), answer };
     results.push(result); writeFileSync(join(output, `${item.id}.json`), JSON.stringify(result, null, 2), { mode: 0o600 });
     console.log(JSON.stringify({ id: item.id, calls, modelResponses: responseIds.size, durationMs: result.durationMs, status: answer.status, passed: result.passed, manualBusinessReview: "required", changedFiles, failures }));
   } catch (error) {

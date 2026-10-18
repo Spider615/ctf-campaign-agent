@@ -1,7 +1,8 @@
 import { restoreVisualizationProgress, type VisualizationProgressState } from "../analytics/visualization-progress.ts";
+import { RETIRED_ANALYSIS_ANSWER_SCHEMA } from "../analytics/analysis-v2-types.ts";
 import type { DatabaseExplainRequest } from "../analytics/database.ts";
 import type { AgentTraceEvent } from "../tool-trace.ts";
-import { analyticsAnswerText, isAnalysisAnswer, validateAnalyticsAnswerResult, type AnalyticsAnswerResult } from "../analytics/stream.ts";
+import { analyticsAnswerText, isPlanAnswer, validateAnalyticsAnswerResult, type AnalyticsAnswerResult } from "../analytics/stream.ts";
 import { isConversationAnswer } from "../attachments/answer.ts";
 import type { AttachmentReference, ConversationRequest } from "../attachments/types.ts";
 
@@ -24,6 +25,8 @@ const restoreMessages = (messages: HistoryMessage[]) => finishPending(messages).
   const message = { ...stored, ...(stored.visualizationState === undefined ? {} : { visualizationState: restoreVisualizationProgress(stored.visualizationState) }) };
   // 旧记录保留旧合同；新记录恢复时重新核验，不能凭存储里的正文绕过引用检查。
   if (!message.answer || !("schema" in message.answer)) return message;
+  // v2 旧答案的结构化合同已退役：恢复时只保留已存的正文，不再渲染也不再参与后续上下文。
+  if ((message.answer as { schema: string }).schema === RETIRED_ANALYSIS_ANSWER_SCHEMA) return { ...message, answer: undefined, status: message.status ?? "done" as const };
   try { const answer = validateAnalyticsAnswerResult(message.answer); return { ...message, answer, text: analyticsAnswerText(answer) }; }
   catch { return { ...message, answer: undefined, status: "failed" as const, text: "上次回答未通过完整性核验，请重新分析。" }; }
 });
@@ -31,18 +34,8 @@ const restoreMessages = (messages: HistoryMessage[]) => finishPending(messages).
 export function historyMessageContext(message: HistoryMessage): string {
   if (!message.answer) return message.text;
   if (isConversationAnswer(message.answer)) return `以下为用户上传资料的问答，不等同于已核验经营数据或执行事实：${message.answer.blocks.map((block) => block.text).join("\n\n")}`;
-  if (!isAnalysisAnswer(message.answer)) return `${message.text}\n${message.answer.sources?.map((source) => `已查询范围：${source.scope}；口径：${source.definition}`).join("\n") ?? ""}`.trim();
-  const answer = message.answer;
-  // 只带已校验的正文与公开业务范围；数据库、私有记录和操作内部标识不进入后续模型上下文。
-  const selectWithin = (values: string[], budget: number) => [...new Set(values)].filter((value) => { if (value.length > budget) return false; budget -= value.length; return true; });
-  const scopeTerms = [...Object.values(answer.task.hardScope.filters), ...Object.values(answer.task.focus ?? {})].flatMap((values) => values ?? []);
-  const context = selectWithin([...answer.task.context.filter((text) => scopeTerms.some((term) => text.includes(term))), ...answer.task.context.slice().reverse()], 800);
-  const task = { hardScope: answer.task.hardScope, ...(answer.task.focus ? { focus: answer.task.focus } : {}), ...(answer.task.goal ? { goal: answer.task.goal } : {}), context, userQuotes: selectWithin(answer.task.needs.map((need) => need.userQuote), 600) };
-  const taskLine = `公开任务范围：${JSON.stringify(task)}`;
-  const scopeLines = selectWithin(answer.evidence.frames.map((frame) => `公开分析范围：${JSON.stringify({ period: frame.scope.period, population: frame.scope.population, filters: frame.scope.filters, mode: frame.mode, provenance: frame.provenance, currency: frame.currency, grain: frame.grain, controls: frame.controls })}`), Math.max(0, 2400 - taskLine.length));
-  // 完整范围仍在已保存回答及用户持续要求中；历史摘要留出正文空间，不截断结构化 JSON。
-  const prefix = taskLine.length <= 2400 ? [taskLine, ...scopeLines].join("\n") : `公开任务范围摘要过长，后续须按用户持续要求核对完整范围。原问题：${answer.task.question}\n范围原话：${context.join("；")}`;
-  return `${prefix}\n${analyticsAnswerText({ ...answer, visualizations: undefined }).slice(0, 3999 - prefix.length)}`.trim();
+  if (isPlanAnswer(message.answer)) return `${message.text}\n${analyticsAnswerText(message.answer)}`.trim();
+  return `${message.text}\n${message.answer.sources?.map((source) => `已查询范围：${source.scope}；口径：${source.definition}`).join("\n") ?? ""}`.trim();
 }
 
 export function createHistoryConversationStore(storage?: Persistence) {
@@ -71,7 +64,6 @@ export function createHistoryConversationStore(storage?: Persistence) {
     rebuild();
   };
   const commit = () => { rebuild(); try { persistence()?.setItem(key, JSON.stringify({ activeId, threads })); } catch { /* 存储空间不足不影响本页继续使用。 */ } listeners.forEach((listener) => listener()); };
-  const stopCurrent = () => { const thread = current(); if (thread) thread.messages = finishPending(thread.messages); };
   return {
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     serverSnapshot: () => empty,
@@ -82,25 +74,26 @@ export function createHistoryConversationStore(storage?: Persistence) {
     activeId() { load(); return activeId; },
     context() { load(); return current()?.context ?? []; },
     campaignId() { load(); return current()?.campaignId ?? null; },
+    // 指定对话 id 时写进那一条对话，不管它当前是否打开：切走后仍在跑的回答照样落到自己的对话里。
     update(change: (messages: HistoryMessage[]) => HistoryMessage[], expectedId?: string) {
-      load(); if (expectedId !== undefined && expectedId !== activeId) return;
-      const thread = current(); if (!thread) return;
+      load(); const thread = expectedId === undefined ? current() : threads.find((item) => item.id === expectedId); if (!thread) return;
       const before = thread.messages; const next = change(before);
       thread.context = [...thread.context, ...next.filter((m) => m.role === "user" && !before.some((old) => old.id === m.id)).map((m) => m.text.slice(0, 500))].slice(0, 200);
       if (!before.length && next.some((m) => m.role === "user")) thread.title = next.find((m) => m.role === "user")!.text.slice(0, 40);
       thread.messages = next.slice(-40); thread.updatedAt = new Date().toISOString(); commit();
     },
+    // 一条对话只绑一个活动；已绑过的不让迟到的建活动结果改掉。
     bindCampaign(campaignId: string, title: string, expectedId: string) {
-      load(); if (activeId !== expectedId || !current()) return false;
-      const thread = current()!; thread.campaignId = campaignId; if (thread.title === "新对话") thread.title = title.slice(0, 40); thread.updatedAt = new Date().toISOString(); commit(); return true;
+      load(); const thread = threads.find((item) => item.id === expectedId); if (!thread || thread.campaignId) return false;
+      thread.campaignId = campaignId; if (thread.title === "新对话") thread.title = title.slice(0, 40); thread.updatedAt = new Date().toISOString(); commit(); return true;
     },
     newConversation() {
-      load(); stopCurrent(); threads = threads.filter((thread) => thread.messages.length || thread.campaignId);
+      load(); threads = threads.filter((thread) => thread.messages.length || thread.campaignId);
       const thread = makeThread(); threads.push(thread); activeId = thread.id; commit(); return activeId;
     },
     selectConversation(id: string) {
       load(); if (!threads.some((thread) => thread.id === id)) return false;
-      if (activeId === id) return true; stopCurrent(); activeId = id; commit(); return true;
+      if (activeId === id) return true; activeId = id; commit(); return true;
     },
   };
 }

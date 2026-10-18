@@ -54,8 +54,18 @@ test("成功回合与 409 对账会清掉首次理解的停止状态", () => {
 
 test("Conversation 在更新 UI 前获取当前会话租约并让对账携带回合归属", () => {
   const sendSource = conversationSource.slice(conversationSource.indexOf("const send ="), conversationSource.indexOf("const sendRef ="));
-  assert.match(sendSource, /inFlightTurn\.begin\(sessionOwner, controller\?\.signal\)/);
-  assert.ok(sendSource.indexOf("if (!turn) return null;") < sendSource.indexOf("setBusy(body.type)"));
+  assert.match(sendSource, /inFlightTurn\.begin\(sessionOwner, streams \? controller\.signal : undefined\)/);
+  assert.ok(sendSource.indexOf("if (!turn) return null;") < sendSource.indexOf("campaignTurns.begin("));
+  assert.ok(sendSource.indexOf("if (!entry) {") < sendSource.indexOf("onBusyChange?.(true)"));
+});
+
+test("切换会话不中止进行中的回合，回合状态登记在组件外", () => {
+  const unmount = conversationSource.slice(conversationSource.indexOf("inFlightTurn.activate(sessionOwner);"), conversationSource.indexOf("const load ="));
+  assert.doesNotMatch(unmount, /abort\(\)/, "卸载时不能中止请求");
+  assert.match(conversationSource, /useSyncExternalStore\(campaignTurns\.subscribe/);
+  const sendSource = conversationSource.slice(conversationSource.indexOf("const send ="), conversationSource.indexOf("const sendRef ="));
+  assert.match(sendSource, /campaignTurns\.end\(requestSessionId, entry\.token\)/);
+  assert.match(sendSource, /notifySessionUpdated\(requestSessionId\)/);
   assert.match(conversationSource, /inFlightTurn\.readCurrent\(owner,/);
   assert.match(conversationSource, /inFlightTurn\.visit\(sessionId\)/);
 });

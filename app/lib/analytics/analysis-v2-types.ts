@@ -1,24 +1,28 @@
 import type { Period } from "./types.ts";
 import type { ToolTrace } from "../tool-trace.ts";
-import type { Visualizations } from "./visualization-types.ts";
+import type { ResolvedVisualization } from "./visualization-types.ts";
 
-export const ANALYSIS_ANSWER_SCHEMA = "analysis-answer/v2" as const;
+// 已退役的 v2 回答合同：只用于识别旧页面请求头和已存会话里的旧答案，不再生成或渲染。
+export const RETIRED_ANALYSIS_ANSWER_SCHEMA = "analysis-answer/v2" as const;
+export const PLAN_ANSWER_SCHEMA = "analysis-answer/v3" as const;
 export const ANALYSIS_METHODS = ["aggregate", "compare", "decompose", "scan", "robustness"] as const;
-export const ANALYSIS_DIMENSIONS = ["store", "region", "district", "category", "material", "offer", "memberFlag", "storeType", "cityTier", "mallGroup", "day", "sku", "memberSegment"] as const;
-export const ANALYSIS_METRICS = ["amount", "quantity", "grams", "profit", "orders", "stores", "rows", "tag_amount", "amount_per_order", "amount_per_gram", "gap_per_gram"] as const;
+// 维度、指标与筛选键由语义层统一定义。
+export { ANALYSIS_DIMENSIONS, ANALYSIS_METRICS } from "./semantic/model.ts";
+import type { SemanticDimensionId, SemanticFilterKey, SemanticMetricId } from "./semantic/model.ts";
 export type AnalysisMethod = typeof ANALYSIS_METHODS[number];
-export type AnalysisDimension = typeof ANALYSIS_DIMENSIONS[number];
-export type AnalysisMetric = typeof ANALYSIS_METRICS[number];
+export type AnalysisDimension = SemanticDimensionId;
+export type AnalysisMetric = SemanticMetricId;
 export type AnalysisPopulation = "sales" | "net" | "recovery" | "returns" | "zero_sales";
-export type AnalysisFilters = Partial<Record<"stores" | "regions" | "districts" | "categories" | "materials" | "offers" | "memberFlags" | "storeTypes" | "skus" | "memberSegments", string[]>>;
+export type AnalysisFilters = Partial<Record<SemanticFilterKey, string[]>>;
 
 export type AnalysisScope = { period: Period; population: AnalysisPopulation; filters: AnalysisFilters };
 export type AnalysisConstraints = { period?: Period; filters: AnalysisFilters };
-export type AnalysisNeed = { id: string; userQuote: string; judgement: string; status: "open" | "supported" | "conditional" | "needs_business_input"; conclusionIds: string[] };
-export type AnalysisTask = { runId: string; question: string; context: string[]; mode?: "lookup" | "analysis"; needs: AnalysisNeed[]; hardScope: AnalysisConstraints; focus?: AnalysisFilters; goal?: string; assumptions: string[] };
 
-export type AnalysisMetricDefinition = { id: string; label: string; unit: string; grain: "line" | "selected_order" | "group" | "unknown"; additive: boolean; allowedPopulations: AnalysisPopulation[]; requiredControls: AnalysisDimension[]; definition: string };
-export type AnalysisCapabilities = { mode: "database" | "snapshot" | "historical"; name: string; coverage: Period; currency: string; provenance: "sample" | "imported"; dimensions: AnalysisDimension[]; metrics: AnalysisMetricDefinition[]; methods: AnalysisMethod[]; scenarios?: AnalysisAdjustment["kind"][]; limitations: string[] };
+export type AnalysisMetricDefinition = { id: string; label: string; unit: string; grain: "line" | "selected_order" | "group" | "unknown"; additive: boolean; allowedPopulations: AnalysisPopulation[]; requiredControls: AnalysisDimension[]; definition: string; basis?: "schema" | "data" | "business" | "assumption" };
+// values：取值不多的维度在会话打开时读出全部实际取值，供计划校验筛选值、提示模型写对原值。
+export type AnalysisDimensionDefinition = { id: AnalysisDimension; label: string; filter: SemanticFilterKey; parent?: AnalysisDimension; scan: boolean; definition: string; basis: "schema" | "data" | "business" | "assumption"; values?: string[] };
+export type AnalysisBaselineDefinition = { id: string; label: string; how: string; definition: string; basis: "schema" | "data" | "business" | "assumption" };
+export type AnalysisCapabilities = { mode: "database" | "snapshot" | "historical"; name: string; coverage: Period; currency: string; provenance: "sample" | "imported"; dimensions: AnalysisDimension[]; dimensionCatalog?: AnalysisDimensionDefinition[]; metrics: AnalysisMetricDefinition[]; baselines?: AnalysisBaselineDefinition[]; methods: AnalysisMethod[]; scenarios?: AnalysisAdjustment["kind"][]; limitations: string[] };
 export type AnalysisFrame = { id: string; snapshotId: string; datasetVersion: string; mode: AnalysisCapabilities["mode"]; provenance: "sample" | "imported"; scope: Omit<AnalysisScope, "population"> & { population: AnalysisPopulation | "unknown" }; currency: string; grain: "line" | "selected_order" | "group" | "unknown"; controls: AnalysisDimension[]; limitations: string[]; recordId?: string };
 export type AnalysisObject = { id: string; frameId: string; dimension: AnalysisDimension; value: string; label: string };
 export type FactExpression = { factId: string } | { constant: number } | { op: "add" | "subtract" | "multiply" | "divide"; args: FactExpression[] };
@@ -28,7 +32,7 @@ export type AnalysisMethodReport = { id: string; operationId: string; method: An
 export type AnalysisEvidence = { frames: AnalysisFrame[]; facts: AnalysisFact[]; objects: AnalysisObject[]; methods: AnalysisMethodReport[] };
 
 // 单元数据仅供确定性操作使用；逐单标识和底层查询不进入模型上下文。
-export type AnalysisAggregateCell = { dimensions: Partial<Record<AnalysisDimension | "order", string>>; rows: number; amount: number | null; quantity: number | null; grams: number | null; profit: number | null; orders: number | null; stores: number | null; tag_amount: number | null; orderIds?: Array<string | null> };
+export type AnalysisAggregateCell = { dimensions: Partial<Record<AnalysisDimension | "order", string>>; rows: number; amount: number | null; quantity: number | null; grams: number | null; profit: number | null; orders: number | null; stores: number | null; tag_amount: number | null; orderMissingRows?: number | null; orderIds?: Array<string | null> };
 export type AnalysisAggregateQuery = { scope: AnalysisScope; by: Array<AnalysisDimension | "order">; metrics?: AnalysisMetric[]; excludeStores?: string[]; excludeOrders?: string[] };
 export type AnalysisOrderDistributionQuery = { scope: AnalysisScope; metrics: AnalysisMetric[] };
 export type AnalysisOrderDistribution = { sampleRows: number; excludedRows: number; orderCount: number; quantiles: Partial<Record<AnalysisMetric, { p50: number | null; p90: number | null; p99: number | null }>> };
@@ -54,15 +58,19 @@ export type AnalysisOperationRequest = {
 };
 export type AnalysisOperationResult = AnalysisEvidence & { operationId: string; status: "completed" | "unsupported"; method: AnalysisMethod; needIds: string[]; purpose: string; limitations: string[]; cached?: boolean };
 
-export type AnalysisTrialParameter = { id: string; kind: "store_count" | "duration_days"; value: number; objectIds: string[]; conditions: string[]; status: "proposed" };
-export type AnalysisUserCondition = { id: string; quote: string };
-export type AnalysisAnswerNode = { kind: "text"; text: string } | { kind: "fact_ref"; factId: string } | { kind: "object_ref"; objectId: string } | { kind: "period_ref"; frameId: string } | { kind: "user_condition_ref"; conditionId: string } | { kind: "trial_parameter_ref"; parameterId: string };
-export type AnalysisAnswerBlock = { kind: "paragraph" | "bullet" | "heading"; nodes: AnalysisAnswerNode[]; conclusionId?: string };
-export type AnalysisConclusion = { id: string; needIds: string[]; level: "observed" | "comparison_supported" | "hypothesis"; judgement: string; factIds: string[]; objectIds: string[]; methodIds: string[]; limitations: string[]; action?: string; validation?: string };
-export type AnalysisDraft = { status: "answered" | "conditional" | "incomplete"; conclusions: AnalysisConclusion[]; blocks: AnalysisAnswerBlock[]; questions: string[]; userConditions: AnalysisUserCondition[]; trialParameters: AnalysisTrialParameter[]; coverage?: Array<{ needId: string; status: AnalysisNeed["status"]; reason: string }>; visualizations?: Visualizations };
-export type AnalysisReviewIssue = { needIds: string[]; conclusionIds: string[]; requirement: string; kind: "task_coverage" | "missing_evidence" | "invalid_comparison" | "unsupported_explanation" | "unclear_action" | "expression" };
-export type AnalysisSemanticReview = { verdict: "accept" | "revise" | "accept_conditional"; issues: AnalysisReviewIssue[] };
-export type AnalysisAnswer = AnalysisDraft & { schema: typeof ANALYSIS_ANSWER_SCHEMA; task: AnalysisTask; evidence: AnalysisEvidence; review: AnalysisSemanticReview; trace?: ToolTrace };
-
 export type EvidenceRegistry = { ingest(result: AnalysisOperationResult): void; ingestAsync(result: AnalysisOperationResult, signal?: AbortSignal): Promise<void>; bundle(): AnalysisEvidence; view(): AnalysisEvidence; clear(): void };
-export type DraftValidation = { valid: boolean; issues: AnalysisReviewIssue[] };
+
+// 计划式分析的最终答案：措辞由模型写，数字、方向、可信度、图表都由代码绑定和推导。
+export type PlanAnswerClaim = { text: string; factIds: string[]; confidence: "kept" | "flipped" | "unchecked" };
+// 关键数据表：由代码从结论绑定的节点生成，每行一个指标；对比给目标、参照和变化，单值只给数值。
+export type PlanAnswerFigure = { label: string; scope?: string; target: string; reference?: string; change?: string; factIds: string[] };
+export type PlanAnswer = {
+  schema: typeof PLAN_ANSWER_SCHEMA; runId: string; question: string; status: "answered" | "partial" | "unavailable";
+  headline?: PlanAnswerClaim;
+  claims: PlanAnswerClaim[];
+  figures?: { targetLabel: string; referenceLabel?: string; rows: PlanAnswerFigure[] };
+  actions: string[]; cannotConclude: string[]; questions: string[];
+  assumptions: string[]; definitions: string[]; chart?: ResolvedVisualization;
+  plan: Array<{ id: string; op: string; status: string; summary: string }>;
+  review: { notes: string[] }; evidence: AnalysisEvidence; trace?: ToolTrace;
+};
