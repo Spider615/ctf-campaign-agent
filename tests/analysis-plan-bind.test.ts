@@ -82,7 +82,9 @@ test("flat 看变化幅度；行动随结论重新编号；数量有上限", () 
   assert.deepEqual(many.actions, [{ text: "B", claim: 1 }, { text: "C", claim: 3 }, { text: "D", claim: 2 }]);
   assert.equal(many.cannotConclude.length, 5);
   assert.deepEqual(many.cannotConclude, ["缺一", "缺二", "缺三", "缺四", "缺五"]);
-  assert.deepEqual(many.droppedText.filter((item) => item.kind === "cannotConclude"), [{ kind: "cannotConclude", text: "缺1", reason: "措辞中不能直接写算出来的数字，请用占位符" }]);
+  const dropped = many.droppedText.filter((item) => item.kind === "cannotConclude");
+  assert.deepEqual(dropped.map((item) => item.text), ["缺1"]);
+  assert.match(dropped[0].reason, /^措辞中不能直接写算出来的数字，请用占位符：「1」不能直接写/);
   assert.deepEqual(many.droppedText.filter((item) => item.kind === "action").map((item) => item.text), ["A"]); // 指向被丢弃结论的行动
 });
 
@@ -187,8 +189,9 @@ test("行动和追问里写数字同样被剔除并记录", () => {
 test("措辞数字只允许来自原话与业务名称", async () => {
   const { digitGuard } = await import("../app/lib/analytics/plan/bind.ts");
   const forbidden = digitGuard(["帮我复盘一下2025年七夕（8月23日到29日这7天）的销售表现，和8月其他日子比"], ["H-克减30元", "H-克减50元", "东区/B区"]);
-  for (const ok of ["七夕7天日均高出", "8月其他日子", "H-克减30元档和H-克减50元档", "克减30元档的件数更多", "东区/B区表现最好", "2025年七夕", "前三名"]) assert.equal(forbidden(ok), false, ok);
-  for (const bad of ["高了50元", "增长了35%", "约三倍，即3.2倍", "日均订单为21650单", "高了30元", "9月"]) assert.equal(forbidden(bad), true, bad);
+  for (const ok of ["七夕7天日均高出", "8月其他日子", "H-克减30元档和H-克减50元档", "克减30元档的件数更多", "50档比30档卖得多", "东区/B区表现最好", "2025年七夕", "前三名"]) assert.deepEqual(forbidden(ok), [], ok);
+  for (const bad of ["高了50元", "增长了35%", "约三倍，即3.2倍", "日均订单为21650单", "高了30元", "9月", "70档"]) assert.ok(forbidden(bad).length > 0, bad);
+  assert.deepEqual(forbidden("毛利率16.02%，比30档高"), ["16.02%"]);
 });
 
 test("执行结果里的分组取值和计划筛选值也算业务名称", () => {
@@ -265,4 +268,27 @@ test("拆解贡献可以判断正负方向；汇总分组判高低时提示改�
   const bound = bindClaims({ headline: { node: "dc", metric: "amount.price_contribution", role: "contribution", assert: "down", text: "价格贡献为{value}" }, claims: [{ node: "m", select: { cityTier: "一线城市" }, metric: "amount_per_day", role: "value", assert: "higher", text: "一线城市每店{value}" }], actions: [], cannotConclude: [], questions: [] }, exec);
   assert.equal(bound.headline!.rendered, "价格贡献为-850,949.28元");
   assert.match(bound.dropped[0].reason, /largest\/smallest|找不到/);
+});
+
+test("天数不同的两段不能比合计值，日均可以；同样长度的两段可以比合计", () => {
+  const facts = [fact("t", 300, "人民币"), fact("r", 900, "人民币"), fact("d", -600, "人民币"), fact("ch", -66.67, "%")];
+  const rows = [row("t", "target"), row("r", "reference"), row("d", "delta"), row("ch", "change")].map((item) => ({ ...item, metric: "amount" }));
+  const make = (target: PlanScope, reference: PlanScope): PlanExecution => ({ results: new Map([["c", result({ id: "c", op: "contrast", target, reference, metrics: ["amount"] }, rows)]]), evidence: { frames: [], objects: [], methods: [], facts } });
+  const week = { ...scope, period: { start: "2025-08-23", end: "2025-08-29" } };
+  const draft = { headline: { node: "c", metric: "amount", assert: "down" as const, text: "实收少 {change}" }, claims: [], actions: [], cannotConclude: [], questions: [] };
+  const unequal = bindClaims(draft, make(week, scope));
+  assert.equal(unequal.headline, undefined); assert.match(unequal.dropped[0].reason, /日均/);
+  const festival = bindClaims(draft, make({ ...scope, filters: { festivals: ["七夕节"] } }, { ...scope, filters: { festivals: ["非节庆"] } }));
+  assert.equal(festival.headline, undefined);
+  const lastYear = { ...scope, period: { start: "2024-08-01", end: "2024-08-31" } };
+  assert.ok(bindClaims(draft, make(scope, lastYear)).headline);
+});
+
+test("主结论不能是只占样本不到 1% 的个案，改由有代表性的发现顶上", () => {
+  const facts = [fact("big", 30, "个百分点"), fact("small", 1300, "个百分点")];
+  const s: PlanNode = { id: "s", op: "scan", of: "c" };
+  const exec: PlanExecution = { results: new Map([["s", result(s, [{ ...row("small", "deviation", { mallGroup: "某商场" }), sampleRows: 600 }, { ...row("big", "deviation", { mallGroup: "大集团" }), sampleRows: 99400 }])]]), evidence: { frames: [], objects: [], methods: [], facts } };
+  const bound = bindClaims({ headline: { node: "s", select: { mallGroup: "某商场" }, metric: "amount_per_day", assert: "largest", text: "某商场偏离{value}" }, claims: [{ node: "s", select: { mallGroup: "大集团" }, metric: "amount_per_day", assert: "higher", text: "大集团偏离{value}" }], actions: [], cannotConclude: [], questions: [] }, exec);
+  assert.equal(bound.headline!.rendered, "大集团偏离+30.00个百分点");
+  assert.match(bound.dropped[0].reason, /个案/);
 });

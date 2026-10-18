@@ -1,5 +1,7 @@
 import type { AnalysisFact } from "../analysis-v2-types.ts";
+import { ANALYSIS_FILTER_DIMENSIONS, SEMANTIC_DIMENSIONS, SEMANTIC_METRICS } from "../semantic/model.ts";
 import type { NodeResult, NodeRole, NodeRow, PlanExecution } from "./execute.ts";
+import type { PlanNode, PlanScope } from "./types.ts";
 
 // 结论绑定：模型只写带占位的措辞并指向计划节点，数字、方向和可信度都由代码查出来。
 export type Claim = { node: string; select?: Record<string, string>; metric: string; role?: NodeRole; assert: "up" | "down" | "flat" | "higher" | "lower" | "largest" | "smallest" | "unavailable"; text: string };
@@ -22,7 +24,8 @@ const NO_PLACEHOLDER = "建议和说明不绑定数据，不能写占位符，�
 // - 问题原文里的日期和时长（2025年、8月23日、7天）原样出现可以保留。
 // 所以「克减30元档」可以写，「高了30元」不行。
 const TIME_TOKEN = /\d+(?:\.\d+)?\s*(?:年|月|日|号|天|周)/g;
-export function digitGuard(literals: readonly string[], names: readonly string[] = []): (text: string) => boolean {
+// 返回措辞里不被允许的数字片段；为空表示可以通过。片段原样回给模型，便于它知道改哪里。
+export function digitGuard(literals: readonly string[], names: readonly string[] = []): (text: string) => string[] {
   const allowedTimes = new Set((literals.join("\n").normalize("NFKC").match(TIME_TOKEN) ?? []).map((token) => token.replace(/\s+/g, "")));
   // 名称按长度降序抹掉，避免短名称先截断长名称。
   // 同时接受去掉编号前缀的简称：「H-克减30元」也可写作「克减30元」。
@@ -36,10 +39,11 @@ export function digitGuard(literals: readonly string[], names: readonly string[]
     let text = raw.normalize("NFKC");
     const lower = text.toLowerCase();
     for (const name of known) { const target = name.toLowerCase(); let at = lower.indexOf(target); while (at >= 0) { text = text.slice(0, at) + " ".repeat(name.length) + text.slice(at + name.length); at = lower.indexOf(target, at + name.length); } }
-    text = text.replace(/(\d+(?:\.\d+)?[^\d\s{}])(?=档)/g, (token) => nameText.includes(token.toLowerCase()) ? " " : token);
+    // 「50元档」「50档」：数字（连同单位）出现在业务名称或原文里时是档位简称。
+    text = text.replace(/(\d+(?:\.\d+)?)([^\d\s{}]?)(?=档)/g, (token, number: string, unit: string) => nameText.includes(`${number}${unit || "元"}`.toLowerCase()) || unit && nameText.includes(token.toLowerCase()) ? " " : token);
     text = text.replace(TIME_TOKEN, (token) => allowedTimes.has(token.replace(/\s+/g, "")) ? " " : token);
     text = text.replace(/([^\d\s{}]{2})(\d+(?:\.\d+)?)/g, (token, prefix: string) => /^[\p{L}]{2}$/u.test(prefix) && nameText.includes(token) ? `${prefix} ` : token);
-    return /\d/.test(text);
+    return [...new Set(text.match(/\d+(?:[.,]\d+)*\s*(?:%|个百分点|[^\s\d{}，。；、（）()]?)/g) ?? [])].map((item) => item.trim());
   };
 }
 
@@ -68,6 +72,38 @@ export function formatValue(fact: AnalysisFact, signed: boolean): string {
 export function formatRoleValue(fact: AnalysisFact, role: NodeRole): string {
   const text = formatValue(fact, DIRECTIONAL.includes(role));
   return role === "delta" && displayUnit(fact.unit) === "%" ? text.replace(/%$/, "个百分点") : text;
+}
+
+// ---- 口径检查 ----
+// 两段范围的日历天数不同，或节庆、日类型、日期筛选不同时，覆盖的天数不同，合计值不能直接比较；
+// 同样长度的两段（今年八月对去年八月）可以比合计。
+const TIME_FILTERS = Object.entries(ANALYSIS_FILTER_DIMENSIONS).filter(([, dimension]) => SEMANTIC_DIMENSIONS[dimension].entity === "time").map(([key]) => key);
+const calendarDays = (scope: PlanScope) => Math.round((Date.parse(`${scope.period.end}T00:00:00Z`) - Date.parse(`${scope.period.start}T00:00:00Z`)) / 86400000) + 1;
+const timeOf = (scope: PlanScope) => JSON.stringify([calendarDays(scope), ...TIME_FILTERS.map((key) => [...((scope.filters as Record<string, string[] | undefined>)?.[key] ?? [])].sort())]);
+const isTotal = (metric: string) => Boolean((SEMANTIC_METRICS as Record<string, { additive?: boolean }>)[metric]?.additive);
+// 合计类指标（实收、件数、克重、毛利等）在时间不同的两段之间比较时为真；日均、单均、每店等比率不受影响。
+export function totalAcrossWindows(node: PlanNode, metric: string, role: NodeRole): boolean {
+  return node.op === "contrast" && timeOf(node.target) !== timeOf(node.reference) && isTotal(metric) && ["target", "reference", "delta", "change"].includes(role);
+}
+const TOTAL_ACROSS_WINDOWS = "两段时间天数不同，合计值不能直接比较；请改用日均类指标（如日均实收、日均订单）";
+
+// 主结论要说整体或有代表性的规律：分组只占所在维度样本不到 1% 时属个案，只能作为发现之一。
+const HEADLINE_MIN_SHARE = 0.01;
+function sampleShare(result: NodeResult, selected: NodeRow): number | undefined {
+  if (selected.sampleRows === undefined || !Object.keys(selected.key).length) return undefined;
+  const dimensions = JSON.stringify(Object.keys(selected.key).sort());
+  const sizes = new Map<string, number>();
+  for (const row of result.rows) if (row.sampleRows !== undefined && JSON.stringify(Object.keys(row.key).sort()) === dimensions) sizes.set(JSON.stringify(row.key), row.sampleRows);
+  const total = [...sizes.values()].reduce((sum, value) => sum + value, 0);
+  return total > 0 ? selected.sampleRows / total : undefined;
+}
+function headlineIssue(claim: Claim, execution: PlanExecution): string | undefined {
+  const result = execution.results.get(claim.node); if (!result) return undefined;
+  const role = claim.role ?? defaultRole(result); const key = claim.select ?? {};
+  const selected = result.rows.find((row) => row.metric === claim.metric && row.role === role && sameKey(row, key));
+  const share = selected && sampleShare(result, selected);
+  if (share === undefined || share >= HEADLINE_MIN_SHARE) return undefined;
+  return `主结论要说整体或有代表性的规律：这一组只占该维度样本的 ${(share * 100).toFixed(2)}%，属个案，请把它写成发现之一，主结论改用整体或覆盖面更大的分组`;
 }
 
 // 计划节点里写到的筛选值和日期，也是用户语境里的业务名称。
@@ -99,9 +135,11 @@ function confidenceOf(node: string, metric: string, execution: PlanExecution): B
 
 type Outcome = { bound: BoundClaim } | { reason: string };
 
-function bindOne(claim: Claim, execution: PlanExecution, forbidden: (text: string) => boolean): Outcome {
+// 说明哪几个数字不能写，以及可以怎么改。
+const digitsReason = (items: string[]) => `${NO_DIGITS}：${items.slice(0, 4).map((item) => `「${item}」`).join("")}不能直接写；用占位符，或改成「最高」「多数」「约一倍」这类文字`;
+function bindOne(claim: Claim, execution: PlanExecution, forbidden: (text: string) => string[]): Outcome {
   const stripped = claim.text.replace(/\{[^}]*\}/g, "");
-  if (forbidden(stripped)) return { reason: NO_DIGITS };
+  const digits = forbidden(stripped); if (digits.length) return { reason: digitsReason(digits) };
   const used = [...claim.text.matchAll(/\{([^}]*)\}/g)].map((match) => match[1]);
   const unknown = used.find((name) => !(PLACEHOLDERS as readonly string[]).includes(name));
   if (unknown !== undefined) return { reason: `未知占位符 {${unknown}}` };
@@ -111,6 +149,10 @@ function bindOne(claim: Claim, execution: PlanExecution, forbidden: (text: strin
   if (!result) return { reason: `计划节点「${claim.node}」不存在` };
   if (result.status !== "completed") return { reason: `计划节点「${claim.node}」未完成（${result.status === "unsupported" ? "不支持" : "失败"}）` };
   const role = claim.role ?? defaultRole(result);
+  // 下钻、扫描沿用所指对比的范围，同样受这条限制。
+  const scopeNode = "of" in result.node ? execution.results.get(result.node.of)?.node ?? result.node : result.node;
+  const usedRoles = [role, ...used.filter((name) => name !== "value" && name !== "deviation")] as NodeRole[];
+  if (usedRoles.some((wanted) => totalAcrossWindows(scopeNode, claim.metric, wanted))) return { reason: TOTAL_ACROSS_WINDOWS };
   // {value} 是所选那一行；如果所选角色已经用具名占位（如 {change}）写出，{value} 改指这一组的水平值
   // （对比类节点的目标值，汇总节点的值），避免同一个数写两遍。
   const named = new Set(used.filter((name) => name !== "value"));
@@ -205,22 +247,25 @@ export function bindClaims(draft: ClaimDraft, execution: PlanExecution, literals
   };
   // 纯文本条目不能带数字；带数字的剔除并记录。
   // 行动、不能下的结论和追问没有绑定数据行，占位符不会被填值，原样留下的 {change} 一并剔除。
-  const textIssue = (text: string) => /\{[^}]*\}/.test(text) ? NO_PLACEHOLDER : forbidden(text) ? NO_DIGITS : undefined;
+  const textIssue = (text: string) => { if (/\{[^}]*\}/.test(text)) return NO_PLACEHOLDER; const digits = forbidden(text); return digits.length ? digitsReason(digits) : undefined; };
   const cleanText = (kind: DroppedText["kind"], items: string[]): string[] => items.filter((text) => {
     const reason = textIssue(text); if (!reason) return true;
     droppedText.push({ kind, text, reason });
     return false;
   });
   let headline = attempt(draft.headline);
+  if (headline) { const issue = headlineIssue(headline, execution); if (issue) { dropped.push({ claim: draft.headline, reason: issue }); headline = undefined; } }
   // 序号映射：草稿里的 claims 序号 → 保留后的序号；被提升为 headline 或被丢弃的不在映射里。
   const kept: BoundClaim[] = []; const remap = new Map<number, number>();
   draft.claims.slice(0, MAX_CLAIMS).forEach((claim, index) => {
     const bound = attempt(claim);
     if (bound) { remap.set(index, kept.length); kept.push(bound); }
   });
-  if (!headline && kept.length) {
-    headline = kept.shift();
-    for (const [index, mapped] of [...remap]) { if (mapped === 0) remap.delete(index); else remap.set(index, mapped - 1); }
+  // 主结论缺失时，由第一条可以当主结论（不是个案）的发现顶上，其余重新编号。
+  const promoted = headline ? -1 : kept.findIndex((claim) => !headlineIssue(claim, execution));
+  if (promoted >= 0) {
+    headline = kept.splice(promoted, 1)[0];
+    for (const [index, mapped] of [...remap]) { if (mapped === promoted) remap.delete(index); else if (mapped > promoted) remap.set(index, mapped - 1); }
   }
   const actions: Binding["actions"] = [];
   for (const action of draft.actions) {

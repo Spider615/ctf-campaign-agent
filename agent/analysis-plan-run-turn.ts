@@ -297,6 +297,8 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       // 原话里的日期、时长和业务名称可以写进措辞。
       const literals = [request.question, ...context];
       let draft: ClaimDraft | undefined; let binding: Binding | undefined; let claimAttempts = 0;
+      // 首次提交被退回后模型没有再交（轮数用完或直接结束）时，用首次提交里通过的条目，不整份丢掉。
+      let firstDraft: ClaimDraft | undefined; let firstBinding: Binding | undefined;
       await runStep({
         name: "submit_claims", description: "提交绑定计划节点的结论措辞", shape: claimsShape, thinking: false,
         prompt: claimsPrompt(request.question, executionSummary(execution, capabilities)),
@@ -306,13 +308,14 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
           const submitted = input as unknown as ClaimDraft; const result = bindClaims(submitted, execution, literals);
           // 首次提交有结论或建议被丢弃时，把原因退回，同一次调用内整份改一次；第二次提交按绑定结果直接采用。
           const rejected = [...result.dropped.map((item) => ({ text: item.claim.text, reason: item.reason })), ...result.droppedText.map((item) => ({ text: item.text, reason: item.reason }))];
-          if (rejected.length && claimAttempts === 1) return { accepted: false, note: "以下条目没有通过，请修改后重新提交整份结论（通过的条目也要一并提交）", rejected };
+          if (rejected.length && claimAttempts === 1) { firstDraft = submitted; firstBinding = result; return { accepted: false, note: "以下条目没有通过，请修改后重新提交整份结论（通过的条目也要一并提交）", rejected }; }
           draft = submitted; binding = result;
           return { accepted: true, headline: binding.headline?.rendered ?? null, claims: binding.claims.map((claim) => claim.rendered), dropped: binding.dropped.map((item) => ({ text: item.claim.text, reason: item.reason })), droppedText: binding.droppedText };
         },
       });
+      if (!binding && firstBinding) { draft = firstDraft; binding = firstBinding; }
       binding ??= { claims: [], actions: [], dropped: [], droppedText: [], cannotConclude: [], questions: [] };
-      audit("claims", { draft: draft ?? null, binding });
+      audit("claims", { draft: draft ?? null, binding, attempts: claimAttempts });
 
       // 措辞复核：0 为主结论，其余为保留的结论；改写重新绑定，不通过视同删除并记入丢弃。
       const reviewNotes: string[] = [];

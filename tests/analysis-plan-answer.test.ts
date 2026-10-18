@@ -178,3 +178,13 @@ test("planAnswerText 依次拼出主结论、结论、行动、不能下结论�
   for (const part of ["单数也增加", "备货", "缺少门店口径", "口径待确认：单数"]) assert.ok(text.includes(part), part);
   assert.ok(text.indexOf("备货") < text.indexOf("缺少门店口径"));
 });
+
+test("主结论绑定分组汇总时，关键数据表和图按分组从高到低列出", () => {
+  const m: PlanNode = { id: "m", op: "measure", scope: scope(), by: ["district"], metrics: ["amount_per_day"] };
+  const exec = build([[m, [row("g1", "value", { district: "南区/B区" }), row("g2", "value", { district: "东区/A区" })]]], [fact("g1", 10, "人民币/日", ["o1"], "amount_per_day"), fact("g2", 30, "人民币/日", ["o2"], "amount_per_day")]);
+  const answer = assemblePlanAnswer(input(exec, binding({ headline: bound("m", ["g2"], "东区/A区最高", { select: { district: "东区/A区" }, assert: "largest" }) })));
+  assert.equal(answer.figures?.targetLabel, "日均实收");
+  assert.deepEqual(answer.figures?.rows.map((item) => item.label), ["东区/A区", "南区/B区"]);
+  assert.equal(answer.chart?.kind, "bar");
+  assert.deepEqual(answer.chart?.categories.map((item) => item.label), ["东区/A区", "南区/B区"]);
+});

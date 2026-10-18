@@ -286,3 +286,13 @@ test("答案证据只保留被引用事实及其推导来源，且仍能通过�
   assert.equal(ids.size, reachable.size, "不保留未被引用的事实");
   assert.doesNotThrow(() => validatePlanAnswer(JSON.parse(JSON.stringify(answer))));
 });
+
+test("结论首次被退回后模型没有再交时，采用首次提交里通过的条目", async (t) => {
+  const config = setup(t);
+  const { query } = scripted({ submit_claims: async (call) => {
+    await call("submit_claims", { headline: { node: "c1", metric: "amount", assert: "up", text: "实收高 {delta}" }, claims: [{ node: "c1", metric: "quantity", assert: "flat", text: "件数变化 999 件" }], actions: [], cannotConclude: [], questions: [] });
+  } });
+  const answer = await run(config, query);
+  assert.match(answer.headline!.text, /^实收高 \+/);
+  assert.equal(answer.status, "partial");
+});

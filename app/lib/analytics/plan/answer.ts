@@ -5,7 +5,7 @@ import type { AnalysisCapabilities, AnalysisEvidence, AnalysisFact, PlanAnswer, 
 import { SEMANTIC_DIMENSIONS, type SemanticDimensionId } from "../semantic/model.ts";
 import { isToolTrace } from "../../tool-trace.ts";
 import type { ResolvedVisualization } from "../visualization-types.ts";
-import { displayUnit, formatValue } from "./bind.ts";
+import { displayUnit, formatValue, totalAcrossWindows } from "./bind.ts";
 import type { Binding, BoundClaim } from "./bind.ts";
 import type { NodeRow, PlanExecution } from "./execute.ts";
 import { DEFAULT_MIN_ROWS, type PlanNode, type PlanScope } from "./types.ts";
@@ -191,6 +191,17 @@ function chartFor(input: PlanAnswerInput, factsById: Map<string, AnalysisFact>, 
     return points.length >= 3 ? { kind: "bar", title: `${label}变化：不同对齐方式的对比`, selectionLabel: `${points.length} 种对齐方式`, points } : undefined;
   }
 
+  // 分组汇总（如各城市级别的每店实收）：按值从高到低画柱状图。
+  if (node.op === "measure" && node.by?.length && !node.by.includes("day")) {
+    const points = result.rows
+      .filter((row) => row.metric === metric && row.role === "value" && Object.keys(row.key).length > 0)
+      .map((row) => ({ row, fact: factOf(row) }))
+      .filter((item): item is { row: NodeRow; fact: AnalysisFact } => item.fact !== undefined && item.fact.value !== null)
+      .sort((a, b) => b.fact.value! - a.fact.value!).slice(0, MAX_BARS)
+      .map(({ row, fact }): Point => ({ key: JSON.stringify(row.key), label: keyText(row.key), fact }));
+    return points.length >= 2 ? { kind: "bar", title: `各${node.by.map((id) => dimensionLabel(input.capabilities, id)).join("、")}的${label}`, selectionLabel: `按${label}从高到低取前 ${points.length} 组`, points } : undefined;
+  }
+
   if (node.op === "measure" && node.by?.includes("day")) {
     const points = result.rows
       .filter((row) => row.metric === metric && row.role === "value" && Object.keys(row.key).length === 1 && row.key.day !== undefined)
@@ -228,26 +239,38 @@ const MAX_FIGURES = 6;
 // 从结论绑定的对比节点取总体行：每个指标一行，给目标、参照与变化；没有对比时取单值。
 function deriveFigures(input: PlanAnswerInput, factsById: Map<string, AnalysisFact>): PlanAnswer["figures"] {
   const bound = [...(input.binding.headline ? [input.binding.headline] : []), ...input.binding.claims];
-  const nodes = [...new Set([...bound.map((claim) => claim.node), ...[...input.execution.results.keys()]])];
-  const contrast = nodes.map((id) => input.execution.results.get(id)).find((result) => result?.status === "completed" && result.node.op === "contrast");
+  // 依次看主结论、各条结论绑定的节点，再看其余节点；下钻、扫描回到它们所指的对比。
+  const resolve = (id: string) => { const result = input.execution.results.get(id); return result && "of" in result.node ? input.execution.results.get(result.node.of) ?? result : result; };
+  // 没被结论引用的节点里，对比排在汇总前面：有对比时表格给出目标、参照和变化。
+  const rest = [...input.execution.results.values()].sort((a, b) => Number(b.node.op === "contrast") - Number(a.node.op === "contrast")).map((result) => result.node.id);
+  const ordered = [...new Set([...bound.map((claim) => claim.node), ...rest].map(resolve))].filter((result) => result?.status === "completed");
   const show = (fact: AnalysisFact | undefined, signed = false) => fact ? formatValue(fact, signed) : undefined;
-  const pick = (rows: NodeRow[], metric: string, role: string) => { const row = rows.find((item) => item.metric === metric && item.role === role && !Object.keys(item.key).length); return row ? factsById.get(row.factId) : undefined; };
-  if (contrast && contrast.node.op === "contrast") {
-    const node = contrast.node;
-    const rows: PlanAnswerFigure[] = [];
-    for (const metric of node.metrics) {
-      const target = pick(contrast.rows, metric, "target"); const reference = pick(contrast.rows, metric, "reference"); const change = pick(contrast.rows, metric, "change");
-      if (!target || target.value === null) continue;
-      rows.push({ label: metricLabel(input.capabilities, metric), target: show(target)!, ...(reference ? { reference: show(reference) } : {}), ...(change && change.value !== null ? { change: show(change, true) } : {}), factIds: [target, reference, change].filter((fact): fact is AnalysisFact => Boolean(fact)).map((fact) => fact.id) });
-      if (rows.length >= MAX_FIGURES) break;
+  const pick = (rows: NodeRow[], metric: string, role: string, key: Record<string, string> = {}) => { const row = rows.find((item) => item.metric === metric && item.role === role && JSON.stringify(item.key) === JSON.stringify(key)); return row ? factsById.get(row.factId) : undefined; };
+  for (const result of ordered) {
+    const node = result!.node;
+    if (node.op === "contrast") {
+      const rows: PlanAnswerFigure[] = [];
+      // 关键数据表同样不放天数不同两段的合计值对比。
+      for (const metric of node.metrics.filter((id) => !totalAcrossWindows(node, id, "change"))) {
+        const target = pick(result!.rows, metric, "target"); const reference = pick(result!.rows, metric, "reference"); const change = pick(result!.rows, metric, "change");
+        if (!target || target.value === null) continue;
+        rows.push({ label: metricLabel(input.capabilities, metric), target: show(target)!, ...(reference ? { reference: show(reference) } : {}), ...(change && change.value !== null ? { change: show(change, true) } : {}), factIds: [target, reference, change].filter((fact): fact is AnalysisFact => Boolean(fact)).map((fact) => fact.id) });
+        if (rows.length >= MAX_FIGURES) break;
+      }
+      if (rows.length) return { targetLabel: scopeLabel(node.target, node.reference), referenceLabel: scopeLabel(node.reference, node.target), rows };
     }
-    if (rows.length) return { targetLabel: scopeLabel(node.target, node.reference), referenceLabel: scopeLabel(node.reference, node.target), rows };
-  }
-  const measure = nodes.map((id) => input.execution.results.get(id)).find((result) => result?.status === "completed" && result.node.op === "measure");
-  if (measure && measure.node.op === "measure") {
-    const rows: PlanAnswerFigure[] = [];
-    for (const metric of measure.node.metrics) { const fact = pick(measure.rows, metric, "value"); if (fact && fact.value !== null) rows.push({ label: metricLabel(input.capabilities, metric), target: show(fact)!, factIds: [fact.id] }); if (rows.length >= MAX_FIGURES) break; }
-    if (rows.length) return { targetLabel: scopeLabel(measure.node.scope), rows };
+    if (node.op === "measure") {
+      const metric = bound.find((claim) => claim.node === node.id)?.metric ?? node.metrics[0];
+      // 分组汇总：按所问指标列出各组（从高到低），每组一行；没有分组时列出各指标的总体值。
+      const grouped = result!.rows.filter((row) => row.metric === metric && row.role === "value" && Object.keys(row.key).length).map((row) => ({ row, fact: factsById.get(row.factId) })).filter((item): item is { row: NodeRow; fact: AnalysisFact } => item.fact !== undefined && item.fact.value !== null);
+      if (grouped.length >= 2) {
+        const rows = grouped.sort((a, b) => b.fact.value! - a.fact.value!).slice(0, MAX_FIGURES).map(({ row, fact }): PlanAnswerFigure => ({ label: keyText(row.key), target: show(fact)!, factIds: [fact.id] }));
+        return { targetLabel: metricLabel(input.capabilities, metric), rows };
+      }
+      const rows: PlanAnswerFigure[] = [];
+      for (const id of node.metrics) { const fact = pick(result!.rows, id, "value"); if (fact && fact.value !== null) rows.push({ label: metricLabel(input.capabilities, id), target: show(fact)!, factIds: [fact.id] }); if (rows.length >= MAX_FIGURES) break; }
+      if (rows.length) return { targetLabel: scopeLabel(node.scope), rows };
+    }
   }
   return undefined;
 }
@@ -259,7 +282,9 @@ function fallbackHeadline(input: PlanAnswerInput, factsById: Map<string, Analysi
     if (result.status !== "completed") continue;
     const node = result.node;
     if (node.op === "contrast") {
-      const metric = node.metrics[0]; const row = (role: string) => result.rows.find((item) => item.metric === metric && item.role === role && !Object.keys(item.key).length);
+      // 天数不同的两段不拿合计值当兜底主结论，取第一个可比的指标。
+      const metric = node.metrics.find((id) => !totalAcrossWindows(node, id, "change")); if (!metric) continue;
+      const row = (role: string) => result.rows.find((item) => item.metric === metric && item.role === role && !Object.keys(item.key).length);
       const target = row("target"); const reference = row("reference"); const change = row("change");
       const t = target && factsById.get(target.factId); const r = reference && factsById.get(reference.factId); const c = change && factsById.get(change.factId);
       if (!t || !r || t.value === null || r.value === null) continue;
