@@ -1,0 +1,214 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>洞察改版预览</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* 布局：一列文档，三张「改法」卡片依次往下；热力图是主角，单张图预览在它下方，点格子联动 */
+:root {
+  --bg: #f6f8fb; --surface: #ffffff; --ink: #18243a; --muted: #5d6f87; --line: #dce5f0;
+  --accent: #8c2038; --blue: #247cff; --ai: #8b6fd6; --warn: #c6922b; --weak: #c7d1dd;
+  --heat0: #f1f5fa; --heat1: #247cff;
+  --f-display: "Noto Serif SC", "Songti SC", serif; --f-body: "Noto Sans SC", "PingFang SC", system-ui, sans-serif; --f-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1520; --surface: #161e2c; --ink: #e6ecf5; --muted: #93a3b8; --line: #283447;
+  --accent: #e07a92; --blue: #5b9bff; --ai: #a993ec; --warn: #e0b452; --weak: #3a4759; --heat0: #1b2433; --heat1: #5b9bff; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f1520; --surface: #161e2c; --ink: #e6ecf5; --muted: #93a3b8; --line: #283447;
+  --accent: #e07a92; --blue: #5b9bff; --ai: #a993ec; --warn: #e0b452; --weak: #3a4759; --heat0: #1b2433; --heat1: #5b9bff; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font: 15px/1.7 var(--f-body); }
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 40px 72px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 28px }
+h1 { font: 700 30px/1.25 var(--f-display); margin: 0; text-wrap: balance }
+h2 { font: 700 20px/1.35 var(--f-display); margin: 0; text-wrap: balance }
+h3 { font: 600 14px/1.5 var(--f-body); margin: 0 }
+p { margin: 0; max-width: 68ch }
+.lede { color: var(--muted) }
+.eyebrow { font: 500 12px/1 var(--f-mono); letter-spacing: .08em; color: var(--accent); text-transform: uppercase }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; display: grid; gap: 14px; min-width: 0 }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px }
+@media (max-width: 720px) { .cols { grid-template-columns: 1fr } }
+.cmp { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 8px; min-width: 0 }
+.cmp .tag { font: 500 12px var(--f-body); color: var(--muted) }
+.cmp.now .tag::before { content: "现在 · "; color: var(--muted) }
+.cmp.next .tag::before { content: "改后 · "; color: var(--accent) }
+.cmp.next { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)) }
+.scroll { overflow-x: auto; min-width: 0 }
+table.heat { border-collapse: separate; border-spacing: 3px; font-size: 13px; min-width: 640px }
+.heat th { font-weight: 500; color: var(--muted); text-align: left; white-space: nowrap; padding: 2px 6px }
+.heat thead th { text-align: center; font-size: 12px; vertical-align: bottom }
+.heat td { width: 64px; height: 34px; text-align: center; border-radius: 6px; font: 500 12px var(--f-mono); font-variant-numeric: tabular-nums; cursor: pointer; border: 2px solid transparent }
+.heat td:focus-visible, .heat td.on { border-color: var(--accent); outline: none }
+.heat td.na { cursor: default; color: var(--muted); background: transparent }
+.src { display: inline-grid; place-items: center; min-width: 18px; height: 16px; padding: 0 3px; border-radius: 4px; font: 600 10px var(--f-body); color: #fff; margin-right: 5px; vertical-align: 1px }
+.s-field, .s-derived { background: var(--blue) } .s-inferred { background: var(--ai) }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; font-size: 12px; color: var(--muted) }
+.ramp { display: inline-block; width: 120px; height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--heat0), var(--heat1)) }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px }
+.tabs button { font: 500 13px var(--f-body); min-height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer }
+.tabs button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent) }
+.tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.bars { display: grid; gap: 6px }
+.bar { display: grid; grid-template-columns: 110px 1fr 40px; gap: 10px; align-items: center; font-size: 13px }
+.bar .t { height: 10px; border-radius: 5px; background: var(--heat0); overflow: hidden }
+.bar .t i { display: block; height: 100% ; border-radius: 5px }
+.bar .n { font: 500 12px var(--f-mono); text-align: right; color: var(--muted); font-variant-numeric: tabular-nums }
+.bar.weak { color: var(--muted) }
+.fold { font-size: 13px; color: var(--muted) }
+.note { font-size: 13px; color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); color: var(--muted) }
+.pill.keep { border-color: var(--blue); color: var(--blue) } .pill.drop { text-decoration: line-through }
+ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 4px }
+.mono { font-family: var(--f-mono); font-size: 13px }
+svg text { fill: var(--ink) }
+</style>
+</head><body>
+<div class="wrap">
+  <header style="display:grid;gap:10px">
+    <span class="eyebrow">智能洞察 · 改版预览 · 未改代码</span>
+    <h1>12 张图看起来一样，改成先看一张总览</h1>
+    <p class="lede">下面的数字都是用 2025 年 8 月真实数据（一般足金类、克减类，对照一般開單）按新算法试算的，代码还没动。确认后再改。</p>
+  </header>
+
+  <section class="card" aria-labelledby="h-why">
+    <span class="eyebrow">问题</span>
+    <h2 id="h-why">为什么切指标时图看着没变</h2>
+    <ul class="plain">
+      <li>每张图都画同样 30 多个节点、同样位置，只有连线粗细变；弱关系是细灰线，一眼看不出差别。</li>
+      <li>原来的强度算法会被每天的自然波动放大：克减力度在 5 个指标下都顶到 100，退货率下 12 个维度全「明显」，其实是噪声。</li>
+      <li>有几个指标彼此几乎一样（折扣率和每克让利相关 1.00），留着只是重复。</li>
+    </ul>
+  </section>
+
+  <section class="card" aria-labelledby="h-heat">
+    <span class="eyebrow">改法 1 · 新增首屏</span>
+    <h2 id="h-heat">因素 × 指标总览：哪个因素影响哪个目标，一眼看完</h2>
+    <p class="lede">行是因素，列是保留的 6 个指标，颜色越深关系越明显（0–100）。点任一格，下方显示那张图会是什么样。</p>
+    <div class="legend"><span>关系</span><span>0</span><span class="ramp" aria-hidden="true"></span><span>100</span>
+      <span><span class="src s-field">数</span>数据里真实存在</span><span><span class="src s-inferred">AI</span>AI 判断</span><span>— 当前筛选下算不出</span></div>
+    <div class="scroll"><table class="heat" id="heat"><thead></thead><tbody></tbody></table></div>
+    <p class="note" id="read">读法示例：克减力度主要影响每克让利、毛利率和客单；以旧换新率跟克减力度几乎无关（1），反而看门店属性和地区。这种「不同目标看不同因素」只有并排才看得出来。</p>
+  </section>
+
+  <section class="card" aria-labelledby="h-one">
+    <span class="eyebrow">改法 2 · 单张图</span>
+    <h2 id="h-one">点进某个指标后：只突出有关系的因素</h2>
+    <div class="tabs" id="tabs" role="group" aria-label="切换中心指标"></div>
+    <div class="cols">
+      <div class="cmp now"><span class="tag">所有维度都画，弱的是细灰线</span><svg id="svg-now" viewBox="0 0 420 300" role="img" aria-label="现在的图：所有因素一样大"></svg></div>
+      <div class="cmp next"><span class="tag">强的放大并标数字，弱的收进角落</span><svg id="svg-next" viewBox="0 0 420 300" role="img" aria-label="改后的图：只突出有关系的因素"></svg></div>
+    </div>
+    <div class="bars" id="bars"></div>
+    <p class="fold" id="fold"></p>
+  </section>
+
+  <section class="card" aria-labelledby="h-trim">
+    <span class="eyebrow">改法 3 · 精简指标</span>
+    <h2 id="h-trim">12 个指标保留 6 个</h2>
+    <div class="cols">
+      <div class="cmp"><h3>保留</h3><div id="keep" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        <p class="fold">它们之间的「关系图样」差别最大：让利、日销、单件克重、客单、以旧换新、毛利各看不同的因素。</p></div>
+      <div class="cmp"><h3>去掉</h3><ul class="plain" id="drop"></ul></div>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-calc">
+    <span class="eyebrow">改法 4 · 算法</span>
+    <h2 id="h-calc">强度怎么重新算</h2>
+    <div class="cols">
+      <div class="cmp now"><span class="tag">取值之间差多少 ÷ 整体量级</span><p class="fold">不知道这个差别里有多少是每天自然起伏，所以小样本、波动大的指标（退货率）会虚高；不同指标的分母不同，不能横比。</p></div>
+      <div class="cmp next"><span class="tag">差别里扣掉日间波动后，占总波动的比例</span><p class="fold">每个取值按天算 31 个点，先看它自己每天怎么晃，再看取值之间的差距超出了多少（方差分析里的 ω²）。0 是看不出差别，100 是差别全由这个因素决定。所有指标同一把尺子，可以横比。</p></div>
+    </div>
+    <p class="note">效果：退货率从「12 个都明显」变成全部 ≤ 3；克减力度不再一律 100，而是每克让利 91、单件克重 68、以旧换新 1，能看出它到底影响谁。</p>
+  </section>
+
+  <section class="card" aria-labelledby="h-keep">
+    <span class="eyebrow">不变</span>
+    <h2 id="h-keep">保持不动的部分</h2>
+    <ul class="plain">
+      <li>来源标注（数 / 算 / AI / 补）、点节点高亮影响范围、侧栏的依据、异常、推荐。</li>
+      <li>「问这张图」：选中总览的某一格或图上节点都能问。</li>
+      <li>去智能问答、按这个建活动的入口。</li>
+    </ul>
+  </section>
+</div>
+<script>
+const DATA = {"dims": [["priceBand", "价位段", "product", "field"], ["keySeries", "重点系列", "product", "field"], ["offerDepth", "克减力度", "param", "inferred"], ["itemWeight", "单件克重段", "param", "derived"], ["storeArea", "门店面积", "store", "field"], ["salesLevel", "销售级别", "store", "field"], ["cityTier", "城市级别", "store", "field"], ["shopType", "商圈铺型", "store", "field"], ["region", "大区", "store", "field"], ["storeAge", "店龄段", "store", "inferred"], ["storeType", "分店性质", "store", "field"], ["festival", "节庆", "time", "derived"], ["dayType", "日类型", "time", "derived"]], "keep": [{"id": "give_per_gram", "label": "每克让利", "unit": "元/克", "w": [31, 0, 91, 2, 0, 1, 2, 0, 0, 0, 0, 38, 1], "top": [[["50k-70k", 39.35]], [["非重点系列", 33.07]], [["克减50元", 52.97]], [["20克以上", 34.36]], [["30-59平方米", 33.15]], [["500万<月均销售金额≤800万", 35]], [["一线城市", 35.45]], [["百货", 32.96]], [["东区", 31.96]], [["6-10年", 32.45]], [["合营(寄售)", 35.74]], [["七夕节", 38.22]], [["周六", 34.42]]], "bottom": [[["0.5k-1k", -14.94]], [["无系列", 31.41]], [["克减20元", 4.01]], [["<2克", 29.32]], [["200-399平方米", 30.68]], [["月均销售金额≤80万", 30.87]], [["五线城市", 31.21]], [["购物中心", 32.28]], [["西区", 31.25]], [["4-5年", 31.66]], [["加盟(批发)", 31.99]], [["非节庆", 30.5]], [["工作日", 31.31]]]}, {"id": "lift_per_store_day", "label": "每店日均实收", "unit": "元/店日", "w": [6, 8, 56, 1, 22, 23, 7, 7, 0, 3, 13, 27, 0], "top": [[["3K-5K", 691.8]], [["重点系列", 4305.04]], [["克减50元", 16627.97]], [["5-10克", 1125.69]], [["200-399平方米", 38042.53]], [["月均销售金额＞800万", 79625.85]], [["一线城市", 13871.81]], [["购物中心", 10386.21]], [["西区", 9649.06]], [["10年以上", 13491.76]], [["合营(寄售)", 21523.35]], [["七夕节", 20220.02]], [["周六", 10607.09]]], "bottom": [[["50k-70k", -1453.31]], [["非重点系列", -589.86]], [["克减20元", -14344.22]], [["<2克", -45.02]], [["30-59平方米", -998.67]], [["月均销售金额≤80万", 1983.63]], [["四线城市", 264.37]], [["街铺", 699.06]], [["北区", 4391.8]], [["2-3年", 3822.92]], [["加盟(批发)", 20.58]], [["非节庆", 3127.47]], [["工作日", 5401.22]]]}, {"id": "grams_per_item", "label": "单件克重", "unit": "克/件", "w": [11, 11, 68, 31, 6, 0, 24, 0, 13, 0, 4, 4, 0], "top": [[["1k-2k", 0.02]], [["无系列", -0.09]], [["克减50元", 5.1]], [["10-20克", 0.06]], [["150-199平方米", 0.26]], [["150万<月均销售金额≤300万", -0.27]], [["五线城市", 0.22]], [["百货", -0.16]], [["西区", 0.14]], [["0-1年", -0.12]], [["合营(寄售)", 0.33]], [["七夕节", -0.01]], [["周日", -0.15]]], "bottom": [[["30k-50k", -0.31]], [["非重点系列", -0.69]], [["克减20元", -3.92]], [["20克以上", -0.82]], [["30-59平方米", -0.59]], [["月均销售金额＞800万", -0.63]], [["一线城市", -0.95]], [["购物中心", -0.22]], [["南区", -0.5]], [["6-10年", -0.33]], [["加盟(批发)", -0.33]], [["非节庆", -0.21]], [["周六", -0.2]]]}, {"id": "amount_per_order", "label": "单均实收", "unit": "元/单", "w": [42, 2, 62, 60, 8, 0, 28, 2, 15, 0, 0, 7, 1], "top": [[["0.5k-1k", 36.1]], [["无系列", -426.14]], [["克减50元", 9757.48]], [["<2克", -55.27]], [["200-399平方米", 26.49]], [["月均销售金额≤80万", -791.2]], [["五线城市", 188.72]], [["街铺", -512.67]], [["西区", -156.75]], [["10年以上", -609.26]], [["合营(寄售)", -479.35]], [["七夕节", -337.71]], [["工作日", -583.38]]], "bottom": [[["30k-50k", -1686.11]], [["非重点系列", -870.9]], [["克减20元", -5702.78]], [["20克以上", -2425.1]], [["30-59平方米", -1305.57]], [["500万<月均销售金额≤800万", -1618.16]], [["一线城市", -2035.03]], [["购物中心", -848.99]], [["南区", -1261.31]], [["6-10年", -985.49]], [["自营", -948.94]], [["非节庆", -795.75]], [["周六", -974.21]]]}, {"id": "trade_in_rate", "label": "以旧换新率", "unit": "%", "w": [34, 7, 1, 26, 0, 3, 31, 9, 24, 10, 30, 14, 30], "top": [[["0.5k-1k", -20.7]], [["无系列", -31.25]], [["克减30元", -31.29]], [["<2克", -21.6]], [["150-199平方米", -30.43]], [["月均销售金额≤80万", -29.2]], [["三线城市", -22.64]], [["街铺", -26.79]], [["北区", -21.4]], [["4-5年", -27.75]], [["加盟(批发)", -23.06]], [["非节庆", -28.93]], [["工作日", -27.05]]], "bottom": [[["50k-70k", -56.07]], [["非重点系列", -40.2]], [["克减40元", -37.46]], [["20克以上", -41.66]], [["200-399平方米", -32.51]], [["300万<月均销售金额≤500万", -38.1]], [["一线城市", -52.42]], [["购物中心", -35.54]], [["南区", -44.06]], [["10年以上", -40.72]], [["合营(寄售)", -60.65]], [["七夕节", -39.37]], [["周日", -41.12]]]}, {"id": "margin_rate", "label": "毛利率", "unit": "%", "w": [23, 0, 96, 13, 0, 0, 3, 0, 0, 0, 0, 42, 0], "top": [[["2K-3K", -1.93]], [["重点系列", -2.14]], [["克减20元", -0.85]], [["2-5克", -1.96]], [["150-199平方米", -2.11]], [["月均销售金额≤80万", -2.08]], [["二线城市", -2.09]], [["购物中心", -2.12]], [["西区", -2.04]], [["0-1年", -2.11]], [["自营", -2.06]], [["非节庆", -2.01]], [["工作日", -2.08]]], "bottom": [[["0.5k-1k", -2.9]], [["非重点系列", -2.23]], [["克减50元", -3.44]], [["20克以上", -2.36]], [["30-59平方米", -2.14]], [["500万<月均销售金额≤800万", -2.24]], [["一线城市", -2.35]], [["百货", -2.16]], [["东区", -2.16]], [["10年以上", -2.14]], [["加盟(寄售)", -2.15]], [["七夕节", -2.56]], [["周日", -2.25]]]}], "drop": [{"id": "discount_rate", "label": "折扣率", "w": [38, 0, 95, 9, 0, 0, 5, 0, 0, 0, 1, 40, 6], "why": "和每克让利几乎完全重合（相关 1.00），留一个就够"}, {"id": "penetration", "label": "活动渗透率", "w": [0, 6, 60, 0, 19, 1, 9, 5, 12, 2, 21, 40, 11], "why": "只能说明挂没挂优惠，跟克减力度的图基本一样"}, {"id": "items_per_order", "label": "单均行数", "w": [0, 12, 65, 2, 5, 2, 23, 6, 5, 1, 4, 12, 8], "why": "只有克减力度有差别，其余全弱，信息量低"}, {"id": "aged_share", "label": "老货动销占比", "w": [0, 0, 14, 0, 1, 2, 1, 0, 0, 3, 10, 11, 23], "why": "几乎没有维度能区分"}, {"id": "key_series_share", "label": "重点系列占比", "w": [2, null, 34, 3, 7, 3, 9, 0, 9, 0, 0, 2, 7], "why": "只有克减力度有差别"}, {"id": "return_rate", "label": "退货率", "w": [3, 0, 3, null, 1, 0, 0, 0, 0, 0, 0, 0, 0], "why": "修正噪声后所有维度都 ≤ 3，原来的「12 个都明显」是噪声"}]};
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const dims = DATA.dims; const keep = DATA.keep;
+const TAG = { field: "数", derived: "算", inferred: "AI" };
+const STRONG = 20;
+let current = 0;
+function heatColor(v) {
+  if (v === null) return "transparent";
+  const t = Math.min(1, v / 100);
+  return `color-mix(in srgb, ${css("--heat1")} ${Math.round(8 + t * 92)}%, ${css("--heat0")})`;
+}
+function renderHeat() {
+  const thead = document.querySelector("#heat thead"); const tbody = document.querySelector("#heat tbody");
+  thead.innerHTML = `<tr><th scope="col">因素</th>${keep.map((m, i) => `<th scope="col">${m.label}</th>`).join("")}</tr>`;
+  // 按「最大影响」排序：总览从最重要的因素看起
+  const order = dims.map((d, i) => ({ d, i, max: Math.max(...keep.map((m) => m.w[i] ?? 0)) })).sort((a, b) => b.max - a.max);
+  tbody.innerHTML = order.map(({ d, i }) => `<tr><th scope="row"><span class="src s-${d[3]}">${TAG[d[3]]}</span>${d[1]}</th>${keep.map((m, j) => {
+    const v = m.w[i];
+    if (v === null) return `<td class="na">—</td>`;
+    const dark = v >= 45;
+    return `<td tabindex="0" data-m="${j}" data-d="${i}" style="background:${heatColor(v)};color:${dark ? "#fff" : css("--ink")}" aria-label="${d[1]}对${m.label}：${v}">${v}</td>`;
+  }).join("")}</tr>`).join("");
+  tbody.querySelectorAll("td[data-m]").forEach((td) => {
+    const go = () => { select(+td.dataset.m, +td.dataset.d); document.getElementById("h-one").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); };
+    td.addEventListener("click", go); td.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+  });
+}
+function renderTabs() {
+  document.getElementById("tabs").innerHTML = keep.map((m, i) => `<button type="button" data-i="${i}" aria-pressed="${i === current}">${m.label}</button>`).join("");
+  document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => select(+b.dataset.i)));
+}
+const fmt = (v, unit) => v == null ? "—" : `${Math.abs(v) >= 100 ? Math.round(v).toLocaleString("zh-CN") : (+v.toFixed(2))}${unit}`;
+function drawGraph(svg, m, focused, mode) {
+  const W = 420, H = 300, cx = 210, cy = 150;
+  const items = dims.map((d, i) => ({ d, i, v: m.w[i] })).filter((x) => x.v !== null);
+  let shown, rest;
+  if (mode === "now") { shown = items; rest = []; }
+  else { shown = items.filter((x) => x.v >= STRONG).sort((a, b) => b.v - a.v); rest = items.filter((x) => x.v < STRONG); }
+  const n = shown.length; const parts = [];
+  shown.forEach((x, k) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * k) / Math.max(n, 1);
+    const r = mode === "now" ? 118 : 70 + (1 - x.v / 100) * 60;
+    const px = cx + r * 1.35 * Math.cos(a), py = cy + r * Math.sin(a);
+    const strong = x.v >= STRONG;
+    const color = mode === "now" ? (strong ? css("--blue") : css("--weak")) : (x.d[3] === "inferred" ? css("--ai") : css("--blue"));
+    const width = mode === "now" ? (strong ? 1.5 + x.v / 100 * 4 : 1) : 1.5 + x.v / 100 * 7;
+    const hl = focused === x.i;
+    parts.push(`<line x1="${cx}" y1="${cy}" x2="${px}" y2="${py}" stroke="${hl ? css("--accent") : color}" stroke-width="${width}" stroke-linecap="round"/>`);
+    const label = x.d[1]; const w = label.length * (mode === "now" ? 10 : 12) + (mode === "now" ? 10 : 46);
+    const fs = mode === "now" ? 10 : 12;
+    parts.push(`<g><rect x="${px - w / 2}" y="${py - 12}" width="${w}" height="24" rx="6" fill="${css("--surface")}" stroke="${hl ? css("--accent") : color}" stroke-width="${hl ? 2 : 1}"/>
+      <text x="${px - (mode === "now" ? 0 : 14)}" y="${py + 4}" font-size="${fs}" text-anchor="middle" style="fill:${mode === "now" && !strong ? css("--muted") : css("--ink")}">${label}</text>
+      ${mode === "next" ? `<text x="${px + w / 2 - 16}" y="${py + 4}" font-size="11" text-anchor="middle" font-family="JetBrains Mono, monospace" style="fill:${color};font-weight:600">${x.v}</text>` : ""}</g>`);
+  });
+  parts.push(`<rect x="${cx - 52}" y="${cy - 18}" width="104" height="36" rx="10" fill="${css("--surface")}" stroke="${css("--blue")}" stroke-width="1.5"/><text x="${cx}" y="${cy + 5}" font-size="14" font-weight="700" text-anchor="middle">${m.label}</text>`);
+  if (mode === "next" && rest.length) parts.push(`<text x="10" y="${H - 10}" font-size="11" style="fill:${css("--muted")}">另有 ${rest.length} 个因素关系弱（&lt;${STRONG}），收在下方</text>`);
+  if (mode === "next" && !n) parts.push(`<text x="${cx}" y="${cy + 46}" font-size="12" text-anchor="middle" style="fill:${css("--muted")}">没有关系明显的因素</text>`);
+  svg.innerHTML = parts.join("");
+}
+function select(i, focused = null) {
+  current = i; const m = keep[i];
+  document.querySelectorAll("#tabs button").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.i === i)));
+  document.querySelectorAll("#heat td").forEach((td) => td.classList.toggle("on", +td.dataset.m === i && (focused === null || +td.dataset.d === focused)));
+  drawGraph(document.getElementById("svg-now"), m, focused, "now");
+  drawGraph(document.getElementById("svg-next"), m, focused, "next");
+  const rows = dims.map((d, k) => ({ d, k, v: m.w[k], top: m.top[k]?.[0], bottom: m.bottom[k]?.[0] })).filter((x) => x.v !== null).sort((a, b) => b.v - a.v);
+  const strong = rows.filter((x) => x.v >= STRONG); const weak = rows.filter((x) => x.v < STRONG);
+  document.getElementById("bars").innerHTML = strong.map((x) => `<div class="bar"><span><span class="src s-${x.d[3]}">${TAG[x.d[3]]}</span>${x.d[1]}</span>
+    <span class="t"><i style="width:${x.v}%;background:${x.d[3] === "inferred" ? css("--ai") : css("--blue")}"></i></span><span class="n">${x.v}</span></div>
+    <p class="fold" style="margin:-2px 0 4px 120px">最高「${x.top?.[0] ?? "—"}」${fmt(x.top?.[1], m.unit)}，最低「${x.bottom?.[0] ?? "—"}」${fmt(x.bottom?.[1], m.unit)}</p>`).join("") || `<p class="fold">没有关系明显的因素。</p>`;
+  document.getElementById("fold").textContent = weak.length ? `关系弱、默认收起：${weak.map((x) => `${x.d[1]} ${x.v}`).join("，")}` : "";
+}
+function renderTrim() {
+  document.getElementById("keep").innerHTML = keep.map((m) => `<span class="pill keep">${m.label}</span>`).join("");
+  document.getElementById("drop").innerHTML = DATA.drop.map((m) => `<li><span class="pill drop">${m.label}</span> ${m.why}</li>`).join("");
+}
+renderHeat(); renderTabs(); renderTrim(); select(0);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderHeat(); select(current); });
+</script></body></html>
