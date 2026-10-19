@@ -1,5 +1,5 @@
 import { VISUALIZATION_SCHEMA } from "../analytics/visualization-types.ts";
-import { PLAN_ANSWER_SCHEMA } from "../analytics/analysis-v2-types.ts";
+import { PLAN_ANSWER_V4_SCHEMA } from "../analytics/analysis-v2-types.ts";
 import { consumeAnalyticsStream, validateAnalyticsAnswerResult } from "../analytics/stream.ts";
 import type { AnalysisReport } from "../analytics/types.ts";
 import { throwIfTurnCancelled } from "../cancellation.ts";
@@ -19,7 +19,7 @@ export async function analyticsRequest<T>(path: string, body?: unknown, signal?:
   return result;
 }
 export async function explainAnalyticsReport(report: AnalysisReport, question: string, signal?: AbortSignal) {
-  const response = await fetchAnalyticsRequest(`/api/analytics/reports/${encodeURIComponent(report.id)}/explain`, { question }, signal, { "X-Analytics-Answer-Schema": PLAN_ANSWER_SCHEMA, "X-Analytics-Visuals": VISUALIZATION_SCHEMA, accept: "application/x-ndjson" });
+  const response = await fetchAnalyticsRequest(`/api/analytics/reports/${encodeURIComponent(report.id)}/explain`, { question }, signal, { "X-Analytics-Answer-Schema": PLAN_ANSWER_V4_SCHEMA, "X-Analytics-Visuals": VISUALIZATION_SCHEMA, accept: "application/x-ndjson" });
   throwIfTurnCancelled(signal);
   if (!response.ok) {
     const result = await response.json().catch(() => null) as { error?: unknown } | null; throwIfTurnCancelled(signal);

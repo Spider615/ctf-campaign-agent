@@ -7,7 +7,7 @@ import * as stream from "../app/lib/analytics/stream.ts";
 import { postHistoryStream } from "../app/lib/client/history-stream.ts";
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { TurnCancelledError } from "../app/lib/cancellation.ts";
-import { largeSimulatedPlanAnswer, simulatedPlanAnswer } from "./helpers/plan-answer.ts";
+import { largeSimulatedPlanAnswer, simulatedPlanAnswer, simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
 import { createAgentHttpHandler } from "../agent/http-handler.ts";
 
 const request = { mode: "database" as const, question: "先核对哪些门店？", history: [] };
@@ -115,18 +115,32 @@ test("JSON 回退读取期间取消，完整答案仍不能作为成功返回", 
   await assert.rejects(postHistoryStream(request, () => {}, controller.signal), TurnCancelledError);
 });
 
-test("新版历史客户端精确发送 v3 协商头，JSON 兼容返回仍严格核验", async (t) => {
+test("新版历史客户端精确发送 v4 协商头，JSON 兼容返回仍严格核验", async (t) => {
   let observed: Headers | undefined;
-  t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => { observed = new Headers(options.headers); return Response.json({ explanation: simulatedPlanAnswer() }); });
+  t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => { observed = new Headers(options.headers); return Response.json({ explanation: simulatedPlanAnswerV4() }); });
   const result = await postHistoryStream(request, () => {});
-  assert.equal(observed?.get("x-analytics-answer-schema"), "analysis-answer/v3"); assert.deepEqual(result, simulatedPlanAnswer());
+  assert.equal(observed?.get("x-analytics-answer-schema"), "analysis-answer/v4"); assert.deepEqual(result, simulatedPlanAnswerV4());
 });
 
-test("只允许精确版本声明，未知头不提升到 v3", () => {
+test("只允许精确版本声明：v4、v3 原样保留，未知头不提升", () => {
   const normalize = (stream as unknown as { normalizeAnalyticsAnswerSchema: (value: string | null | undefined) => string | undefined }).normalizeAnalyticsAnswerSchema;
   assert.equal(typeof normalize, "function");
+  assert.equal(normalize("analysis-answer/v4"), "analysis-answer/v4");
   assert.equal(normalize("analysis-answer/v3"), "analysis-answer/v3");
-  for (const value of [null, undefined, "", "analysis-answer/v2", "ANALYSIS-ANSWER/V3", "v3", "analysis-answer/v3, analysis-answer/v1"]) assert.equal(normalize(value), undefined);
+  for (const value of [null, undefined, "", "analysis-answer/v2", "ANALYSIS-ANSWER/V3", "ANALYSIS-ANSWER/V4", "v3", "v4", "analysis-answer/v3, analysis-answer/v1", "analysis-answer/v4, analysis-answer/v3"]) assert.equal(normalize(value), undefined);
+});
+
+test("v4 答案解码：逐字节分帧、按 v4 校验并输出纯文本；v3 仍解码，v2 被拒绝", async () => {
+  const v4 = simulatedPlanAnswerV4();
+  const result = await stream.consumeAnalyticsStream(byteStream(`${JSON.stringify(progress)}\n${JSON.stringify({ type: "result", result: v4 })}`));
+  assert.deepEqual(result, v4); assert.ok(stream.isPlanAnswer(result) && stream.isPlanAnswerV4(result));
+  assert.match(stream.analyticsAnswerText(result), /二月销售额 1,234\.56元/);
+  const v3 = simulatedPlanAnswer();
+  assert.deepEqual(stream.validateAnalyticsAnswerResult(JSON.parse(JSON.stringify(v3))), v3);
+  assert.ok(stream.isPlanAnswer(v3) && !stream.isPlanAnswerV4(v3));
+  assert.throws(() => stream.validateAnalyticsAnswerResult({ ...v4, schema: "analysis-answer/v2" }), /合同|版本/);
+  const bad = JSON.parse(JSON.stringify(v4)); bad.body[0].refs[0].factIds = ["ghost"];
+  assert.throws(() => stream.decodeAnalyticsStreamLine(JSON.stringify({ type: "result", result: bad })), /不存在的事实/);
 });
 
 async function historyRouteScript(upstream: string) {

@@ -9,14 +9,14 @@ import type { AgentQuery } from "../agent/run-turn.ts";
 import type { SDKMessage } from "../agent/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts";
 import { createPlanAnalyticsRunner } from "../agent/analysis-plan-run-turn.ts";
 import type { NodeResult } from "../app/lib/analytics/plan/execute.ts";
-import { validatePlanAnswer } from "../app/lib/analytics/plan/answer.ts";
+import { planAnswerV4Text, validatePlanAnswerV4 } from "../app/lib/analytics/plan/answer.ts";
 import { sampleDataset } from "../app/lib/analytics/sample.ts";
 import { runAnalysis } from "../app/lib/analytics/engine.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
 import { capabilityBrief } from "../app/lib/analytics/plan/prompt.ts";
 import { buildPlanSystemPrompt } from "../agent/analytics-system-prompt.ts";
 import { semanticDimensionCatalog, ANALYSIS_DIMENSIONS } from "../app/lib/analytics/semantic/model.ts";
-import type { AnalysisDataProvider, PlanAnswer } from "../app/lib/analytics/analysis-v2-types.ts";
+import type { AnalysisDataProvider, PlanAnswerV4 } from "../app/lib/analytics/analysis-v2-types.ts";
 
 const dataset = sampleDataset();
 const period = { start: dataset.minDate, end: dataset.maxDate };
@@ -24,14 +24,11 @@ const request = { dataset, report: { ...runAnalysis(dataset, { period, filters: 
 const scope = (start: string, end: string) => ({ period: { start, end }, population: "sales", filters: {} });
 const m1 = { id: "m1", op: "measure", scope: scope("2026-08-01", "2026-08-31"), metrics: ["amount"] };
 const c1 = { id: "c1", op: "contrast", target: scope("2026-08-01", "2026-08-31"), reference: scope("2025-08-01", "2025-08-31"), metrics: ["amount", "quantity"] };
-const claims = {
-  headline: { node: "c1", metric: "amount", assert: "up", text: "今年八月实收比去年同期高 {delta}" },
-  claims: [{ node: "c1", metric: "quantity", assert: "flat", text: "件数基本持平，变化 {change}" }],
-  actions: [], cannotConclude: [], questions: [],
-};
+// 今年八月对去年八月同样 31 天，合计值可以直接比。
+const BODY = "今年八月实收比去年同期多 {{c1.amount}}。\n\n件数变化 {{c1.quantity.change}}。";
 
 type Call = (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
-type Script = Partial<Record<"submit_plan" | "submit_plan_review" | "submit_followup" | "submit_claims" | "submit_wording_review", (call: Call, round: number) => Promise<void>>>;
+type Script = Partial<Record<"submit_plan" | "submit_plan_review" | "submit_followup" | "submit_answer" | "submit_answer_review", (call: Call, round: number) => Promise<void | string>>>;
 // 假模型：按本步开放的提交工具判断步骤，经真实 InMemory MCP 调用工具。
 function scripted(script: Script) {
   const steps: string[] = []; const rounds = new Map<string, number>();
@@ -56,10 +53,12 @@ function scripted(script: Script) {
         submit_plan: async (c) => { await c("submit_plan", { plan: { question: request.question, nodes: [m1, c1] } }); },
         submit_plan_review: async (c) => { await c("submit_plan_review", { verdict: "ok", issues: [] }); },
         submit_followup: async (c) => { await c("submit_followup", { nodes: [] }); },
-        submit_claims: async (c) => { await c("submit_claims", claims); },
-        submit_wording_review: async (c) => { await c("submit_wording_review", { edits: [], notes: [] }); },
+        submit_answer: async (c) => { await c("submit_answer", { body: BODY }); },
+        submit_answer_review: async (c) => { await c("submit_answer_review", { verdict: "ok", notes: [] }); },
       };
-      await (script[name] ?? defaults[name])(call, round);
+      // 脚本返回字符串时，当作模型直接输出的文字（不调用工具）。
+      const spoken = await (script[name] ?? defaults[name])(call, round);
+      if (typeof spoken === "string") yield { type: "assistant", message: { content: [{ type: "text", text: spoken }] } } as unknown as SDKMessage;
       yield { type: "result", subtype: "success", is_error: false, result: "" } as SDKMessage;
     } finally { await client.close(); }
   };
@@ -71,26 +70,40 @@ function setup(t: { after: (fn: () => void) => void }) {
   return { model: "test", apiKey: "secret-key", modelBaseUrl: "https://example.invalid", runtimeDir, auditDirectory: join(runtimeDir, "audit"), pluginDir: join(process.cwd(), "agent/analytics-plugin") };
 }
 const run = (config: ReturnType<typeof setup>, query: AgentQuery, provider: AnalysisDataProvider = createSnapshotAnalysisProvider(dataset), signal?: AbortSignal) =>
-  createPlanAnalyticsRunner(config, { query, provider })(request, signal) as Promise<PlanAnswer>;
+  createPlanAnalyticsRunner(config, { query, provider })(request, signal) as Promise<PlanAnswerV4>;
 const money = (value: number) => new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 
-test("正常路径：五次调用，主结论数字与证据一致，审计按步骤记录", async (t) => {
+const markdown = (answer: PlanAnswerV4) => answer.body.flatMap((block) => block.kind === "markdown" ? [block] : []);
+const factOf = (answer: PlanAnswerV4, id: string) => answer.evidence.facts.find((item) => item.id === id)!;
+
+test("正常路径：五次调用，正文数字与证据一致，审计按步骤记录", async (t) => {
   const config = setup(t); const { query, steps } = scripted({}); const phases: string[] = []; const traced: string[] = [];
   const answer = await createPlanAnalyticsRunner(config, { query, provider: createSnapshotAnalysisProvider(dataset) })(request, undefined, (event) => {
     if (event.type === "phase") phases.push(event.phase); if (event.type === "trace" && event.event.status !== "started") traced.push(event.event.tool);
-  }) as PlanAnswer;
-  assert.deepEqual(steps, ["submit_plan", "submit_plan_review", "submit_followup", "submit_claims", "submit_wording_review"]);
+  }) as PlanAnswerV4;
+  assert.deepEqual(steps, ["submit_plan", "submit_plan_review", "submit_followup", "submit_answer", "submit_answer_review"]);
+  assert.equal(answer.schema, "analysis-answer/v4");
   assert.equal(answer.status, "answered");
-  const fact = answer.evidence.facts.find((item) => item.id === answer.headline!.factIds[0])!;
-  assert.equal(fact.metricId, "amount.delta");
-  assert.ok(answer.headline!.text.includes(money(fact.value!)), answer.headline!.text);
-  assert.equal(answer.claims.length, 1);
+  // 空行分段不拆块：两段在同一个 markdown 块里，各有一个引用。
+  const [first] = markdown(answer);
+  assert.equal(first.refs.length, 2);
+  const delta = factOf(answer, first.refs[0].factIds[0]);
+  assert.equal(delta.metricId, "amount.delta");
+  // 引用区间里的文字就是证据里那个数，正负号和单位由代码写。
+  assert.equal(first.text.slice(first.refs[0].start, first.refs[0].end), `${delta.value! > 0 ? "+" : ""}${money(delta.value!)}元`);
+  assert.deepEqual(answer.keyFigure, { value: first.text.slice(first.refs[0].start, first.refs[0].end), factId: delta.id });
+  assert.equal(factOf(answer, first.refs[1].factIds[0]).metricId, "quantity.relative_change");
+  assert.doesNotMatch(planAnswerV4Text(answer), /\{\{/);
   assert.deepEqual(phases, ["analyzing", "writing"]);
   assert.equal(traced.filter((name) => name === "run_plan_node").length, 2);
+  assert.ok(traced.includes("submit_answer") && traced.includes("submit_answer_review"));
   assert.ok(answer.trace && answer.trace.steps.length >= 7);
   const [file] = readdirSync(config.auditDirectory);
-  const kinds = readFileSync(join(config.auditDirectory, file), "utf8").trim().split("\n").map((line) => JSON.parse(line).kind);
-  assert.deepEqual(kinds, ["question", "plan", "plan_review", "execution", "followup", "claims", "wording_review", "final"]);
+  const records = readFileSync(join(config.auditDirectory, file), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(records.map((record) => record.kind), ["question", "plan", "plan_review", "execution", "followup", "answer", "answer_review", "final"]);
+  assert.equal(records.find((record) => record.kind === "answer").value.final.body, BODY);
+  const final = records.at(-1).value;
+  assert.equal(final.modelCalls, 5); assert.equal(final.status, "answered"); assert.ok(final.body.length <= 200 && final.body.startsWith("今年八月实收"));
   assert.doesNotMatch(readFileSync(join(config.auditDirectory, file), "utf8"), /secret-key/);
 });
 
@@ -116,7 +129,7 @@ test("计划复核要求修改：计划步骤调用两次，总调用数为六",
   });
   const query: AgentQuery = (params) => { prompts.push(String(params.prompt)); return base.query(params); };
   const answer = await run(config, query);
-  assert.deepEqual(base.steps, ["submit_plan", "submit_plan_review", "submit_plan", "submit_followup", "submit_claims", "submit_wording_review"]);
+  assert.deepEqual(base.steps, ["submit_plan", "submit_plan_review", "submit_plan", "submit_followup", "submit_answer", "submit_answer_review"]);
   assert.match(prompts[2], /需要补充件数对比/);
   // 第二次计划能看到上一版计划；计划复核附带能力目录
   assert.match(prompts[2], /上一版计划/); assert.match(prompts[2], /"id":"m1"/);
@@ -177,31 +190,6 @@ test("提交被接受后再次提交被忽略，不改变结果", async (t) => {
   assert.equal(answer.status, "answered");
 });
 
-for (const [label, edit] of [["删除", { index: 0, action: "drop" }], ["改写成带数字", { index: 0, action: "rewrite", text: "实收高了 3 成" }]] as const) {
-  test(`措辞复核${label}主结论：首条结论顶上，占位不出现`, async (t) => {
-    const config = setup(t);
-    const { query } = scripted({ submit_wording_review: async (call) => { await call("submit_wording_review", { edits: [edit], notes: [] }); } });
-    const answer = await run(config, query);
-    assert.ok(answer.headline);
-    assert.equal(answer.claims.length, 0);
-    assert.match(answer.headline!.text, /件数/);
-    assert.equal(answer.status, "partial");
-    const text = JSON.stringify(answer);
-    assert.doesNotMatch(text, /__dropped__|已删除/);
-    assert.ok(!answer.cannotConclude.some((item) => /已删除|__dropped__/.test(item)));
-  });
-}
-
-test("措辞复核改写成带数字的文本：该结论被删除，答案为部分回答", async (t) => {
-  const config = setup(t);
-  const { query } = scripted({ submit_wording_review: async (call) => { await call("submit_wording_review", { edits: [{ index: 1, action: "rewrite", text: "件数变化了 5 件" }], notes: ["措辞已核对"] }); } });
-  const answer = await run(config, query);
-  assert.equal(answer.status, "partial");
-  assert.equal(answer.claims.length, 0);
-  assert.ok(answer.headline);
-  assert.deepEqual(answer.review.notes, ["措辞已核对"]);
-});
-
 test("执行阶段取消：抛出取消错误并关闭会话", async (t) => {
   const config = setup(t); const controller = new AbortController(); let closed = false;
   const inner = createSnapshotAnalysisProvider(dataset);
@@ -228,29 +216,93 @@ test("计划回合系统提示词不含旧工具，长度在六千字以内", ()
   assert.match(prompt, /小福/);
 });
 
-test("结论全部没绑上时用已算出的对比给兜底主结论，答案不为空，并带关键数据表", async (t) => {
-  const config = setup(t);
-  const { query } = scripted({ submit_claims: async (call) => { await call("submit_claims", { headline: { node: "c1", metric: "amount", assert: "up", text: "高了 999 元" }, claims: [], actions: [], cannotConclude: [], questions: [] }); } });
-  const answer = await run(config, query);
-  assert.notEqual(answer.status, "unavailable");
-  assert.ok(answer.headline && answer.headline.factIds.length > 0, "应有兜底主结论");
-  const facts = new Set(answer.evidence.facts.map((fact) => fact.id));
-  assert.ok(answer.headline!.factIds.every((id) => facts.has(id)));
-  assert.ok(answer.figures && answer.figures.rows.length > 0 && answer.figures.referenceLabel, "对比节点应生成关键数据表");
-});
-
-test("结论首次有条目被丢弃时退回原因，同一次调用内改好后采用第二份", async (t) => {
-  const config = setup(t); let first: Record<string, unknown> | undefined;
-  const good = { headline: { node: "c1", metric: "amount", assert: "up", text: "实收高 {delta}" }, claims: [], actions: [], cannotConclude: [], questions: [] };
-  const { query, steps } = scripted({ submit_claims: async (call) => {
-    first = await call("submit_claims", { ...good, headline: { ...good.headline, text: "实收高了 999 元" } });
-    await call("submit_claims", good);
+test("正文首次有句子没通过：退回 issues，同一次调用内改好后采用第二份", async (t) => {
+  const config = setup(t); let first: Record<string, unknown> | undefined; let second: Record<string, unknown> | undefined;
+  const { query, steps } = scripted({ submit_answer: async (call) => {
+    first = await call("submit_answer", { body: "实收高了 999 元。\n\n件数变化 {{c1.quantity.change}}。" });
+    second = await call("submit_answer", { body: BODY });
   } });
   const answer = await run(config, query);
   assert.equal(first?.accepted, false);
-  assert.match(JSON.stringify(first?.rejected), /占位符/);
-  assert.match(answer.headline!.text, /^实收高 \+/);
-  assert.equal(steps.filter((step) => step === "submit_claims").length, 1, "退回重交不增加模型调用");
+  assert.match(JSON.stringify(first?.issues), /999/);
+  assert.equal(second?.accepted, true);
+  assert.equal(steps.filter((step) => step === "submit_answer").length, 1, "退回重交不增加模型调用");
+  assert.match(markdown(answer)[0].text, /^今年八月实收比去年同期多 \+/);
+  assert.equal(answer.status, "answered");
+});
+
+test("正文首次被退回后模型没有再交：采用首次结果，没通过的句子删掉，答案为部分回答", async (t) => {
+  const config = setup(t);
+  const { query } = scripted({ submit_answer: async (call) => { await call("submit_answer", { body: "今年八月实收比去年同期多 {{c1.amount}}。件数变化了 999 件。" }); } });
+  const answer = await run(config, query);
+  assert.equal(answer.status, "partial");
+  const text = planAnswerV4Text(answer);
+  assert.match(text, /^今年八月实收比去年同期多 \+/); assert.doesNotMatch(text, /999/);
+});
+
+test("复核改写成功时采用新正文，复核说明进 review", async (t) => {
+  const config = setup(t); const prompts: string[] = [];
+  const base = scripted({ submit_answer_review: async (call) => { await call("submit_answer_review", { verdict: "rewrite", body: "和去年八月比，今年八月实收多 {{c1.amount}}，变化 {{c1.amount.change}}。\n\n件数变化 {{c1.quantity.change}}。", notes: ["改成中性说法"] }); } });
+  const query: AgentQuery = (params) => { prompts.push(String(params.prompt)); return base.query(params); };
+  const answer = await run(config, query);
+  assert.match(markdown(answer)[0].text, /^和去年八月比，今年八月实收多 \+[\d,.]+元，变化 [+-]/);
+  assert.deepEqual(answer.review.notes, ["改成中性说法"]);
+  // 复核提示里有引用原文、填进去的值和依据。
+  const review = prompts.at(-1)!;
+  assert.match(review, /\{\{c1\.amount\}\}/); assert.match(review, /\{\{c1\.amount\}\} → \+[\d,.]+元｜依据：对比 /); assert.match(review, /指标 实收金额；总体/);
+});
+
+test("复核改写变差时保留原正文，并把原因记进复核说明", async (t) => {
+  const config = setup(t);
+  const { query } = scripted({ submit_answer_review: async (call) => { await call("submit_answer_review", { verdict: "rewrite", body: "实收涨了三成，高了 999 元。", notes: [] }); } });
+  const answer = await run(config, query);
+  assert.match(markdown(answer)[0].text, /^今年八月实收比去年同期多 \+/);
+  assert.equal(answer.status, "answered");
+  assert.ok(answer.review.notes.some((note) => /保留原正文/.test(note)), JSON.stringify(answer.review.notes));
+  const [file] = readdirSync(config.auditDirectory);
+  const review = readFileSync(join(config.auditDirectory, file), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((record) => record.kind === "answer_review");
+  assert.equal(review.value.adopted, false); assert.equal(review.value.verdict, "rewrite");
+});
+
+test("复核改写删掉全部引用和表格块：判定丢了数据，保留原文", async (t) => {
+  const config = setup(t);
+  const body = `${BODY}\n\n::: table c1 amount`;
+  const { query } = scripted({
+    submit_answer: async (call) => { await call("submit_answer", { body }); },
+    submit_answer_review: async (call) => { await call("submit_answer_review", { verdict: "rewrite", body: "今年八月卖得不错。", notes: [] }); },
+  });
+  const answer = await run(config, query);
+  assert.ok(answer.body.some((block) => block.kind === "table"));
+  assert.match(markdown(answer)[0].text, /^今年八月实收比去年同期多 \+/);
+  assert.ok(answer.review.notes.includes("复核改写丢了数据，保留原文"), JSON.stringify(answer.review.notes));
+});
+
+test("全部引用都填不了值时答案为 unavailable，不调用复核", async (t) => {
+  const config = setup(t);
+  const { query, steps } = scripted({ submit_answer: async (call) => {
+    await call("submit_answer", { body: "实收变化 {{c9.amount}}。" });
+    await call("submit_answer", { body: "实收变化 {{c1.不存在}}。" });
+  } });
+  const answer = await run(config, query);
+  assert.equal(answer.status, "unavailable");
+  assert.equal(answer.body.length, 1); assert.equal(answer.body[0].kind, "markdown");
+  assert.equal(steps.includes("submit_answer_review"), false);
+  assert.doesNotThrow(() => validatePlanAnswerV4(JSON.parse(JSON.stringify(answer))));
+});
+
+test("计划复核修改加补充计划，模型调用总数不超过六", async (t) => {
+  const config = setup(t);
+  const base = scripted({
+    submit_plan_review: async (call) => { await call("submit_plan_review", { verdict: "revise", issues: ["需要补充件数对比"] }); },
+    submit_followup: async (call) => { await call("submit_followup", { nodes: [{ id: "s1", op: "scan", of: "c1", dimensions: ["region"] }] }); },
+    submit_answer: async (call) => { await call("submit_answer", { body: "实收高了 999 元。" }); await call("submit_answer", { body: BODY }); },
+    submit_answer_review: async (call) => { await call("submit_answer_review", { verdict: "rewrite", body: BODY, notes: [] }); },
+  });
+  await run(config, base.query);
+  assert.equal(base.steps.length, 6);
+  const [file] = readdirSync(config.auditDirectory);
+  const final = readFileSync(join(config.auditDirectory, file), "utf8").trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+  assert.equal(final.kind, "final"); assert.ok(final.value.modelCalls <= 6);
 });
 
 test("执行结果摘要：每个分组节点都有名额，样本不足的分组不列出", async () => {
@@ -266,8 +318,8 @@ test("执行结果摘要：每个分组节点都有名额，样本不足的分�
   const session = await createSnapshotAnalysisProvider(dataset).open();
   const text = executionSummary({ results, evidence: { frames: [], objects: [], methods: [], facts } }, session.capabilities);
   await session.close();
-  assert.match(text, /"node":"s2","select":\{"category":"大样本"\}/);
-  assert.doesNotMatch(text, /小样本"\}/);
+  assert.match(text, /^`\{\{s2\.amount\.deviation\|category=大样本\}\}` = \+1\.00%（样本 900 行）$/m);
+  assert.doesNotMatch(text, /小样本/);
   assert.match(text, /s1 另有 4 个偏离较小的分组/);
   assert.match(text, /s2 另有 1 个样本不足 200 行的分组/);
   assert.match(text, /^# s1：扫描 c1/m);
@@ -277,22 +329,56 @@ test("答案证据只保留被引用事实及其推导来源，且仍能通过�
   const config = setup(t);
   const { query } = scripted({ submit_followup: async (call) => { await call("submit_followup", { nodes: [{ id: "s1", op: "scan", of: "c1", dimensions: ["region"] }] }); } });
   const answer = await run(config, query);
-  const cited = new Set([...(answer.headline?.factIds ?? []), ...answer.claims.flatMap((claim) => claim.factIds), ...(answer.figures?.rows ?? []).flatMap((row) => row.factIds), ...(answer.chart?.factIds ?? [])]);
+  const cited = new Set(answer.body.flatMap((block) => block.kind === "markdown" ? block.refs.flatMap((ref) => ref.factIds) : block.kind === "table" ? block.rows.flatMap((row) => row.factIds) : block.chart.factIds));
   const ids = new Set(answer.evidence.facts.map((fact) => fact.id));
   for (const id of cited) assert.ok(ids.has(id), `引用的事实 ${id} 应保留`);
   const { analysisFactParents } = await import("../app/lib/analytics/analysis-v2-fact-links.ts");
   const reachable = new Set<string>(); const stack = [...cited];
   while (stack.length) { const id = stack.pop()!; if (reachable.has(id)) continue; reachable.add(id); const fact = answer.evidence.facts.find((item) => item.id === id); if (fact) stack.push(...analysisFactParents(fact)); }
   assert.equal(ids.size, reachable.size, "不保留未被引用的事实");
-  assert.doesNotThrow(() => validatePlanAnswer(JSON.parse(JSON.stringify(answer))));
+  assert.doesNotThrow(() => validatePlanAnswerV4(JSON.parse(JSON.stringify(answer))));
 });
 
-test("结论首次被退回后模型没有再交时，采用首次提交里通过的条目", async (t) => {
+test("写正文步骤一次都没提交时补交一次；总调用数不超过 6", async (t) => {
   const config = setup(t);
-  const { query } = scripted({ submit_claims: async (call) => {
-    await call("submit_claims", { headline: { node: "c1", metric: "amount", assert: "up", text: "实收高 {delta}" }, claims: [{ node: "c1", metric: "quantity", assert: "flat", text: "件数变化 999 件" }], actions: [], cannotConclude: [], questions: [] });
-  } });
-  const answer = await run(config, query);
-  assert.match(answer.headline!.text, /^实收高 \+/);
-  assert.equal(answer.status, "partial");
+  const { query, steps } = scripted({ submit_answer: async (call, round) => { if (round === 2) await call("submit_answer", { body: BODY }); } });
+  const answer = await run(config, query) as PlanAnswerV4;
+  assert.deepEqual(steps.filter((step) => step === "submit_answer").length, 2);
+  assert.ok(steps.length <= 6);
+  assert.equal(answer.status, "answered");
+});
+
+test("计划被退回过一次时调用已用满，漏交正文不再补交，也不做复核", async (t) => {
+  const config = setup(t);
+  const { query, steps } = scripted({
+    submit_plan_review: async (c) => { await c("submit_plan_review", { verdict: "revise", issues: ["补一个对比"] }); },
+    submit_answer: async (call, round) => { if (round === 2) await call("submit_answer", { body: BODY }); },
+  });
+  await run(config, query);
+  // 计划 2 + 复核 1 + 补充 1 + 正文 1 = 5，还剩 1 次：用于补交正文，之后不再复核。
+  assert.deepEqual(steps, ["submit_plan", "submit_plan_review", "submit_plan", "submit_followup", "submit_answer", "submit_answer"]);
+});
+
+test("模型把正文直接说出来、没调用工具时，按正文提交处理，不再多花一次调用", async (t) => {
+  const config = setup(t);
+  const { query, steps } = scripted({ submit_answer: async () => BODY });
+  const answer = await run(config, query) as PlanAnswerV4;
+  assert.equal(steps.filter((step) => step === "submit_answer").length, 1);
+  assert.equal(answer.status, "answered");
+  assert.ok(markdown(answer)[0].refs.length > 0);
+});
+
+test("模型只说了不含引用的话时，仍补交一次", async (t) => {
+  const config = setup(t);
+  const { query, steps } = scripted({ submit_answer: async (call, round) => { if (round === 2) { await call("submit_answer", { body: BODY }); return; } return "好的，我来整理一下。"; } });
+  await run(config, query);
+  assert.equal(steps.filter((step) => step === "submit_answer").length, 2);
+});
+
+test("补交那次模型仍只说出含引用的正文时，同样按正文采用", async (t) => {
+  const config = setup(t);
+  const { query, steps } = scripted({ submit_answer: async (_call, round) => round === 1 ? "好的。" : BODY });
+  const answer = await run(config, query) as PlanAnswerV4;
+  assert.equal(steps.filter((step) => step === "submit_answer").length, 2);
+  assert.ok(markdown(answer)[0].refs.length > 0);
 });

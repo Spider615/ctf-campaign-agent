@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { AgentQuery } from "../agent/run-turn.ts";
 import type { SDKMessage } from "../agent/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts";
 import { visualizationHtml, visualizationSvg } from "../app/lib/analytics/visualization-html.ts";
-import { simulatedPlanAnswer } from "./helpers/plan-answer.ts";
+import { simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
 
 const attachmentId = "11111111-1111-4111-8111-111111111111";
 const scope = { owner: attachmentId, conversationId: "22222222-2222-4222-8222-222222222222" };
@@ -109,7 +109,7 @@ test("混合文件回合记录经营数据来源，但经营答案的图不再�
   const summary = { id: attachmentId, version: "a".repeat(64), name: "合成.csv", status: "ready", entries: [], warnings: [] };
   const document = { tables: [], blocks: [], images: [] };
   const store = { document: async () => ({ summary, document }), get: async () => summary, onRemove: () => () => {} } as unknown as AttachmentStore;
-  const database = simulatedPlanAnswer();
+  const database = simulatedPlanAnswerV4();
   let reviewed = false; let rejectedImport = "";
   const query: AgentQuery = async function* ({ options }) {
     const review = Boolean(options?.mcpServers?.attachment_review); const server = options!.mcpServers![review ? "attachment_review" : "attachments"]; assert.ok("instance" in server);

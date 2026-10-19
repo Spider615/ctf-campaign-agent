@@ -7,8 +7,8 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createPlanAnalyticsRunner, privateAnalysisDirectory } from "./analysis-plan-run-turn.ts";
 import { analyticsBenchmarks } from "../tests/fixtures/general-analytics.ts";
 import { runAnalysis } from "../app/lib/analytics/engine.ts";
-import { planAnswerText } from "../app/lib/analytics/plan/answer.ts";
-import { isPlanAnswer } from "../app/lib/analytics/stream.ts";
+import { planAnswerV4Text } from "../app/lib/analytics/plan/answer.ts";
+import { PLAN_ANSWER_V4_SCHEMA } from "../app/lib/analytics/analysis-v2-types.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
 
 const envPath = fileURLToPath(new URL("../.dev.vars", import.meta.url));
@@ -69,10 +69,10 @@ for (const item of cases) {
     const report = { ...runAnalysis(item.dataset, { period: { start: item.dataset.minDate, end: item.dataset.maxDate }, filters: {} }), id: `eval-${item.id}`, createdAt: new Date().toISOString() };
     const request = item.context?.length ? { mode: "database" as const, question: item.question, context: item.context, history: item.context.map((text) => ({ role: "user" as const, text })) } : { report, dataset: item.dataset, question: item.question };
     const answer = await runner(request, controller.signal, (event) => { if (event.type === "trace" && event.event.status !== "started") console.log(JSON.stringify({ id: item.id, action: event.event.title, status: event.event.status })); });
-    if (!isPlanAnswer(answer)) throw new Error("分析评估未返回计划式结构化结果");
+    if (!("schema" in answer) || answer.schema !== PLAN_ANSWER_V4_SCHEMA) throw new Error("分析评估未返回计划式结构化结果");
     const failures = item.check(answer);
     const endingVersions = readVersions(); const changedFiles = versionFiles.filter((path) => versions[path] !== endingVersions[path]);
-    const result = { id: item.id, family: item.family, model, versions, endingVersions, changedFiles, calls, sessions, modelResponses: responseIds.size, syntheticMessages, responseUsage: Object.fromEntries(responseUsage), callCountDefinition: "calls为SDK会话数，modelResponses为已收到唯一真实模型响应数；SDK合成API错误及无响应的上游重试不计入", usageDefinition: "SDK起始块和assistant块的用量元数据可能不是最终总计，不用于费用核算", durationMs: Math.round(performance.now() - started), status: answer.status, passed: failures.length === 0, manualBusinessReview: "required", expectation: item.expectation, failures, text: planAnswerText(answer), answer };
+    const result = { id: item.id, family: item.family, model, versions, endingVersions, changedFiles, calls, sessions, modelResponses: responseIds.size, syntheticMessages, responseUsage: Object.fromEntries(responseUsage), callCountDefinition: "calls为SDK会话数，modelResponses为已收到唯一真实模型响应数；SDK合成API错误及无响应的上游重试不计入", usageDefinition: "SDK起始块和assistant块的用量元数据可能不是最终总计，不用于费用核算", durationMs: Math.round(performance.now() - started), status: answer.status, passed: failures.length === 0, manualBusinessReview: "required", expectation: item.expectation, failures, text: planAnswerV4Text(answer), answer };
     results.push(result); writeFileSync(join(output, `${item.id}.json`), JSON.stringify(result, null, 2), { mode: 0o600 });
     console.log(JSON.stringify({ id: item.id, calls, modelResponses: responseIds.size, durationMs: result.durationMs, status: answer.status, passed: result.passed, manualBusinessReview: "required", changedFiles, failures }));
   } catch (error) {

@@ -2,7 +2,8 @@
 
 import { useEffect, useId, type MouseEvent } from "react";
 import { analysisFactParents } from "../../lib/analytics/analysis-v2-fact-links.ts";
-import type { AnalysisEvidence, AnalysisFact, AnalysisFrame, PlanAnswer, PlanAnswerClaim } from "../../lib/analytics/analysis-v2-types.ts";
+import type { AnalysisEvidence, AnalysisFact, AnalysisFrame, PlanAnswer, PlanAnswerBlock, PlanAnswerClaim, PlanAnswerV4 } from "../../lib/analytics/analysis-v2-types.ts";
+import { parseBodyMarkdown, type BodyInline } from "../../lib/analytics/plan/body-markdown.ts";
 import { formatValue } from "../../lib/analytics/plan/bind.ts";
 import { ANALYSIS_FILTER_DIMENSIONS, SEMANTIC_DIMENSIONS } from "../../lib/analytics/semantic/model.ts";
 import { useWorkspacePanel } from "../workspace/workspace-panel-context.ts";
@@ -154,7 +155,7 @@ function Figures({ figures }: { figures: NonNullable<PlanAnswer["figures"]> }) {
 }
 
 // 出处面板：这条结论用到的数据，加本次的口径说明、待确认口径和分析步骤。
-export function SourcePanel({ answer, factIds }: { answer: PlanAnswer; factIds: string[] }) {
+export function SourcePanel({ answer, factIds }: { answer: PlanAnswer | PlanAnswerV4; factIds: string[] }) {
   return <div className="space-y-4">
     <AnalysisSourceData evidence={answer.evidence} factIds={factIds} />
     {answer.assumptions.length || answer.definitions.length ? <section className="text-xs leading-6 text-muted-foreground"><h4 className="mb-1 font-medium text-foreground">口径</h4>
@@ -188,5 +189,58 @@ export function PlanAnswerView({ answer }: { answer: PlanAnswer }) {
     {answer.chart ? <VisualizationCard chart={answer.chart} sourceContent={<SourcePanel answer={answer} factIds={answer.chart.factIds} />} /> : null}
     <TextList items={answer.actions} title="建议" name="actions" />
     <TextList items={answer.cannotConclude} title="暂时不能下的结论" name="cannot-conclude" />
+  </div>;
+}
+
+// v4 表格块：沿用关键数据表的样式，标题小号放在表上方；第一列是分组或指标名。
+function BodyTable({ block }: { block: Extract<PlanAnswerBlock, { kind: "table" }> }) {
+  const changeAt = block.columns.indexOf("变化");
+  return <section data-plan-block="table" className="min-w-0">
+    {block.title ? <h3 className="mb-1.5 text-xs font-medium text-muted-foreground">{block.title}</h3> : null}
+    <div className="overflow-x-auto rounded-xl border border-[#dce6f0]">
+      <table className="w-full min-w-[22rem] border-collapse text-left text-[13px] leading-6">
+        <caption className="sr-only">{block.title || "数据表"}</caption>
+        <thead><tr className="border-b border-[#dce6f0] bg-[#f5f8fc] text-xs text-muted-foreground">{block.columns.map((column, index) => <th key={index} scope="col" className={`px-3 py-2 font-medium ${index ? "text-right" : ""}`}>{column}</th>)}</tr></thead>
+        <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex} className="border-b border-[#eef2f7] last:border-0">{row.cells.map((cell, index) => index === 0
+          ? <th key={index} scope="row" className="px-3 py-2 font-normal text-[#425873]">{cell}</th>
+          : <td key={index} className={`px-3 py-2 text-right tabular-nums ${index === changeAt ? cell.startsWith("-") ? "text-[#b4543a]" : cell && cell !== "—" ? "text-[#2f7a55]" : "text-muted-foreground" : index === 1 ? "font-medium text-foreground" : "text-[#425873]"}`}>{cell}</td>)}</tr>)}</tbody>
+      </table>
+    </div>
+  </section>;
+}
+
+// v4：重点数字放大在最上面，下面是模型写的正文；正文里每个数字是一个按钮，点开看这一个数字的出处。
+export function PlanAnswerV4View({ answer }: { answer: PlanAnswerV4 }) {
+  const answerId = useId();
+  const { panelId, activeId, togglePanel, dismissPanel } = useWorkspacePanel();
+  useEffect(() => () => dismissPanel(answerId), [answerId, dismissPanel]);
+  const numberButton = (key: string, text: string, factIds: string[]) => {
+    const id = `${answerId}:${key}`; const open = activeId === id;
+    const toggle = (event: MouseEvent<HTMLButtonElement>) => togglePanel({ id, title: `${text} 的出处`, label: "数据出处", content: <SourcePanel answer={answer} factIds={factIds} /> }, event.currentTarget);
+    return <button key={key} type="button" data-plan-ref aria-label={`查看 ${text} 的出处`} aria-controls={panelId} aria-expanded={open} onClick={toggle} className={`inline rounded-sm font-semibold tabular-nums underline decoration-1 underline-offset-4 transition-colors hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${open ? "text-primary decoration-primary" : "text-inherit decoration-[#b9c8d9]"}`}>{text}</button>;
+  };
+  const inline = (nodes: BodyInline[], key: string) => nodes.map((node, index) => {
+    const content = node.parts.map((part, at) => part.kind === "ref" ? numberButton(`${key}:${part.index}`, part.text, part.factIds) : <span key={at}>{part.text}</span>);
+    return node.bold ? <strong key={index} className="font-semibold text-[#17243a]">{content}</strong> : <span key={index}>{content}</span>;
+  });
+  const markdown = (block: Extract<PlanAnswerBlock, { kind: "markdown" }>, blockIndex: number) => {
+    const key = `b${blockIndex}`;
+    return <div key={key} data-plan-block="markdown" className="min-w-0 space-y-3 break-words text-[15px] leading-7 text-foreground">
+      {parseBodyMarkdown(block.text, block.refs).map((item, index) => {
+        if (item.kind === "para") return <p key={index} className="whitespace-pre-wrap">{inline(item.inline, key)}</p>;
+        if (item.kind === "heading") {
+          const Heading = item.level <= 2 ? "h2" : item.level === 3 ? "h3" : "h4";
+          return <Heading key={index} className={`pt-2 font-semibold tracking-tight first:pt-0 ${item.level <= 2 ? "text-[18px]" : "text-base"}`}>{inline(item.inline, key)}</Heading>;
+        }
+        const items = item.items.map((entry, at) => <li key={at} className="pl-1">{inline(entry, key)}</li>);
+        return item.ordered ? <ol key={index} className="list-decimal space-y-1 pl-5">{items}</ol> : <ul key={index} className="list-disc space-y-1 pl-5 marker:text-[#8aa0b9]">{items}</ul>;
+      })}
+    </div>;
+  };
+  return <div data-plan-answer data-plan-answer-version="v4" className="min-w-0 select-text space-y-4">
+    {answer.keyFigure ? <p data-plan-key-figure className="break-words text-[32px] font-semibold leading-tight tracking-tight text-[#174e96] tabular-nums">{answer.keyFigure.value}</p> : null}
+    {answer.body.map((block, index) => block.kind === "markdown" ? markdown(block, index)
+      : block.kind === "table" ? <BodyTable key={`b${index}`} block={block} />
+      : <VisualizationCard key={`b${index}`} chart={block.chart} sourceContent={<SourcePanel answer={answer} factIds={block.chart.factIds} />} />)}
   </div>;
 }

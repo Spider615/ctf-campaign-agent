@@ -4,12 +4,12 @@ import { z } from "zod";
 import type { AgentQuery, AgentRuntimeConfig } from "../run-turn.ts";
 import type { PlanAnalyticsRunner } from "../analysis-plan-run-turn.ts";
 import { analyticsSdkModel } from "../analytics-model.ts";
-import { validatePlanAnswer } from "../../app/lib/analytics/plan/answer.ts";
+import { validatePlanAnswerV4 } from "../../app/lib/analytics/plan/answer.ts";
 import { resolveConversationVisualization, unsupportedLimitationNumbers, validateConversationAnswer, validateConversationDraft, validateConversationRequest } from "../../app/lib/attachments/answer.ts";
 import { ATTACHMENT_LIMITS, ATTACHMENT_PREPARATION_TRACE_TOOL, ATTACHMENT_TOOL_LABELS, type AttachmentSource, type ConversationAnswer, type ConversationDraft } from "../../app/lib/attachments/types.ts";
 import { finishTraceEvent, harnessTimingSummary, startTraceEvent, type AgentTraceEvent } from "../../app/lib/tool-trace.ts";
 import { relayAbort, throwIfTurnCancelled, TurnCancelledError } from "../../app/lib/cancellation.ts";
-import type { PlanAnswer } from "../../app/lib/analytics/analysis-v2-types.ts";
+import type { PlanAnswerV4 } from "../../app/lib/analytics/analysis-v2-types.ts";
 import { createAttachmentTools } from "./tools.ts";
 import type { AttachmentStore } from "./store.ts";
 import type { ConversationRunner } from "./http.ts";
@@ -104,7 +104,7 @@ export function createConversationRunner(config: Config, dependencies: Dependenc
     const stopDeleted = config.store.onRemove((removedScope, id) => { if (removedScope.owner === scope.owner && removedScope.conversationId === scope.conversationId && request.attachmentIds.includes(id)) { charts.reset("source_unavailable"); controller.abort(); } });
     const files = createAttachmentTools(config.store, scope, request.attachmentIds, { captureCalculations: visualsEnabled });
     const charts = createVisualizationRegistry({ runId: crypto.randomUUID(), enabled: visualsEnabled, maxCharts: ANSWER_BUDGET.charts, emit: (event) => { if (!controller.signal.aborted) emit?.(event); }, attachmentEvidence: files.visualizationEvidence });
-    const started = Date.now(); const monotonic = performance.now(); const trace: AgentTraceEvent[] = []; const databaseAnswers: PlanAnswer[] = [];
+    const started = Date.now(); const monotonic = performance.now(); const trace: AgentTraceEvent[] = []; const databaseAnswers: PlanAnswerV4[] = [];
     let accepted: ConversationAnswer | undefined; let submitting = false; let visionCount = 0; let lastIssue = ""; let lastDraft: unknown; let hardDraftValidated = false;
     // 时限从附件准备完成、开始分析时算起，大文件解析不占分析时间。
     // 复核次数用完后还允许按最后一次意见改一稿：改完通过数字核验就交付，不再复核。
@@ -256,7 +256,7 @@ export function createConversationRunner(config: Config, dependencies: Dependenc
         if (context.length < 200) context.push(`文件问答提出的历史核对方向，仅用于理解，不能替代持续要求或扩大业务范围：${focus}`.slice(0, 500));
         const historySignal = AbortSignal.any([controller.signal, AbortSignal.timeout(Math.max(1, wrapUpAt() - Date.now()))]);
         const raw = await config.runAnalytics({ mode: "database", question: request.question, history: request.history, context }, historySignal, emit);
-        const answer = validatePlanAnswer(raw); databaseAnswers.push(answer); const sources = await files.recordDatabase(answer); return { answer, sources };
+        const answer = validatePlanAnswerV4(raw); databaseAnswers.push(answer); const sources = await files.recordDatabase(answer); return { answer, sources };
       })))] : []),
       tool("submit_attachment_answer", "提交最终回答，必须逐段引用实际读到的来源；数字来自原文或计算，不写 source 内容", draftSchema.shape, async (input) => {
         if (submitting || accepted) return result({ error: "回答正在核验或已经完成" }, true);

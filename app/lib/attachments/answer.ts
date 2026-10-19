@@ -1,4 +1,5 @@
-import { validatePlanAnswer } from "../analytics/plan/answer.ts";
+import { validatePlanAnswer, validatePlanAnswerV4 } from "../analytics/plan/answer.ts";
+import { PLAN_ANSWER_V4_SCHEMA } from "../analytics/analysis-v2-types.ts";
 import { isToolTrace } from "../tool-trace.ts";
 import { parseAttachmentCalculations, parseVisualizations, resolveAttachmentVisualization, visualizationText } from "../analytics/visualization.ts";
 import type { ResolvedVisualization, VisualizationSpec } from "../analytics/visualization-types.ts";
@@ -117,6 +118,9 @@ export function resolveConversationVisualization(spec: VisualizationSpec, answer
   return fail("文件回答不能引用经营数据图表");
 }
 
+// 文件回答里的经营数据引用：新回答带 v4，旧会话里存的仍是 v3。
+const databaseAnswer = (value: unknown) => record(value) && value.schema === PLAN_ANSWER_V4_SCHEMA ? validatePlanAnswerV4(value) : validatePlanAnswer(value);
+
 export function validateConversationAnswer(value: unknown): ConversationAnswer {
   if (!record(value) || value.schema !== CONVERSATION_ANSWER_SCHEMA || !Array.isArray(value.sources) || value.sources.length > 200) fail("文件回答合同不正确");
   const sources = value.sources.map(source);
@@ -126,7 +130,7 @@ export function validateConversationAnswer(value: unknown): ConversationAnswer {
   const calculations = value.calculations === undefined ? undefined : parseAttachmentCalculations(value.calculations);
   if (calculations && new Set(calculations.map((item) => item.id)).size !== calculations.length) fail("表格计算标识重复");
   if (value.trace !== undefined && !isToolTrace(value.trace)) fail("文件回答过程记录不正确");
-  const databaseAnswers = value.databaseAnswers === undefined ? undefined : Array.isArray(value.databaseAnswers) && value.databaseAnswers.length <= 5 ? value.databaseAnswers.map(validatePlanAnswer) : fail("经营数据引用不正确");
+  const databaseAnswers = value.databaseAnswers === undefined ? undefined : Array.isArray(value.databaseAnswers) && value.databaseAnswers.length <= 5 ? value.databaseAnswers.map(databaseAnswer) : fail("经营数据引用不正确");
   for (const item of sources.filter((item) => item.kind === "database")) {
     const answer = databaseAnswers?.find((answer) => answer.runId === item.databaseRunId);
     const fact = answer?.evidence.facts.find((fact) => fact.id === item.databaseFactId);

@@ -3,15 +3,15 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { createAgentHttpHandler } from "../agent/http-handler.ts";
 import { analyticsAnswerText, consumeAnalyticsStream, encodeAnalyticsStreamEvent, isPlanAnswer, normalizeAnalyticsAnswerSchema, validateAnalyticsAnswerResult } from "../app/lib/analytics/stream.ts";
-import { PLAN_ANSWER_SCHEMA } from "../app/lib/analytics/analysis-v2-types.ts";
+import { PLAN_ANSWER_SCHEMA, PLAN_ANSWER_V4_SCHEMA } from "../app/lib/analytics/analysis-v2-types.ts";
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
-import { simulatedPlanAnswer } from "./helpers/plan-answer.ts";
+import { simulatedPlanAnswer, simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
 
-async function start(t: test.TestContext, calls: { legacy: number; plan: number }) {
+async function start(t: test.TestContext, calls: { legacy: number; plan: number }, answer: () => unknown = simulatedPlanAnswer) {
   const server = createServer(createAgentHttpHandler({
     token: "test", model: "test", runAgentTurn: async () => { throw new Error("不能调用执行工具"); },
     runAnalyticsTurn: async () => { calls.legacy++; return quickAnalyticsReply("你好")!; },
-    runPlanAnalyticsTurn: async (_request, _signal, emit) => { calls.plan++; emit?.({ type: "phase", phase: "analyzing", at: Date.now() }); return simulatedPlanAnswer(); },
+    runPlanAnalyticsTurn: async (_request, _signal, emit) => { calls.plan++; emit?.({ type: "phase", phase: "analyzing", at: Date.now() }); return answer() as ReturnType<typeof simulatedPlanAnswerV4>; },
   }));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -47,7 +47,7 @@ test("未知版本头仍返回 400，无版本头走旧路径", async (t) => {
   assert.deepEqual(calls, { legacy: 1, plan: 0 });
 });
 
-test("版本协商只接受 v3，流解码拒绝引用未知事实的 v3 结果", () => {
+test("版本协商接受 v3 和 v4，流解码拒绝引用未知事实的 v3 结果", () => {
   assert.equal(normalizeAnalyticsAnswerSchema(PLAN_ANSWER_SCHEMA), PLAN_ANSWER_SCHEMA);
   for (const value of [null, undefined, "", "analysis-answer/v2", "ANALYSIS-ANSWER/V3", "v3"]) assert.equal(normalizeAnalyticsAnswerSchema(value), undefined);
   const valid = simulatedPlanAnswer();
@@ -61,4 +61,17 @@ test("流消费拒绝引用未知事实的 v3 结果", async () => {
   const bad = JSON.parse(JSON.stringify(simulatedPlanAnswer())); bad.claims = [{ text: "x", factIds: ["ghost"], confidence: "kept" }];
   const response = new Response(`${JSON.stringify({ type: "result", result: bad })}\n`);
   await assert.rejects(consumeAnalyticsStream(response), /不存在的事实/);
+});
+
+test("v4 和 v3 请求头都走计划运行器，转发的 v4 结果原样解码", async (t) => {
+  for (const schema of [PLAN_ANSWER_V4_SCHEMA, PLAN_ANSWER_SCHEMA]) {
+    const calls = { legacy: 0, plan: 0 }; const url = await start(t, calls, simulatedPlanAnswerV4);
+    const response = await fetch(url, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": schema }, body });
+    assert.equal(response.status, 200);
+    const result = await consumeAnalyticsStream(response);
+    assert.ok(isPlanAnswer(result)); assert.deepEqual(result, simulatedPlanAnswerV4());
+    assert.match(analyticsAnswerText(result), /1,234\.56元/);
+    assert.deepEqual(calls, { legacy: 0, plan: 1 });
+  }
+  assert.equal(normalizeAnalyticsAnswerSchema(PLAN_ANSWER_V4_SCHEMA), PLAN_ANSWER_V4_SCHEMA);
 });

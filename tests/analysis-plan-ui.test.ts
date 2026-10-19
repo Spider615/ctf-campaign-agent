@@ -4,9 +4,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { WorkspacePanelContext } from "../app/components/workspace/workspace-panel-context.ts";
 import { createHistoryConversationStore } from "../app/lib/client/history-conversation.ts";
-import type { PlanAnswer, PlanAnswerClaim } from "../app/lib/analytics/analysis-v2-types.ts";
+import type { PlanAnswer, PlanAnswerClaim, PlanAnswerV4 } from "../app/lib/analytics/analysis-v2-types.ts";
 import { storedV2Answer } from "./helpers/analysis-v2-answer.ts";
-import { simulatedPlanAnswer } from "./helpers/plan-answer.ts";
+import { simulatedPlanAnswer, simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
 import { loadReactComponent } from "./helpers/react-component.ts";
 
 const provider = (child: ReturnType<typeof createElement>) => createElement(WorkspacePanelContext.Provider, { value: { panelId: "panel", activeId: null, togglePanel() {}, closePanel() {}, dismissPanel() {} } }, child);
@@ -133,4 +133,68 @@ test("主结论带重点数字时放在答案最上面单独放大，句子紧�
   assert.match(html, /data-plan-key-figure[^>]*text-\[32px\][^>]*>442个</);
   const plain = await render(t, { ...base, headline: { text: "甲店领先", factIds: [factId], confidence: "kept" } });
   assert.doesNotMatch(plain, /data-plan-key-figure/);
+});
+
+async function renderV4(t: { after(fn: () => void): void }, answer: PlanAnswerV4) {
+  const { PlanAnswerV4View } = await loadReactComponent(t, "app/components/analytics/plan-answer.tsx");
+  return renderToStaticMarkup(provider(createElement(PlanAnswerV4View, { answer })));
+}
+const v4Chart = { id: "c", revision: 1, kind: "bar", renderer: "native", afterBlockIndex: 0, title: "各店销售额", unit: "元", scope: "二月", definition: "销售额", limitations: [], selectionLabel: "全部", categories: [{ key: "a", label: "甲店" }], series: [{ key: "amount", label: "销售额", values: [{ value: 1234.56, exact: "1234.56", refIds: ["amount"] }] }], sourceIds: [], factIds: ["amount"], objectIds: [] } as unknown as Extract<PlanAnswerV4["body"][number], { kind: "chart" }>["chart"];
+
+test("v4：重点数字放大在最前，正文数字是带出处的按钮，表格和图按块顺序出现", async (t) => {
+  const base = simulatedPlanAnswerV4();
+  const text = "### 二月 1,234.56元\n- 甲店 **1,234.56元**，乙店 1,234.56元";
+  const at = (from: number) => { const start = text.indexOf("1,234.56元", from); return { start, end: start + 9, factIds: ["amount"] }; };
+  const r1 = at(0); const r2 = at(r1.end); const r3 = at(r2.end);
+  const answer: PlanAnswerV4 = { ...base, body: [
+    { kind: "markdown", text, refs: [r1, r2, r3] },
+    { kind: "table", title: "各门店的销售额", columns: ["门店", "销售额"], rows: [{ cells: ["甲店", "1,234.56元"], factIds: ["amount"] }] },
+    { kind: "markdown", text: "后记一段。", refs: [] },
+    { kind: "chart", chart: v4Chart },
+  ] };
+  const html = await renderV4(t, answer);
+  const figure = html.indexOf("data-plan-key-figure"); const firstBlock = html.indexOf("data-plan-block");
+  assert.ok(figure >= 0 && figure < firstBlock, "重点数字在正文之前");
+  assert.match(html, /data-plan-key-figure[^>]*text-\[32px\][^>]*>1,234\.56元</);
+  const buttons = html.match(/<button[^>]*data-plan-ref[^>]*>[^<]*<\/button>/g) ?? [];
+  assert.equal(buttons.length, 3);
+  for (const button of buttons) {
+    assert.match(button, />1,234\.56元<\/button>$/); assert.match(button, /aria-label="查看 1,234\.56元 的出处"/);
+    assert.match(button, /font-semibold/); assert.match(button, /tabular-nums/); assert.match(button, /underline/); assert.match(button, /aria-controls="panel"/);
+  }
+  assert.match(html, /<h3[^>]*><span><span>二月 <\/span><button[^>]*data-plan-ref/); assert.match(html, /<li[^>]*>.*<strong[^>]*><button[^>]*data-plan-ref/);
+  const table = html.indexOf('data-plan-block="table"'); const after = html.indexOf("后记一段"); const chart = html.indexOf("data-visualization-card");
+  assert.ok(firstBlock < table && table < after && after < chart, "块按顺序渲染");
+  assert.match(html, /各门店的销售额[\s\S]*<table/);
+  assert.doesNotMatch(html, /主要发现|>建议<|暂时不能下的结论/);
+});
+
+test("v4：没有重点数字时不渲染放大区，HTML 按文字转义", async (t) => {
+  const base = simulatedPlanAnswerV4();
+  const html = await renderV4(t, { ...base, keyFigure: undefined, body: [{ kind: "markdown", text: "<script>alert(1)</script><img src=x onerror=alert(1)>", refs: [] }] });
+  assert.doesNotMatch(html, /data-plan-key-figure/); assert.doesNotMatch(html, /<script|<img/); assert.match(html, /&lt;script&gt;/);
+});
+
+test("v4：出处面板保留口径和分析步骤", async (t) => {
+  const answer = { ...simulatedPlanAnswerV4(), assumptions: ["同店口径待确认"], plan: [{ id: "n1", op: "measure", status: "completed", summary: "汇总二月销售额" }] };
+  const { SourcePanel } = await loadReactComponent(t, "app/components/analytics/plan-answer.tsx");
+  const html = renderToStaticMarkup(provider(createElement(SourcePanel, { answer, factIds: ["amount"] })));
+  assert.match(html, /口径[\s\S]*同店口径待确认/); assert.match(html, /分析步骤[\s\S]*汇总二月销售额/); assert.match(html, /1,234\.56元/);
+});
+
+test("历史消息和报告按 schema 选组件：v4 用 PlanAnswerV4View", async (t) => {
+  const { HistoryMessageView } = await loadReactComponent(t, "app/components/analytics/history-message.tsx");
+  const html = renderToStaticMarkup(provider(createElement(HistoryMessageView, { message: { id: "m", role: "assistant", text: "", createdAt: "2026-10-19T00:00:00Z", status: "done", answer: simulatedPlanAnswerV4() }, busy: false, onRetry() {} })));
+  assert.match(html, /data-plan-answer-version="v4"/); assert.match(html, /data-plan-ref/);
+  const v3 = renderToStaticMarkup(provider(createElement(HistoryMessageView, { message: { id: "m", role: "assistant", text: "", createdAt: "2026-10-19T00:00:00Z", status: "done", answer: simulatedPlanAnswer() }, busy: false, onRetry() {} })));
+  assert.match(v3, /data-plan-answer/); assert.doesNotMatch(v3, /data-plan-answer-version/);
+});
+
+test("恢复会话：v4 答案重新核验后保留，复制文本走 planAnswerV4Text", () => {
+  const store = new Map<string, string>();
+  store.set("ctf:conversations:v2", JSON.stringify({ activeId: "t", threads: [{ id: "t", title: "x", updatedAt: "2026-10-19T00:00:00Z", campaignId: null, context: [], messages: [{ id: "v4", role: "assistant", text: "", createdAt: "2026-10-19T00:00:00Z", status: "done", answer: simulatedPlanAnswerV4() }] }] }));
+  const conversation = createHistoryConversationStore({ getItem: (key) => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value); } });
+  const [restored] = conversation.snapshot();
+  assert.ok(restored.answer && "schema" in restored.answer && restored.answer.schema === "analysis-answer/v4");
+  assert.equal(restored.text, "二月销售额 1,234.56元，先核对门店口径。");
 });

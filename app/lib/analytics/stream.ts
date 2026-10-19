@@ -3,14 +3,15 @@ import type { AgentTraceEvent } from "../tool-trace.ts";
 import { validateAnalyticsResponse } from "./explain.ts";
 import { publicAnalyticsTrace } from "./trace.ts";
 import type { AnalysisReport, AnalyticsExplainResult } from "./types.ts";
-import { PLAN_ANSWER_SCHEMA, type PlanAnswer } from "./analysis-v2-types.ts";
-import { planAnswerText, validatePlanAnswer } from "./plan/answer.ts";
+import { PLAN_ANSWER_SCHEMA, PLAN_ANSWER_V4_SCHEMA, type PlanAnswer, type PlanAnswerV4 } from "./analysis-v2-types.ts";
+import { planAnswerText, planAnswerV4Text, validatePlanAnswer, validatePlanAnswerV4 } from "./plan/answer.ts";
 import type { ConversationAnswer } from "../attachments/types.ts";
 import { conversationAnswerText, isConversationAnswer, validateConversationAnswer } from "../attachments/answer.ts";
 import type { VisualizationProgressEvent } from "./visualization-types.ts";
 import { parseVisualizationProgress } from "./visualization-progress.ts";
 
-export type AnalyticsAnswerResult = AnalyticsExplainResult | PlanAnswer | ConversationAnswer;
+export type AnyPlanAnswer = PlanAnswer | PlanAnswerV4;
+export type AnalyticsAnswerResult = AnalyticsExplainResult | AnyPlanAnswer | ConversationAnswer;
 export type AnalyticsProgressEvent = { type: "trace"; event: AgentTraceEvent } | { type: "phase"; phase: "analyzing" | "writing"; at: number } | VisualizationProgressEvent;
 export type AnalyticsStreamEvent = AnalyticsProgressEvent | { type: "result"; result: AnalyticsAnswerResult } | { type: "error"; error: string };
 type AnalyticsWireEvent = AnalyticsStreamEvent | { type: "result_chunk"; index: number; delta: string } | { type: "result_end"; chunks: number; length: number };
@@ -29,14 +30,19 @@ export function encodeAnalyticsStreamEvent(event: AnalyticsStreamEvent): string 
   return lines.join("\n") + "\n";
 }
 
-// 版本协商只选择回答合同；只认计划式 v3，其余声明沿用旧路径，不改变访问权限。
-export const normalizeAnalyticsAnswerSchema = (value: string | null | undefined) => value === PLAN_ANSWER_SCHEMA ? PLAN_ANSWER_SCHEMA : undefined;
-export function isPlanAnswer(result: AnalyticsAnswerResult): result is PlanAnswer {
-  return "schema" in result && result.schema === PLAN_ANSWER_SCHEMA;
+// 版本协商只选择回答合同；只认计划式 v4 和 v3（旧页面刷新前仍可用，回答一律是 v4），其余声明沿用旧路径，不改变访问权限。
+export const normalizeAnalyticsAnswerSchema = (value: string | null | undefined) => value === PLAN_ANSWER_V4_SCHEMA ? PLAN_ANSWER_V4_SCHEMA : value === PLAN_ANSWER_SCHEMA ? PLAN_ANSWER_SCHEMA : undefined;
+// 计划式答案：v3（旧会话）或 v4（自由正文）。
+export function isPlanAnswer(result: AnalyticsAnswerResult): result is AnyPlanAnswer {
+  return "schema" in result && (result.schema === PLAN_ANSWER_SCHEMA || result.schema === PLAN_ANSWER_V4_SCHEMA);
+}
+export function isPlanAnswerV4(result: AnalyticsAnswerResult): result is PlanAnswerV4 {
+  return "schema" in result && result.schema === PLAN_ANSWER_V4_SCHEMA;
 }
 export function validateAnalyticsAnswerResult(value: unknown, report: AnalysisReport | null = null): AnalyticsAnswerResult {
   if (value && typeof value === "object" && "schema" in value) {
     if (isConversationAnswer(value)) { if (report) throw new Error("报告解读不能使用文件回答合同"); return validateConversationAnswer(value); }
+    if (value.schema === PLAN_ANSWER_V4_SCHEMA) return validatePlanAnswerV4(value);
     if (value.schema === PLAN_ANSWER_SCHEMA) return validatePlanAnswer(value);
     // v2 等已退役的结构化合同不再接受；旧会话恢复由调用方先按 schema 降级为纯文字。
     throw new Error("营销回答合同版本不支持");
@@ -45,6 +51,7 @@ export function validateAnalyticsAnswerResult(value: unknown, report: AnalysisRe
 }
 export function analyticsAnswerText(result: AnalyticsAnswerResult): string {
   if (isConversationAnswer(result)) return conversationAnswerText(result);
+  if (isPlanAnswerV4(result)) return planAnswerV4Text(result);
   if (isPlanAnswer(result)) return planAnswerText(result);
   return result.reply ?? result.advice?.map((item) => `${item.target?.label ?? ""}${item.text}`).join("\n") ?? "";
 }
@@ -65,7 +72,7 @@ export function decodeAnalyticsStreamLine(line: string, report: AnalysisReport |
 }
 
 // Workers 和浏览器共用分帧与结果校验；未核验的模型正文不能进入产品流。
-export function consumeAnalyticsStream(response: Response, onProgress: ((event: AnalyticsProgressEvent) => void) | undefined, signal: AbortSignal | undefined, report: AnalysisReport): Promise<AnalyticsExplainResult | PlanAnswer>;
+export function consumeAnalyticsStream(response: Response, onProgress: ((event: AnalyticsProgressEvent) => void) | undefined, signal: AbortSignal | undefined, report: AnalysisReport): Promise<AnalyticsExplainResult | AnyPlanAnswer>;
 export function consumeAnalyticsStream(response: Response, onProgress?: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, report?: AnalysisReport | null): Promise<AnalyticsAnswerResult>;
 export async function consumeAnalyticsStream(response: Response, onProgress?: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, report: AnalysisReport | null = null): Promise<AnalyticsAnswerResult> {
   throwIfTurnCancelled(signal);

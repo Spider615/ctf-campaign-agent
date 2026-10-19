@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { DIMENSION_LABELS, type AnalysisReport, type Dimension, type EvidenceResult } from "../../lib/analytics/types";
 import { analyticsRequest, downloadCsv, explainAnalyticsReport } from "../../lib/client/analytics";
 import { selectedInsights } from "../../lib/analytics/explain";
-import { isPlanAnswer, type AnalyticsAnswerResult } from "../../lib/analytics/stream";
+import { isPlanAnswer, isPlanAnswerV4, type AnalyticsAnswerResult } from "../../lib/analytics/stream";
 import { AdvisorAnswer } from "./advisor-answer";
-import { PlanAnswerView } from "./plan-answer";
+import { PlanAnswerV4View, PlanAnswerView } from "./plan-answer";
 import { MarkdownText } from "../chat/markdown-text";
 import { isConversationAnswer } from "../../lib/attachments/answer";
 
@@ -55,7 +55,7 @@ export function ReportView({ report, dirty, question }: { report: AnalysisReport
     <section aria-labelledby="advisor-heading">
       <div className="flex flex-wrap items-center justify-between gap-3"><h3 id="advisor-heading" className="text-base font-semibold">营销分析与建议</h3><div className="flex gap-2"><button type="button" onClick={() => void explain()} disabled={explaining || dirty || !question.trim()} className="min-h-10 rounded-lg border border-border px-3 text-sm disabled:opacity-50">{explaining ? "小福正在核对数据…" : "分析问题并给建议"}</button>{explaining ? <button type="button" onClick={() => { explainRequest.current?.abort(); setBusyQuestion(null); }} className="min-h-10 px-3 text-sm text-muted-foreground">停止</button> : null}</div></div>
       <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">关注问题：{question}</p>
-      {explanation && isPlanAnswer(explanation) ? <div className="mt-4"><PlanAnswerView answer={explanation} /></div> : legacyExplanation?.reply ? <div className="mt-4"><MarkdownText text={legacyExplanation.reply} /></div> : legacyExplanation ? <AdvisorAnswer explanation={legacyExplanation} onRows={(id) => void showEvidence(id)} /> : <p className="mt-2 text-xs leading-6 text-muted-foreground">小福会核对当前数据，必要时重新比较或读取已启用的历史资料。回答中的数字角标可展开周期、口径与证据。</p>}
+      {explanation && isPlanAnswerV4(explanation) ? <div className="mt-4"><PlanAnswerV4View answer={explanation} /></div> : explanation && isPlanAnswer(explanation) ? <div className="mt-4"><PlanAnswerView answer={explanation} /></div> : legacyExplanation?.reply ? <div className="mt-4"><MarkdownText text={legacyExplanation.reply} /></div> : legacyExplanation ? <AdvisorAnswer explanation={legacyExplanation} onRows={(id) => void showEvidence(id)} /> : <p className="mt-2 text-xs leading-6 text-muted-foreground">小福会核对当前数据，必要时重新比较或读取已启用的历史资料。回答中的数字角标可展开周期、口径与证据。</p>}
     </section>
     <section aria-labelledby="insights-heading">
       <h3 id="insights-heading" className="text-base font-semibold">值得核对的差异</h3>

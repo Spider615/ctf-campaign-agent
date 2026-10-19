@@ -13,5 +13,7 @@ test("Node分析版本头精确协商，v1默认与v3流结果并存", async (t)
   const headers = { "content-type": "application/json", authorization: "Bearer test" }; const body = JSON.stringify({ mode: "database", question: "你好", history: [] });
   const old = await fetch(url, { method: "POST", headers, body }); assert.equal(old.status, 200); assert.ok((await old.text()).includes('"reply"')); assert.equal(legacy, 1);
   const next = await fetch(url, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": "analysis-answer/v3" }, body }); assert.equal(next.status, 200); const events = (await next.text()).trim().split("\n").map((line) => JSON.parse(line)); assert.equal(events.at(-1).result.schema, "analysis-answer/v3"); assert.equal(general, 1);
-  const invalid = await fetch(url, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": "analysis-answer/v9" }, body }); assert.equal(invalid.status, 400); assert.equal(general, 1); assert.equal(legacy, 1);
+  // v4 请求头同样走计划式运行器。
+  const v4 = await fetch(url, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": "analysis-answer/v4" }, body }); assert.equal(v4.status, 200); await v4.text(); assert.equal(general, 2);
+  const invalid = await fetch(url, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": "analysis-answer/v9" }, body }); assert.equal(invalid.status, 400); assert.equal(general, 2); assert.equal(legacy, 1);
 });

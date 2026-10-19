@@ -18,3 +18,11 @@ test("不在白名单里的工具名过程记录被拒绝", () => {
   assert.equal(isAgentTraceEvent(event("not_a_real_tool")), false);
   assert.throws(() => publicAnalyticsTrace(event("not_a_real_tool")));
 });
+
+test("v3 答案的结论与措辞复核步骤名仍能解码，新步骤名也在白名单里", async () => {
+  const { RETIRED_PLAN_ANALYTICS_TOOLS, PLAN_ANALYTICS_TOOLS } = await import("../app/lib/analytics/tool-names.ts");
+  for (const tool of [...RETIRED_PLAN_ANALYTICS_TOOLS, ...PLAN_ANALYTICS_TOOLS]) {
+    assert.equal(isAgentTraceEvent(event(tool)), true, tool);
+    assert.equal(publicAnalyticsTrace(event(tool)).tool, tool);
+  }
+});

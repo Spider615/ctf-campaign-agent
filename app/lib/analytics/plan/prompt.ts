@@ -2,7 +2,7 @@ import type { AnalysisCapabilities } from "../analysis-v2-types.ts";
 import type { PlanNode } from "./types.ts";
 import { SEMANTIC_DIMENSIONS, type SemanticDimensionId } from "../semantic/model.ts";
 
-// 计划即程序的分步提示词：模型只写计划、措辞和复核意见，数字由代码查出并绑定。
+// 计划即程序的分步提示词：模型只写计划、正文和复核意见，数字由代码按引用从执行结果填入。
 const cut = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}…` : text;
 // 维度取值超过这个数只给示例。
 const MAX_LISTED_VALUES = 60;
@@ -61,7 +61,7 @@ export function planPrompt(question: string, context: string[], brief: string, i
     "- population 取 sales、net、returns、recovery、zero_sales，指标须适用于所选口径；标了「须控制」的指标要在范围中固定为单值或放进 by / align.controls。",
     "- 不同天数的窗口用 amount_per_day 等日均指标比较。decompose、drill、scan、robust、scenario 必须用 of 引用前面已声明的节点。",
     "- 节点只写当前问题真正需要的，最多 12 个；id 用字母数字。计划里不写结论。",
-    "- 数据覆盖不到、目录里没有的维度或指标不要硬凑，后面在结论里直接说明缺什么。",
+    "- 数据覆盖不到、目录里没有的维度或指标不要硬凑，后面在回答里直接说明缺什么。",
     "- 问「有多少个活动 / 门店 / 货品」时，按对应维度分组的 measure 会给出分组个数（distinct_count），一个节点就够；不要为了个数再拆别的对比。",
     `### 能力目录\n${brief}`,
     `### 原问题\n${question}`,
@@ -71,38 +71,77 @@ export function planPrompt(question: string, context: string[], brief: string, i
   ].filter(Boolean).join("\n\n");
 }
 
-// context：用户此前说过的话。追问（如「每个活动 id 算一个」）只有和前面的问题连起来才知道要答什么。
-export function claimsPrompt(question: string, summary: string, context: readonly string[] = []): string {
+const contextBlock = (context: readonly string[], hint = "") => context.length ? `### 用户此前说过\n${context.map((item) => `- ${item}`).join("\n")}${hint}` : "";
+
+// 写正文：模型按问题自由组织 Markdown，数字一律写成引用，由代码从执行结果填值。
+// summary 是 executionSummary 的输出，每行开头就是可以照抄的引用。
+export function answerPrompt(question: string, summary: string, context: readonly string[] = []): string {
   return [
-    "## 本步：写结论",
-    "根据执行结果写给业务人员看的分析，调用 submit_claims 提交 { headline, claims, actions, cannotConclude, questions }。关键数据表、图表和口径说明由代码生成，你只写判断和措辞。",
-    "### 写什么",
-    "- headline：一句话直接回答原问题，开头就是答案和最关键的一个数（如「8月有成交的活动共{value}」），口径和说明放在后半句，不要在句首写「按……口径」。整句只放一个最关键的数。问「有多少个活动 / 门店 / 货品」时，headline 就是那个个数（选分组汇总节点 metric 为 distinct_count 的行，assert 用 value），先报个数再说其他。要说整体或覆盖面大的规律；单个门店、商场这类小样本个案只能写进 claims。",
-    "- 两段时间天数不同（如七夕 7 天对 8 月其余日子）时，比较日均类指标，不比实收、件数这些合计值。",
-    "- claims 不要重复 headline 已经说过的那个数；从 headline 往下补充：构成、最高最低、需要注意的口径。",
-    "- claims：3 到 5 条主要发现。每条是一句完整的业务判断：先说现象和数字，再说为什么值得注意或它意味着什么。原问题问到的每个方面（如整体对比、大区分区下钻、局部特别好或特别差）都要有对应发现；有分组结果时至少写出最好和最差的分组。",
-    "- actions：2 到 3 条建议，每条写清做什么、针对哪个对象、依据哪条发现（claim 填该发现在 claims 里的序号）。",
-    "- 原问题问到数据里没有的维度（如会员等级、金价）时，headline 先用最接近的现有数据回答（如会员与非会员对比、每克牌价走势），再在 cannotConclude 写明缺什么；不要因为缺一个维度就不回答。",
-    "- cannotConclude：数据确实缺少、影响判断的内容，写清缺什么；能用现有数据回答的不要写在这里。",
-    "- questions：只写必须由用户确认才能继续的业务事实，没有就留空。",
-    "### 怎么引用数据",
-    "- 执行结果按节点分段，每段开头「# 节点：说明」写明这个节点算的是什么范围；措辞里的对象（如会员还是非会员、哪段时间）必须和所选节点的说明一致。",
-    "- headline 和每条 claim 都要绑定执行结果里的一行：把下面「执行结果」里那一行的 {node, select, metric, role} 原样抄进去（总体行没有 select）。",
-    "- 数值写成占位符：{target}、{reference}、{delta}、{change}、{deviation} 是同一节点、同一分组、同一指标的目标、参照、差额、变化和偏离；{value} 是所选那一行（所选角色已另用具名占位写出时，{value} 指这一组的水平值）。只能用这六个占位符，每个在一条里最多出现一次。",
-    "- 一条只说一个指标：占位符只会填入所选 metric 的数。要说另一个指标（如客单价、门店数），另写一条并选那个指标的行。",
-    "- actions、cannotConclude、questions 不能写占位符或算出来的数字，用文字指向对应发现即可。",
-    "- 业务名称和原话里的日期可以照写（如「H-克减30元」「东区/B区」「七夕7天」），其他算出来的数字只能用占位符。",
-    "- assert 要和数据一致：value 只陈述这个数、不判断方向（如活动个数、本月实收）；up/higher 对应正的变化、偏离或贡献，down/lower 对应负的，flat 是变化不到 1%，largest/smallest 是同一节点同一指标里最大或最小的那组。汇总（measure）节点没有参照，分组之间只能用 largest/smallest 说谁最高最低；要说比什么高或低，选 contrast、drill、scan 节点。",
-    "- 只能引用执行结果里列出的行；不支持、失败的节点和稳健性检查不能作为结论节点。",
+    "## 本步：写回答",
+    "你是周大福的营销顾问，正在回复业务同事刚才问的问题。根据下面的执行结果写一段 Markdown 正文，调用 submit_answer({ body }) 提交。口径说明、出处和分析步骤由代码另外附上，正文只写回答本身。",
+    "### 怎么说",
+    "- 像当面回复同事那样说话，按这个问题本身来组织，不要套「结论 / 发现 / 建议」这类固定板块。",
+    "- 第一句就回答问题：问「多少」「哪个最高」，第一句就是那个数或那个对象；复盘类先说整体好不好，再讲差在哪里；问要不要做、选哪个，先给推荐，再讲依据和风险；问哪里有机会，直接列几条带数据的发现，每条一句话说清对象和数。",
+    "- 只写回答这个问题用得上的内容。问数字就给数字和必要的口径，不附建议；没有需要提醒的限制就不提；数据缺口只在影响这次答案时用一句话说清缺什么。一两句能答完的问题，不加标题、不分点。",
+    "- 第一句说整体或覆盖面大的规律。单个门店、商场这类个案再突出也只放在后面作为补充，并说明它只是个例。",
+    "- 两段时间天数不同（例如节庆几天对比当月其他日子）时，比较日均实收、日均订单这类日均指标，不比实收、件数这些合计值；合计值的引用在这种情况下会被删掉。",
+    "- 相关不写成因果：可以说「活动期间日均实收更高」，不说「活动带来了增长」。",
+    "- 原问题问到数据里没有的维度或指标时，先用最接近的现有数据回答，再一句话说明缺什么，不要因为缺一项就不回答。",
+    "- 原问题如果是在补充口径或回答上一轮的疑问，就按补充后的口径回答前面的问题。",
+    "- 正文控制在 600 字以内（引用按填好的数字计）。",
+    "### 数字怎么写",
+    "- 正文里凡是算出来的数字都写成引用，代码会按执行结果填值。写法：`{{节点.指标}}`、`{{节点.指标.角色}}`、`{{节点.指标|维度=取值}}`、`{{节点.指标.角色|维度=取值,维度=取值}}`。最稳妥的做法是照抄执行结果每行开头反引号里的那段引用。",
+    "- 分组取值里有逗号、竖线、等号、引号或花括号时，取值要加双引号，例如 `{{m1.rows|offer=\"M-2月慶典（滿4,000 92折）\"}}`；执行结果里已经按需要加好引号，照抄即可。",
+    "- 角色：value 数值、target 目标期、reference 参照期、delta 差额、change 变化率、deviation 偏离、share 占比、contribution 贡献。不写角色时，对比节点默认 delta，下钻和扫描默认 deviation，拆解默认 contribution，其余默认 value；不写分组时取总体行。",
+    "- 填进去的值自带单位，差额、变化、偏离还带正负号（例如「+104.14%」「-12.00%」「1,234.56元」「442个」）。引用后面不要再写单位。带正负号的值前面用「变化」「比……」这类中性说法，或者用和正负一致的「高」「增长」；不要写「少 {{…}}」「下降 {{…}}」，否则负号会和字面意思叠成反话。",
+    "- 不能自己算比例、倍数、差额或合计，也不要写「翻了一番」「涨了三成」「约一半」这类估算；要说幅度就引用 change、delta 或 share，执行结果里没有的数就不写。",
+    "- 业务名称（如「H-克减30元」「东区/B区」）和用户原话里的日期、天数可以照写；其他数字只能用引用。写死数字的那一整句会被删掉。",
+    "- 句子说的对象要和所引节点的说明（每段开头「# 节点：说明」）一致：说明是非会员，就不能写成会员；说明是工作日对比，就不能写成整月。",
+    "- 对比节点的 delta、change 是「目标减参照」：先看执行结果里的正负，确认到底哪边更高，再写结论和推荐。正数是目标更高，负数是参照更高。",
+    "- 只能引用执行结果里列出的行；不支持、失败的节点不能引用。稳健性检查只用文字说明结论稳不稳，不引用数字。",
+    "### 表格和图",
+    "- 块语法单独占一行：",
+    "  - `::: table 节点 指标[,指标] [by 维度] [top N]`：一张表。对比节点列出目标、参照和变化（只取第一个指标）；分组统计、下钻、扫描节点按 by 维度列出各组，按第一个指标从高到低排。top 默认 6，最多 8 行。",
+    "  - `::: chart 节点 指标 [by 维度] [top N]`：一张图。分组统计按数值画条形图，按日期（by day）画走势，下钻、扫描画偏离最大的几组。",
+    "- 要比较三组以上、或用户想看排名、分布、走势时，用表或图比在句子里堆数字清楚；一两句能答完的问题不加表和图。表最多 3 个，图最多 2 个。",
+    "- 块的前一句说清读者该看什么；块里已经有的数字不用在句子里再报一遍。块里的节点、指标、维度只能用执行结果里出现过的 id。",
+    "### 组织方式随问题变化",
+    "下面三个例子只示意不同问题怎么组织，不是模板。示例里的 m1、c1 等只是示意，本题的节点 id 以执行结果每段开头的「# 节点：说明」为准；指标和取值也以执行结果为准。",
+    "例一，问「库里有多少个活动」——一句话给数，不加别的：\n```\n库里有成交的活动共 {{m1.distinct_count}}。\n```",
+    "例二，问「七夕卖得怎么样，和八月其他日子比」——先说整体，再看差在哪：\n```\n和八月其他日子比，七夕期间日均实收变化 {{c1.amount_per_day.change}}，日均订单变化 {{c1.orders_per_day.change}}。\n\n分大区看，各区相对整体的偏离如下：\n\n::: table r1 amount_per_day by region\n\n偏离最大的是南区，{{r1.amount_per_day|region=南区}}。\n```",
+    "例三，问「两个满减档哪个值得继续做」——先给推荐，再讲依据和风险：\n```\n建议优先保留高档：同店同期比较，高档的单均实收比低档 {{c2.amount_per_order.delta}}。\n\n风险在单数：高档的成交单数比低档 {{c2.orders.change}}，铺开前先在几家店试一轮，看单数能不能稳住。\n```",
     `### 原问题\n${question}`,
-    context.length ? `### 用户此前说过\n${context.map((item) => `- ${item}`).join("\n")}\n原问题如果是在补充口径或回答上一轮的疑问，就按补充后的口径回答前面的问题。` : "",
+    contextBlock(context),
     `### 执行结果\n${summary}`,
   ].filter(Boolean).join("\n\n");
 }
 
-// brief：计划复核时附上能力目录，便于判断筛选键和指标是否可用。
-export function reviewPrompt(kind: "plan" | "wording", question: string, payload: string, brief?: string): string {
-  if (kind === "plan") return [
+// 复核时每个引用填进去的值和依据；value 缺省表示这个引用填不了值，所在句会被删掉。
+export type ReviewRef = { ref: string; value?: string; issue?: string; basis: string };
+
+export function answerReviewPrompt(question: string, context: readonly string[], body: string, refs: readonly ReviewRef[]): string {
+  return [
+    "## 本步：复核回答",
+    "你是独立复核员。下面是另一位顾问写给业务同事的正文，数字用 {{…}} 引用，交付时由代码填值；后面列出了每个引用会填进去的值和它的依据（节点说明和分组）。",
+    "### 逐条检查",
+    "- 答非所问：第一句有没有直接回答原问题；问「多少」时第一句是不是那个数。",
+    "- 相关写成因果：「活动带来增长」「因为促销所以」这类说法要改成「活动期间……更高」。",
+    "- 方向不一致：文字说「高」「增长」，引用值却是负数；文字说「低」「下降」，引用值却是正数。",
+    "- 结论和数字对不上：对比节点的 delta、change 是「目标减参照」（依据里写了哪边是目标）。先看填值的正负判断到底是哪边更高，再看正文的结论、推荐、标题有没有说反。例如目标是 A、参照是 B，变化为负，就是 B 更高；正文却说「A 占优」「选 A 冲销售」，就要按数字改写结论。",
+    "- 对象或对照期写错：文字说的人群、门店、时间段和依据里的范围不一致，例如依据是非会员写成会员、依据是工作日对比写成整月、对照期写成了别的月份。改写时对照期照依据里的写法。",
+    "- 个案放在第一句、把单个门店或商场的表现当成整体结论。",
+    "### 提交",
+    "调用 submit_answer_review({ verdict, body, notes }) 提交。没有问题时 verdict 为 ok，不写 body。有问题时 verdict 为 rewrite，body 写改好的完整正文：保留原有的 {{…}} 引用和 ::: 块，只改文字，不能新写数字。notes 写给用户看的简短复核说明，没有可以为空。",
+    `### 原问题\n${question}`,
+    contextBlock(context),
+    `### 正文（引用原样）\n${body}`,
+    `### 引用填值与依据\n${refs.length ? refs.map((item) => `- ${item.ref} → ${item.value ?? `填不了值（${item.issue ?? "无法解析"}），所在句会被删掉`}｜依据：${item.basis}`).join("\n") : "（正文没有引用）"}`,
+  ].filter(Boolean).join("\n\n");
+}
+
+// 计划复核；brief 附上能力目录，便于判断筛选键和指标是否可用。
+export function planReviewPrompt(question: string, payload: string, brief?: string): string {
+  return [
     "## 本步：复核分析计划",
     "你是独立复核员。判断这份计划能不能回答原问题：范围和口径是否与原话一致、比较是否可比、有没有漏掉原问题要回答的事项、有没有多余节点。",
     "调用 submit_plan_review({ verdict, issues }) 提交：计划可用时 verdict 为 ok、issues 为空；需要修改时 verdict 为 revise，issues 逐条写清要改什么。",
@@ -110,13 +149,4 @@ export function reviewPrompt(kind: "plan" | "wording", question: string, payload
     `### 原问题\n${question}`,
     `### 计划\n${payload}`,
   ].filter(Boolean).join("\n\n");
-  return [
-    "## 本步：复核结论措辞",
-    "你是独立复核员。数字已由代码绑定，你只看措辞：是否直接回答原问题、有没有把相关说成因果、有没有夸大、建议是否和依据相连。",
-    "逐条核对措辞说的对象和「依据」里的范围是否一致：依据是非会员的节点却写成会员、依据是工作日对比却写成整月，都要按依据改写。改写时对照期照「依据」里的写法，不要自己换成别的日期范围。",
-    "措辞有问题优先 rewrite；只有结论本身错误或与问题无关时才 drop。原问题要的维度数据里没有、结论用最接近的现有数据回答（如用会员与非会员代替会员等级）时，保留并在措辞里说明是替代口径，不要删除。",
-    "调用 submit_wording_review({ edits, notes }) 提交。edits 每项为 { index, action: \"drop\" } 或 { index, action: \"rewrite\", text }，index 是下面结论列表的序号（0 为主结论）；改写的 text 不能写数字，保留原有占位符。没有问题时 edits 为空。notes 写给用户看的简短复核说明，可为空。",
-    `### 原问题\n${question}`,
-    `### 结论列表\n${payload}`,
-  ].join("\n\n");
 }

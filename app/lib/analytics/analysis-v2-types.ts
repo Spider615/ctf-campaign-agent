@@ -5,6 +5,7 @@ import type { ResolvedVisualization } from "./visualization-types.ts";
 // 已退役的 v2 回答合同：只用于识别旧页面请求头和已存会话里的旧答案，不再生成或渲染。
 export const RETIRED_ANALYSIS_ANSWER_SCHEMA = "analysis-answer/v2" as const;
 export const PLAN_ANSWER_SCHEMA = "analysis-answer/v3" as const;
+export const PLAN_ANSWER_V4_SCHEMA = "analysis-answer/v4" as const;
 export const ANALYSIS_METHODS = ["aggregate", "compare", "decompose", "scan", "robustness"] as const;
 // 维度、指标与筛选键由语义层统一定义。
 export { ANALYSIS_DIMENSIONS, ANALYSIS_METRICS } from "./semantic/model.ts";
@@ -72,6 +73,19 @@ export type PlanAnswer = {
   figures?: { targetLabel: string; referenceLabel?: string; rows: PlanAnswerFigure[] };
   actions: string[]; cannotConclude: string[]; questions: string[];
   assumptions: string[]; definitions: string[]; chart?: ResolvedVisualization;
+  plan: Array<{ id: string; op: string; status: string; summary: string }>;
+  review: { notes: string[] }; evidence: AnalysisEvidence; trace?: ToolTrace;
+};
+
+// v4：正文由模型自由写成 Markdown，数字是引用替换出来的；refs 标出每个数字在 text 里的位置和对应事实。
+export type PlanAnswerBlock =
+  | { kind: "markdown"; text: string; refs: Array<{ start: number; end: number; factIds: string[] }> }
+  | { kind: "table"; title: string; columns: string[]; rows: Array<{ cells: string[]; factIds: string[] }> }
+  | { kind: "chart"; chart: ResolvedVisualization };
+export type PlanAnswerV4 = {
+  schema: typeof PLAN_ANSWER_V4_SCHEMA; runId: string; question: string; status: "answered" | "partial" | "unavailable";
+  body: PlanAnswerBlock[]; keyFigure?: { value: string; factId: string };
+  assumptions: string[]; definitions: string[];
   plan: Array<{ id: string; op: string; status: string; summary: string }>;
   review: { notes: string[] }; evidence: AnalysisEvidence; trace?: ToolTrace;
 };

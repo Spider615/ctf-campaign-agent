@@ -9,14 +9,18 @@ import type { AgentTurnRunner } from "./run-turn.ts";
 import { isAnalyticsExplainRequest } from "../app/lib/analytics/explain.ts";
 import type { AnalyticsRunner } from "./analytics-run-turn.ts";
 import type { PlanAnalyticsRunner } from "./analysis-plan-run-turn.ts";
+import type { PlanAnswer } from "../app/lib/analytics/analysis-v2-types.ts";
 import { isDatabaseExplainRequest, type AnalyticsDatabase } from "../app/lib/analytics/database.ts";
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
 
+// 处理器只转发计划式答案，不关心版本：运行器现在回 v4，旧的 v3 运行器（测试替身）照样转发。
+type PlanRunnerLike = (...args: Parameters<PlanAnalyticsRunner>) => Promise<Awaited<ReturnType<PlanAnalyticsRunner>> | PlanAnswer>;
+
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
   runAnalyticsTurn?: AnalyticsRunner;
-  runPlanAnalyticsTurn?: PlanAnalyticsRunner;
+  runPlanAnalyticsTurn?: PlanRunnerLike;
   database?: AnalyticsDatabase;
   token: string;
   model: string;
@@ -86,8 +90,10 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlan
       if (isAnalytics || isDatabase || isDatabaseStream) {
         const schema = request.headers["x-analytics-answer-schema"];
         if (schema === "analysis-answer/v2") return send(response, 400, { error: "页面版本已更新，请刷新页面后重试" });
-        if (schema !== undefined && schema !== "analysis-answer/v3") return send(response, 400, { error: "不支持这个分析回答版本" });
-        const runner: PlanAnalyticsRunner | AnalyticsRunner | undefined = schema === "analysis-answer/v3" ? runPlanAnalyticsTurn : runAnalyticsTurn;
+        // v3、v4 请求头都走计划式运行器（回答是 v4）；页面改发 v4 之前旧请求头仍可用。
+        const planSchema = schema === "analysis-answer/v3" || schema === "analysis-answer/v4";
+        if (schema !== undefined && !planSchema) return send(response, 400, { error: "不支持这个分析回答版本" });
+        const runner: PlanRunnerLike | AnalyticsRunner | undefined = planSchema ? runPlanAnalyticsTurn : runAnalyticsTurn;
         if (!(isDatabase || isDatabaseStream ? isDatabaseExplainRequest(body) : isAnalyticsExplainRequest(body))) return send(response, 400, { error: "分析请求内容不完整" });
         const analyticsRequest = body as Parameters<AnalyticsRunner>[0];
         if ((isDatabase || isDatabaseStream) && !database && !quickAnalyticsReply(analyticsRequest.question)) return send(response, 503, { error: "历史数据库尚未启用" });

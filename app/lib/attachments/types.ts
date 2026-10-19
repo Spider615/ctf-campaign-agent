@@ -1,4 +1,4 @@
-import type { PlanAnswer } from "../analytics/analysis-v2-types.ts";
+import type { PlanAnswer, PlanAnswerV4 } from "../analytics/analysis-v2-types.ts";
 import type { AttachmentCalculation, Visualizations } from "../analytics/visualization-types.ts";
 import type { ToolTrace } from "../tool-trace.ts";
 
@@ -21,5 +21,5 @@ export type AttachmentReference = Pick<AttachmentSummary, "id" | "conversationId
 export type ConversationRequest = { conversationId: string; question: string; attachmentIds: string[]; history: Array<{ role: "user" | "assistant"; text: string }>; context?: string[] };
 export type AttachmentSource = { id: string; attachmentId: string; version: string; name: string; location: string; kind: "document" | "table" | "image" | "database"; excerpt: string; imageId?: string; databaseRunId?: string; databaseFactId?: string; calculationId?: string };
 export type ConversationDraft = { status: "answered" | "partial"; blocks: Array<{ text: string; sourceIds: string[] }>; limitations: string[] };
-export type ConversationAnswer = ConversationDraft & { schema: typeof CONVERSATION_ANSWER_SCHEMA; sources: AttachmentSource[]; databaseAnswers?: PlanAnswer[]; trace?: ToolTrace; visualizations?: Visualizations; calculations?: AttachmentCalculation[] };
+export type ConversationAnswer = ConversationDraft & { schema: typeof CONVERSATION_ANSWER_SCHEMA; sources: AttachmentSource[]; databaseAnswers?: Array<PlanAnswer | PlanAnswerV4>; trace?: ToolTrace; visualizations?: Visualizations; calculations?: AttachmentCalculation[] };
 export const validAttachmentId = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);

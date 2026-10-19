@@ -28,11 +28,11 @@ function explain() {
   assert.equal(typeof method, "function", "导入报告应使用严格校验的 v2 客户端入口"); return method!;
 }
 
-test("导入报告客户端发送精确 v3，读取新正文且保持原报告不变", async (t) => {
+test("导入报告客户端发送精确 v4，读取新正文且保持原报告不变", async (t) => {
   const original = structuredClone(report); let sent: { headers?: Headers; body?: unknown } = {};
   t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => { sent = { headers: new Headers(options.headers), body: JSON.parse(String(options.body)) }; return Response.json({ explanation: answer() }); });
   assert.deepEqual(await explain()(report, "先核对哪些门店？"), answer());
-  assert.equal(sent.headers?.get("x-analytics-answer-schema"), "analysis-answer/v3");
+  assert.equal(sent.headers?.get("x-analytics-answer-schema"), "analysis-answer/v4");
   assert.equal(sent.headers?.get("content-type"), "application/json"); assert.deepEqual(sent.body, { question: "先核对哪些门店？" });
   assert.deepEqual(report, original);
 });
