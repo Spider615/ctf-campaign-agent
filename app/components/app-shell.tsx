@@ -190,7 +190,7 @@ function WorkspaceShell({ children, marketing }: { children: React.ReactNode; ma
           <div className="px-3 pt-4.5">
             <button
               type="button"
-              onClick={() => { historyConversation.newConversation(); close(); router.push("/analysis"); }}
+              onClick={() => { historyConversation.newConversation(); close(); router.push("/analysis?mode=qa"); }}
               className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#247cff] text-sm font-semibold text-white shadow-[0_10px_24px_rgba(36,124,255,0.24)] transition hover:-translate-y-0.5 hover:bg-[#176bea] hover:shadow-[0_14px_28px_rgba(36,124,255,0.28)]"
             >
               <Plus className="size-4" />
@@ -205,7 +205,7 @@ function WorkspaceShell({ children, marketing }: { children: React.ReactNode; ma
               <div className="-ml-1 min-h-0 flex-1 space-y-1 overflow-y-auto pl-1 pt-1">{conversations.length ? conversations.map((conversation) => (
                 // 删除按钮不能放进对话按钮里，点它会连带切换对话，所以外面包一层定位容器。
                 <div key={conversation.id} className="group relative">
-                  <button type="button" onClick={() => { historyConversation.selectConversation(conversation.id); close(); router.push("/analysis"); }} aria-current={conversation.id === selectedConversation ? "true" : undefined} className={`block w-full rounded-lg border py-2 pl-3 pr-9 text-left text-[13px] leading-5 transition ${conversation.id === selectedConversation ? "border-[#c7ddff] bg-[#eaf4ff] text-[#174e96]" : "border-transparent text-[#4f6380] hover:border-[#e1ecf8] hover:bg-[#f5f9ff]"}`}><span className="flex items-start justify-between gap-1"><span className="line-clamp-2">{conversation.title}</span>{replyingAnalyses.has(conversation.id) || (conversation.campaignId && replyingCampaigns.has(conversation.campaignId)) ? <Replying /> : null}</span></button>
+                  <button type="button" onClick={() => { historyConversation.selectConversation(conversation.id); close(); router.push("/analysis?mode=qa"); }} aria-current={conversation.id === selectedConversation ? "true" : undefined} className={`block w-full rounded-lg border py-2 pl-3 pr-9 text-left text-[13px] leading-5 transition ${conversation.id === selectedConversation ? "border-[#c7ddff] bg-[#eaf4ff] text-[#174e96]" : "border-transparent text-[#4f6380] hover:border-[#e1ecf8] hover:bg-[#f5f9ff]"}`}><span className="flex items-start justify-between gap-1"><span className="line-clamp-2">{conversation.title}</span>{replyingAnalyses.has(conversation.id) || (conversation.campaignId && replyingCampaigns.has(conversation.campaignId)) ? <Replying /> : null}</span></button>
                   {conversation.unread && !replyingAnalyses.has(conversation.id) ? <Unread /> : null}
                   <button
                     type="button"

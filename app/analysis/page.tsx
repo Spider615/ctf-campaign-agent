@@ -1,2 +1,2 @@
-import { AnalyticsWorkspace } from "../components/analytics/analytics-workspace";
-export default function AnalysisPage() { return <AnalyticsWorkspace />; }
+import { AnalysisModes } from "../components/analytics/analysis-modes";
+export default function AnalysisPage() { return <AnalysisModes />; }

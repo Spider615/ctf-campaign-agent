@@ -9,7 +9,7 @@ import type { AnalysisAggregateCell, AnalysisAggregateQuery, AnalysisCapabilitie
 import type { HistoryConnection } from "./analytics-database.ts";
 import type { AnalysisScenarioAggregate, AnalysisScenarioQuery } from "../app/lib/analytics/analysis-v2-types.ts";
 import { normalizeScenarioQuery } from "../app/lib/analytics/analysis-v2-scenarios.ts";
-import { ANALYSIS_DIMENSIONS, ANALYSIS_FILTER_DIMENSIONS, SEMANTIC_BASELINES, SEMANTIC_DATABASE_LIMITATIONS, SEMANTIC_DIMENSIONS, semanticDimensionCatalog, semanticFields, type SemanticDimensionSource, type SemanticFilterKey } from "../app/lib/analytics/semantic/model.ts";
+import { ANALYSIS_DIMENSIONS, ANALYSIS_FILTER_DIMENSIONS, SEMANTIC_BASELINES, SEMANTIC_DATABASE_LIMITATIONS, SEMANTIC_DIMENSIONS, semanticDimensionCatalog, semanticFields, type SemanticFilterKey } from "../app/lib/analytics/semantic/model.ts";
 
 export type MysqlAnalysisConfig = { host: string; port: number; user: string; password: string; database: string; table: string; evidenceDir: string };
 // 单次完整查询保留资源上限；客户端额外留传输余量，避免合法慢查询清空整轮证据。
@@ -18,11 +18,12 @@ const ANALYSIS_DATABASE_IO_TIMEOUT_MS = ANALYSIS_DATABASE_QUERY_TIMEOUT_MS + 500
 
 type Dependencies = { connect: () => Promise<HistoryConnection>; pruneSource?: (connection: HistoryConnection, table: string, columns: readonly string[]) => Promise<string>; queryTimeoutMs?: number };
 // 维度来源来自语义层；这里只负责把来源编译成 SQL 表达式和所需列。
-const sourceColumns = (source: SemanticDimensionSource): string[] => source.kind === "column" || source.kind === "coalesce" || source.kind === "age_band" || source.kind === "labels" ? [source.column] : source.kind === "composite" ? [...source.columns] : source.kind === "date_range" ? [source.start, source.end] : [source.sunday, source.weekend, source.workday];
+export { sourceColumns } from "../app/lib/analytics/semantic/columns.ts";
+import { sourceColumns } from "../app/lib/analytics/semantic/columns.ts";
 const sourceOf = (dimension: AnalysisDimension) => SEMANTIC_DIMENSIONS[dimension].source;
 // 店龄分段边界属于推断，见语义层定义。
 const AGE_BANDS = "CASE WHEN `{c}` IS NULL OR TRIM(`{c}`) = '' THEN NULL WHEN CAST(`{c}` AS SIGNED) <= 1 THEN '0-1年' WHEN CAST(`{c}` AS SIGNED) <= 3 THEN '2-3年' WHEN CAST(`{c}` AS SIGNED) <= 5 THEN '4-5年' WHEN CAST(`{c}` AS SIGNED) <= 10 THEN '6-10年' ELSE '10年以上' END";
-function dimensionExpression(dimension: AnalysisDimension, lengths: GroupLengths = {}): string {
+export function dimensionExpression(dimension: AnalysisDimension, lengths: GroupLengths = {}): string {
   const source = sourceOf(dimension); if (!source) throw new Error("数据库缺少分组维度字段");
   if (source.kind === "column") return boundedField(source.column, lengths[dimension]);
   if (source.kind === "coalesce") return `COALESCE(NULLIF(${quoted(source.column)}, ''), '${source.fallback}')`;

@@ -205,7 +205,7 @@ export function answerReviewPrompt(question: string, context: readonly string[],
 }
 
 // 计划复核；brief 附上能力目录，便于判断筛选键和指标是否可用。
-export function planReviewPrompt(question: string, payload: string, brief?: string): string {
+export function planReviewPrompt(question: string, payload: string, brief?: string, context: readonly string[] = []): string {
   return [
     "## 本步：复核分析计划",
     "你是独立复核员。判断这份计划能不能回答原问题：范围和口径是否与原话一致、比较是否可比、有没有漏掉原问题要回答的事项、有没有多余节点。另外逐条检查：",
@@ -217,6 +217,8 @@ export function planReviewPrompt(question: string, payload: string, brief?: stri
     "调用 submit_plan_review({ verdict, issues }) 提交：计划可用时 verdict 为 ok、issues 为空；需要修改时 verdict 为 revise，issues 逐条写清要改什么。",
     brief ? `### 能力目录\n${brief}` : "",
     `### 原问题\n${question}`,
+    // 洞察图谱带过来的范围说明了「这个关系」「这条线」指什么，不要因为原问题短就要求澄清。
+    context.length ? `### 用户此前说过（原问题里的指代按这里理解）\n${context.map((item) => `- ${item}`).join("\n")}` : "",
     `### 计划\n${payload}`,
   ].filter(Boolean).join("\n\n");
 }

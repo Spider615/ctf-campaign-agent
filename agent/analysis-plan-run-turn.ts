@@ -271,7 +271,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       let review: { verdict: "ok" | "revise"; issues: string[] } | undefined;
       await runStep({
         name: "submit_plan_review", description: "提交计划复核意见", shape: reviewShape, thinking: true,
-        prompt: planReviewPrompt(request.question, JSON.stringify({ intent: plan.intent, nodes: plan.nodes, dropped: plan.dropped }), brief),
+        prompt: planReviewPrompt(request.question, JSON.stringify({ intent: plan.intent, nodes: plan.nodes, dropped: plan.dropped }), brief, context),
         done: () => Boolean(review),
         handle: (input) => { review = { verdict: input.verdict as "ok" | "revise", issues: input.issues as string[] }; return { recorded: true }; },
       });

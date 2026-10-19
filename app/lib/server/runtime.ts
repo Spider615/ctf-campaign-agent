@@ -65,6 +65,25 @@ export async function inspectHistoryDatabase(signal?: AbortSignal): Promise<Data
   if (!response.ok) throw await agentHttpError(response);
   return await response.json() as DatabaseSummary;
 }
+// 洞察图谱首次计算约 1 分钟，之后命中 Agent 侧缓存；只透传三个白名单参数。
+export async function fetchInsightGraph(search: URLSearchParams, signal?: AbortSignal): Promise<Response> {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const query = new URLSearchParams();
+  for (const key of ["metric", "offer", "category"]) { const value = search.get(key); if (value) query.set(key, value.slice(0, 40)); }
+  // 和其他 Agent 请求一样只跟随浏览器取消，不另设墙钟超时；Agent 侧每条查询有 60 秒上限。
+  const response = await fetch(`${base}/insight/graph?${query}`, { headers: agentHeaders(), signal });
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8" } });
+}
+
+// 图谱问答：请求体原样转给 Agent（Agent 侧校验），查询参数只透传三个白名单键。
+export async function askInsightGraph(search: URLSearchParams, body: string, signal?: AbortSignal): Promise<Response> {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const query = new URLSearchParams();
+  for (const key of ["metric", "offer", "category"]) { const value = search.get(key); if (value) query.set(key, value.slice(0, 40)); }
+  const response = await fetch(`${base}/insight/ask?${query}`, { method: "POST", headers: agentHeaders(), body, signal });
+  return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8" } });
+}
+
 export async function explainHistoryDatabase(request: DatabaseExplainRequest, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string) {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
   const response = await agentFetch(`${base}/analytics/database/explain`, request, undefined, signal, answerSchema, visualizationSchema);

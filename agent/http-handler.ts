@@ -13,6 +13,9 @@ import type { PlanAnswer } from "../app/lib/analytics/analysis-v2-types.ts";
 import { isDatabaseExplainRequest, type AnalyticsDatabase } from "../app/lib/analytics/database.ts";
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
+import { InsightRequestError, parseInsightRequest, type InsightGraphService } from "./insight-graph.ts";
+import type { InsightAskRunner } from "./insight-ask.ts";
+import { parseAskBody } from "../app/lib/insight/ask.ts";
 
 // 处理器只转发计划式答案，不关心版本：运行器现在回 v4，旧的 v3 运行器（测试替身）照样转发。
 type PlanRunnerLike = (...args: Parameters<PlanAnalyticsRunner>) => Promise<Awaited<ReturnType<PlanAnalyticsRunner>> | PlanAnswer>;
@@ -26,6 +29,8 @@ type AgentHttpOptions = {
   model: string;
   logger?: Pick<Console, "log" | "error">;
   attachmentHandler?: (request: IncomingMessage, response: ServerResponse) => Promise<void>;
+  insight?: InsightGraphService;
+  insightAsk?: InsightAskRunner;
 };
 
 function send(response: ServerResponse, status: number, body: unknown) {
@@ -50,7 +55,7 @@ function publicError(message: string): string {
   return mentionsUnderlyingModel(message) ? "Agent 执行出错" : message;
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk }: AgentHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
     const isTurn = request.method === "POST" && request.url === "/turn";
@@ -59,10 +64,38 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlan
     const isDatabase = request.method === "POST" && request.url === "/analytics/database/explain";
     const isDatabaseStream = request.method === "POST" && request.url === "/analytics/database/explain/stream";
     const isDatabaseInfo = request.method === "GET" && request.url === "/analytics/database";
+    const isInsight = request.method === "GET" && /^\/insight\/graph(?:\?|$)/.test(request.url ?? "");
+    const isInsightAsk = request.method === "POST" && /^\/insight\/ask(?:\?|$)/.test(request.url ?? "");
     const isAttachment = Boolean(attachmentHandler) && /^\/attachments(?:[/?]|$)/.test(request.url ?? "");
-    if (!isTurn && !isStream && !isAnalytics && !isDatabase && !isDatabaseStream && !isDatabaseInfo && !isAttachment) return send(response, 404, { error: "没有这个接口" });
+    if (!isTurn && !isStream && !isAnalytics && !isDatabase && !isDatabaseStream && !isDatabaseInfo && !isAttachment && !isInsight && !isInsightAsk) return send(response, 404, { error: "没有这个接口" });
     if (token && request.headers.authorization !== `Bearer ${token}`) return send(response, 401, { error: "Agent 服务鉴权失败" });
     if (isAttachment) return attachmentHandler!(request, response);
+    if (isInsight) {
+      if (!insight) return send(response, 503, { error: "历史数据库尚未启用，洞察图谱暂不可用" });
+      let parsed;
+      try { parsed = parseInsightRequest(new URL(request.url ?? "", "http://agent").searchParams); }
+      catch (error) { return send(response, 400, { error: error instanceof InsightRequestError ? error.message : "洞察请求不正确" }); }
+      // 图谱按请求缓存，断开连接也让计算跑完，下次直接命中。
+      try { return send(response, 200, await insight.graph(parsed)); }
+      catch (error) { logger.error(`[insight] 计算失败：${error instanceof Error ? error.message : error}`); return send(response, 502, { error: "洞察图谱暂时算不出来，请稍后重试" }); }
+    }
+    if (isInsightAsk) {
+      if (!insight || !insightAsk) return send(response, 503, { error: "历史数据库尚未启用，图谱问答暂不可用" });
+      const controller = new AbortController();
+      response.on("close", () => { if (!response.writableEnded) controller.abort(); });
+      let parsed; let body;
+      try { parsed = parseInsightRequest(new URL(request.url ?? "", "http://agent").searchParams); body = parseAskBody(await readJson(request)); }
+      catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "请求不正确" }); }
+      try {
+        // 图谱命中缓存，问答只读已算好的内容。
+        const graph = await insight.graph(parsed);
+        return send(response, 200, await insightAsk({ ...body, request: parsed }, graph, controller.signal));
+      } catch (error) {
+        if (controller.signal.aborted || isTurnCancelled(error)) return;
+        logger.error(`[insight] 问答失败：${error instanceof Error ? error.message : error}`);
+        return send(response, 502, { error: publicError(error instanceof Error ? error.message : "这次没有得到回答，可以重试") });
+      }
+    }
 
     // 读请求体之前接上取消链路，同时覆盖绑定监听前已经断开的连接。
     const requestController = new AbortController();

@@ -52,7 +52,7 @@ export function WorkspacePanel({ children }: { children: ReactNode }) {
 
   const panel = item ? <PanelContents item={item} panelId={panelId} onClose={closePanel} /> : null;
   return <WorkspacePanelContext.Provider value={context}>
-    <div className="h-[calc(100dvh-4rem)] min-w-0 md:h-screen">
+    <div className="h-[var(--workspace-h,calc(100dvh-4rem))] min-w-0 md:h-[var(--workspace-h,100vh)]">
       <ResizablePanelGroup orientation="horizontal">
         <ResizablePanel id="workspace-conversation" minSize="35%" className="min-w-0 overflow-y-auto">{children}</ResizablePanel>
         {item && desktop ? <><ResizableHandle withHandle className="bg-[#d4e4f4]" /><ResizablePanel key={item.width ?? "normal"} id="workspace-preview" defaultSize={item.width === "wide" ? "60%" : "42%"} minSize="30%" maxSize="65%" className="min-w-0">{panel}</ResizablePanel></> : null}

@@ -12,6 +12,9 @@ import { createMysqlAnalyticsDatabase } from "./analytics-database.ts";
 import { createAttachmentStore } from "./attachments/store.ts";
 import { createAttachmentsHttpHandler } from "./attachments/http.ts";
 import { createConversationRunner } from "./attachments/run-turn.ts";
+import { createInsightGraphService } from "./insight-graph.ts";
+import { createInsightAskRunner } from "./insight-ask.ts";
+import mysql from "mysql2/promise";
 
 const envFile = fileURLToPath(new URL("../.dev.vars", import.meta.url));
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -46,7 +49,11 @@ const runPlanAnalyticsTurn = createPlanAnalyticsRunner({ model: MODEL, modelBase
 const installedAttachmentPython = join(homedir(), "Library/Application Support/ctf-campaign-agent/attachment-python/bin/python3");
 const attachmentStore = createAttachmentStore({ directory: process.env.ATTACHMENTS_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/attachments"), python: process.env.ATTACHMENTS_PYTHON || (existsSync(installedAttachmentPython) ? installedAttachmentPython : "python3") });
 const runConversation = createConversationRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR, pluginDir: PLUGIN_DIR, store: attachmentStore, runAnalytics: runPlanAnalyticsTurn, visionModel: process.env.ATTACHMENTS_VISION_MODEL });
-const server = createServer(createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation }) }));
+// 洞察图谱默认读源表：问答用的投影表没有回收金标识和 sku 年龄。
+const insight = process.env.CTF_MYSQL_HOST ? createInsightGraphService({ table: process.env.CTF_INSIGHT_TABLE || "sales_detail_202508", evidenceDir: process.env.CTF_MYSQL_EVIDENCE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/mysql-evidence"),
+  connect: () => mysql.createConnection({ host: process.env.CTF_MYSQL_HOST, port: Number(process.env.CTF_MYSQL_PORT || 3306), user: process.env.CTF_MYSQL_USER || "root", password: process.env.CTF_MYSQL_PASSWORD || "", database: process.env.CTF_MYSQL_DATABASE || "ctf_sales_202508", charset: "utf8mb4", connectTimeout: 5000, supportBigNumbers: true, bigNumberStrings: true }) }) : undefined;
+const insightAsk = createInsightAskRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR });
+const server = createServer(createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation }), insight, insightAsk }));
 
 if (!API_KEY) {
   console.error("缺少 DEEPSEEK_API_KEY：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。");
@@ -60,3 +67,5 @@ if (database) void database.inspect().then(() => console.log("历史营销资料
 server.listen(PORT, HOST, () => console.log(`Agent 服务已启动：http://${HOST}:${PORT}（模型 ${MODEL}）`));
 // 后台预热一次分析会话：读出维度取值并缓存，首个问题不用等这一步；失败不影响启动。
 void database?.openAnalysisSession?.().then((session) => session.close(), () => undefined);
+// 后台预热默认洞察图谱（约 1 分钟）；用户第一次打开洞察时直接命中缓存。
+void insight?.graph({ metric: "give_per_gram", offer: "克减类", category: "一般足金类" }).then(() => console.log("洞察图谱已预热"), () => console.error("洞察图谱预热失败，打开洞察时会重试"));

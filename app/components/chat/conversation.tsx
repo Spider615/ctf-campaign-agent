@@ -353,7 +353,7 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
 
   if (loadState === "loading" || (loadState === "ready" && snapshot && snapshot.session.id !== sessionId)) {
     return (
-      <div className="grid h-[calc(100dvh-4rem)] place-items-center text-sm text-[#6d829d] md:h-screen">
+      <div className="grid h-[var(--workspace-h,calc(100dvh-4rem))] place-items-center text-sm text-[#6d829d] md:h-[var(--workspace-h,100vh)]">
         <span className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />正在打开活动…</span>
       </div>
     );
@@ -362,7 +362,7 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
   if (loadState !== "ready" || !snapshot) {
     const title = loadState === "missing" ? "找不到这个活动" : loadState === "legacy" ? "这个活动是旧版本创建的" : "活动暂时打不开";
     return (
-      <div className="grid h-[calc(100dvh-4rem)] place-items-center px-4 text-center md:h-screen">
+      <div className="grid h-[var(--workspace-h,calc(100dvh-4rem))] place-items-center px-4 text-center md:h-[var(--workspace-h,100vh)]">
         <div>
           <p className="text-lg font-semibold text-[#20314d]">{title}</p>
           <div className="mt-4 flex justify-center gap-2">
@@ -515,7 +515,7 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
   );
 
   return (
-    <div className="h-[calc(100dvh-4rem)] md:h-screen">
+    <div className="h-[var(--workspace-h,calc(100dvh-4rem))] md:h-[var(--workspace-h,100vh)]">
       <ResizablePanelGroup orientation="horizontal" onLayoutChange={saveLayout}>
         <ResizablePanel id="chat" minSize="30%" className="min-w-0">
           {conversation}

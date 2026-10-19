@@ -24,6 +24,8 @@ import type { AttachmentReference, ConversationRequest } from "../../lib/attachm
 import { attachmentReferences, attachmentSubmission, postAttachmentStream, retryConversationAttachments, UnavailableAttachmentsError } from "../../lib/client/attachments";
 import { useAttachmentDraft } from "../attachments/use-attachments";
 import { useAttachmentAvailability } from "../attachments/use-attachment-availability";
+import { focusContext, focusLabel, type InsightFocus } from "../../lib/insight/context";
+import type { InsightDimensionId } from "../../lib/insight/types";
 
 const prompts = [
   { title: "审视优惠方案", text: "帮我看看这档优惠方案，哪里还能改进？", icon: MessageCircle },
@@ -33,12 +35,15 @@ const prompts = [
 const now = () => performance.now();
 const noCampaign = () => null;
 
-export function HistoryConversation() {
+// 嵌在「智能洞察 / 智能问答」工作台里时，由洞察传入当前看的范围、建活动草稿话和「在图上看」的回调。
+export type InsightLink = { insightFocus?: InsightFocus | null; onClearFocus?: () => void; draft?: { text: string; nonce: number } | null; onLocate?: (dimension: InsightDimensionId) => void };
+
+export function HistoryConversation({ embedded = false, ...link }: InsightLink & { embedded?: boolean }) {
   const id = useSyncExternalStore(historyConversation.subscribe, historyConversation.activeId, historyConversation.serverActiveId);
-  return <WorkspacePanel key={id || "loading"}><UnifiedConversation conversationId={id} /></WorkspacePanel>;
+  return <WorkspacePanel key={id || "loading"}><UnifiedConversation conversationId={id} embedded={embedded} {...link} /></WorkspacePanel>;
 }
 
-function UnifiedConversation({ conversationId }: { conversationId: string }) {
+function UnifiedConversation({ conversationId, embedded, insightFocus, onClearFocus, draft, onLocate }: InsightLink & { conversationId: string; embedded: boolean }) {
   const messages = useSyncExternalStore(historyConversation.subscribe, historyConversation.snapshot, historyConversation.serverSnapshot);
   const campaignId = useSyncExternalStore(historyConversation.subscribe, historyConversation.campaignId, noCampaign);
   const setMessages = (change: (messages: HistoryMessage[]) => HistoryMessage[]) => historyConversation.update(change, conversationId);
@@ -55,6 +60,9 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
   const last = messages.at(-1);
   useEffect(() => { if (last && followBottom.current) end.current?.scrollIntoView({ block: "end" }); }, [last]);
   const owns = (token: symbol) => analysisTurns.isLive(conversationId, token);
+  // 洞察里点「按这个建活动」：草稿话填进输入框，等用户补完日期、门店和力度自己发出去。
+  const lastDraft = useRef(0);
+  useEffect(() => { if (draft && draft.nonce !== lastDraft.current) { lastDraft.current = draft.nonce; setInput(draft.text); requestAnimationFrame(() => { const box = document.querySelector<HTMLTextAreaElement>("#mode-panel-qa textarea"); box?.focus(); box?.setSelectionRange(box.value.length, box.value.length); }); } }, [draft]);
 
   const perform = async (request: DatabaseExplainRequest | ConversationRequest, replyId: string, retryFiles = false) => {
     if (executionLock.current) return;
@@ -90,7 +98,8 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
     const recentContext = timeline.flatMap((entry) => entry.kind === "campaign" ? entry.message.content.kind === "user_text" ? [entry.message.content.text.slice(0, 500)] : [] : entry.message.role === "user" ? [entry.message.text.slice(0, 500)] : []);
     const refs = [...new Map([...attachmentReferences(messages), ...newAttachments].map((file) => [file.id, file])).values()];
     const ignoreFiles = /(?:不要|不用|无需)(?:再)?(?:参考|使用|结合|看)(?:上传的|这些|之前的)?(?:文件|附件|资料)/.test(question) && !newAttachments.length;
-    const context = [...new Set([...historyConversation.context(), ...recentContext])].slice(-200);
+    // 洞察上下文放在 context 末尾，不改问题原文，模型按「没有明确改变时沿用」处理。
+    const context = [...new Set([...historyConversation.context(), ...recentContext, ...(insightFocus ? [focusContext(insightFocus)] : [])])].slice(-200);
     const request: DatabaseExplainRequest | ConversationRequest = refs.length && !ignoreFiles ? { conversationId, question, history, context, attachmentIds: refs.map((file) => file.id) } : { mode: "database", question, history, context };
     followBottom.current = true;
     setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", text: question, createdAt, afterMessageId, ...(newAttachments.length ? { attachments: newAttachments } : {}) }, { id: replyId, role: "assistant", text: "", status: "running", request, createdAt, afterMessageId, ...(refs.length ? { attachments: refs } : {}) }]);
@@ -124,17 +133,17 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
   const fileDeleted = (id: string) => setMessages((items) => items.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => file.id === id ? { ...file, deleted: true } : file) } : {}) })));
 
   if (campaignId) return <Conversation sessionId={campaignId} attachmentConversationId={conversationId} autoOpenPanel={false} composerMaxLength={500} externalBusy={busy} onExternalStop={stop} onBusyChange={executionBusyChanged}
-    extraMessages={messages.map((message) => ({ id: message.id, role: message.role, createdAt: message.createdAt, afterMessageId: message.afterMessageId, content: <HistoryMessageView message={message} busy={busy || executionBusy} onRetry={retry} onFileDeleted={fileDeleted} /> }))}
+    extraMessages={messages.map((message) => ({ id: message.id, role: message.role, createdAt: message.createdAt, afterMessageId: message.afterMessageId, content: <HistoryMessageView message={message} busy={busy || executionBusy} onRetry={retry} onFileDeleted={fileDeleted} onLocate={onLocate} /> }))}
     onExternalText={(text, snapshot, files = []) => {
       const analysisWasLast = messages.length > 0 && messages.at(-1)?.afterMessageId === snapshot.messages.at(-1)?.id;
       if (!files.length && conversationRoute(text, true, analysisWasLast) !== "analysis") return false;
       analyze(text, snapshot, files); return true;
     }} />;
 
-  return <section className="flex h-[calc(100dvh-4rem)] min-w-0 flex-col md:h-screen">
-    <header className="flex min-h-[76px] shrink-0 items-center border-b border-[#dbe8f7] bg-white/55 px-5 py-4 backdrop-blur-md md:px-8">
+  return <section className="flex h-[var(--workspace-h,calc(100dvh-4rem))] min-w-0 flex-col md:h-[var(--workspace-h,100vh)]">
+    {embedded ? null : <header className="flex min-h-[76px] shrink-0 items-center border-b border-[#dbe8f7] bg-white/55 px-5 py-4 backdrop-blur-md md:px-8">
       <div><h1 className="text-[15px] font-semibold text-[#17243d]">小福 · 营销顾问</h1><p className="mt-0.5 text-[12px] text-[#7187a1]">从历史数据出发，一起找到值得行动的营销机会</p></div>
-    </header>
+    </header>}
     <div className="relative min-h-0 flex-1 overflow-y-auto px-4 py-7 md:px-8" onScroll={(event) => { const node = event.currentTarget; followBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; }}>
       <div className="mx-auto flex max-w-[780px] flex-col gap-5">
         {!messages.length && !pendingCreation ? <div className="pb-4 pt-[7vh] md:pt-[10vh]">
@@ -143,13 +152,14 @@ function UnifiedConversation({ conversationId }: { conversationId: string }) {
           <p className="mt-3 text-[15px] leading-7 text-[#7187a1]">聊活动复盘、优惠方案，或直接告诉我想做什么活动。</p>
           <div className="mt-7 grid gap-3 sm:grid-cols-3">{prompts.map(({ title, text, icon: Icon }) => <button key={title} type="button" onClick={() => setInput(text)} className="min-h-24 rounded-2xl border border-[#d4e4f5] bg-white/80 px-4 py-4 text-left shadow-[0_8px_24px_rgba(43,94,151,0.04)] transition hover:border-[#a8caff] hover:bg-[#f5f9ff] focus-visible:ring-2 focus-visible:ring-ring"><span className="flex items-center gap-2 text-sm font-semibold text-[#27415f]"><Icon aria-hidden="true" className="size-4 text-[#247cff]" />{title}</span><span className="mt-2 block text-xs leading-5 text-[#7187a1]">{text}</span></button>)}</div>
         </div> : null}
-        <div aria-label="营销对话" className="space-y-5">{messages.map((message) => <HistoryMessageView key={message.id} message={message} busy={busy} onRetry={retry} onFileDeleted={fileDeleted} />)}</div>
+        <div aria-label="营销对话" className="space-y-5">{messages.map((message) => <HistoryMessageView key={message.id} message={message} busy={busy} onRetry={retry} onFileDeleted={fileDeleted} onLocate={onLocate} />)}</div>
         {pendingCreation ? <><UserBubble text={pendingCreation} /><ThinkingIndicator label="正在衔接活动准备" /></> : null}
         <div ref={end} />
       </div>
     </div>
     <div className="shrink-0 border-t border-[#dce9f6] bg-[linear-gradient(180deg,rgba(238,246,255,.55),rgba(244,249,255,.96))] px-4 py-3 backdrop-blur-xl md:px-8">
       <div className="mx-auto max-w-[780px]">
+        {insightFocus ? <div className="mb-2 flex items-center gap-1.5"><span className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-full border border-[#c7ddff] bg-[#eef5ff] py-1 pl-3 pr-1 text-[12px] text-[#174e96]"><span className="truncate">正在看：{focusLabel(insightFocus)}</span><button type="button" aria-label="移除洞察上下文" onClick={onClearFocus} className="grid size-7 shrink-0 place-items-center rounded-full hover:bg-[#dbe9ff] focus-visible:ring-2 focus-visible:ring-ring">×</button></span></div> : null}
         {error ? <p role="alert" className="mb-2 rounded-xl border border-[#f2c8c3] bg-[#fff4f2] px-3 py-2 text-sm text-[#a43f37]">{error}</p> : null}
         <Composer value={input} onChange={setInput} onSubmit={send} onStop={stop} busy={busy} stoppable={busy} attachments={attachments} maxLength={500} placeholder={messages.length ? "继续追问，也可以上传更多资料…" : "说说你的问题，或上传文件一起分析…"} />
         {!messages.length ? <p className="mt-2 text-center text-[11px] leading-5 text-[#8397af]">有数据支持的回答，可点角标查看依据。</p> : null}

@@ -93,6 +93,19 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 - `card.ts`：结构化回答（面板修改、提议）的解析和校验。`messages.ts`：消息结构 `StoredMessage`（v2，`agent_round_card` / `agent_readback` / `user_card_submit` 只为读旧会话）、`flowOf`、改动摘要。
 - `examples.ts`：验收用例 T1–T10 夹具，测试和示例会话共用。
 
+### 智能洞察 `app/lib/insight/`
+
+`/analysis` 分「智能洞察 / 智能问答」两种模式（`app/components/analytics/analysis-modes.tsx`），模式和图上选中状态都存在 URL 里（`?mode=&metric=&offer=&category=&dim=`），两边一直挂载，切换只隐藏。设计见 `docs/superpowers/specs/2026-10-19-insight-graph-design.md`。
+
+- 数据流：页面 `GET /api/analytics/insight` → Agent `GET /insight/graph` → `agent/insight-graph.ts` 按「维度取值 × 日 × 活动/一般開單」查立方（默认源表 `sales_detail_202508`，`CTF_INSIGHT_TABLE` 可改；投影表缺回收金标识和 sku 年龄）→ `score.ts` 组装图谱。立方按优惠和货类缓存，切指标不重查；每组首次约 1 分钟，Agent 启动时预热默认图。
+- 纯函数：`metrics.ts`（目标指标目录，7 族，`MISSING_METRICS` 是缺数据的指标）、`ontology.ts`（维度分组、待采集项、分解与取舍）、`score.ts`（连线强度、依据、异常、推荐，数字全由代码算，文字模板拼）、`context.ts`（问答上下文、建活动草稿话、回答定位到图上）。
+- 每个节点带 `source`：`field` 原始字段、`derived` 数据计算（这两类是数据里真实存在的）、`inferred` AI 判断（取值来自数据，含义或归类是 AI 解读，必须写 `judgement`）、`suggested` AI 补全待采集、`grouping` 分组。维度的来源在 `ontology.ts` 的 `origin`，语义层标了 assumption 的自动算 AI 判断；指标的在 `metrics.ts` 的 `INSIGHT_METRIC_SOURCES`。
+- 点击高亮由 `highlight.ts` 的 `highlightOf` 算：维度高亮到中心的路径，并按 `graph.influence`（同一份立方对每个指标算的强度）列出它明显影响的指标；待采集项按 `INSIGHT_GROUPS[*].missing[*].affects`（AI 推测）高亮。每条线都能点：中心—组等于点组，组—待采集项等于点该项。
+- 图谱问答（侧栏「问这张图」，`insight-chat.tsx` → `POST /api/analytics/insight/ask` → `agent/insight-ask.ts`）：一次模型调用、只开放 `submit_insight_answer`，依据只有 `ask.ts` 的 `askContext`（图谱概况 + 选中对象的依据、异常、推荐、取值表、来源和 AI 判断），不查库。回答里依据和用户原话之外的数字、乱码字符整句删掉（`checkAnswerNumbers`）；`highlights` 只保留图上有的节点 id，界面加「问」标记。要新口径的问题引导去智能问答。从洞察去问答（问一问、去智能问答、按这个建活动）都开新对话（当前对话为空时复用），不混进最近的旧对话。
+- 每克让利按日对齐（`alignedGive`），剔除金价逐日波动；样本够要求活动侧 ≥ 500 行、日均 ≥ 5 家店、对照侧 ≥ 500 行。推荐只写「8 月里……」，不写预测。
+- 「按这个建活动」只把草稿话填进问答输入框，不写事实层；草稿话必须路由到执行（测试锁住）。「问一问」把 `focusContext` 追加进请求 `context`，不改问题原文；`focusContext` 要用问答语义层认得的写法（没有「克减类」这个优惠名）。
+- 加指标：`types.ts` 的 `INSIGHT_METRIC_IDS` + `metrics.ts` 的 `INSIGHT_METRICS` + `context.ts` 的 `QA_METRIC`（后两个是穷举 Record）；需要新列时改 `buildInsightCubeSql` 和 `InsightCell`。加维度：`INSIGHT_DIMENSION_IDS` + `ontology.ts` 的 `INSIGHT_DIMENSIONS`；语义层已有的维度直接复用来源。
+
 ### Agent 工具 `app/lib/agent/`
 
 `tools.ts` 实现 9 个工具：`extract_campaign_facts` / `accept_campaign_proposals` / `lookup_ics_reference` / `analyze_campaign_state` / `ask_campaign_questions` / `draft_campaign_copy` / `draft_promo_copy` / `generate_ics1811_sheet` / `undo_campaign_change`。工具只改这一轮的 `AgentState` 或读取确定性推导结果，不依赖 SDK。
