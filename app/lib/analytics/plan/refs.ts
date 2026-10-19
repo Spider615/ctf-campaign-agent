@@ -153,6 +153,8 @@ function directionConflict(before: string, rendered: string): string | undefined
 }
 
 function resolveSentence(raw: string, execution: PlanExecution, forbidden: (text: string) => string[]): Piece[] | string {
+  // 模型偶尔吐出不成字的字节，到这里已是 U+FFFD；整句退回重写，最终仍有就删掉，不让乱码上屏。
+  if (raw.includes("\uFFFD")) return "这句有乱码字符（�），请重写这句";
   const stripped = raw.replace(REF, " ");
   // 引号没闭合时整段引用不会被识别，留下的是 {{…，要单独提示，不要误报成单层花括号。
   if (/\{\{[^{}]*"/.test(stripped)) return "引用里的取值引号没有闭合：带逗号等分隔符的取值写成 维度=\"取值\"，前后两个引号都要写";

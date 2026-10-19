@@ -86,6 +86,12 @@ test("写死数字的句子被删；业务名称和原话里的日期保留", ()
   assert.equal(out.issues.length, 1); assert.match(out.issues[0].reason, /「50 元」|「50元」|50/);
 });
 
+test("含乱码字符的句子退回并删掉，其他句子保留", () => {
+  const out = resolveBody("不能当作\uFFFD\uFFFD动的因果证明。日均实收 {{m.amount_per_day}}。", execution(), [], labels);
+  assert.equal(markdown(out.blocks)[0].text, "日均实收 1,000.00元/日。");
+  assert.equal(out.issues.length, 1); assert.match(out.issues[0].reason, /乱码/);
+});
+
 test("删句后位置重算；跨行、列表前缀和空白收拢", () => {
   const body = "第一句写死 30%。第二句 {{c.amount_per_day}}。\n\n- 坏的 {{zzz.x}}。\n- 东区 {{m.amount_per_day|district=东区/A区}}。 多余 99 个。  末句。";
   const out = resolveBody(body, execution(), [], labels);
