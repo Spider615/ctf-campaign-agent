@@ -1,7 +1,7 @@
 import { normalizeAnalysisScope } from "../analysis-v2-operations.ts";
 import type { AnalysisCapabilities, AnalysisConstraints, AnalysisDimension, AnalysisScope } from "../analysis-v2-types.ts";
 import { SEMANTIC_DIMENSIONS, type SemanticDimensionId } from "../semantic/model.ts";
-import type { AnalysisPlan, PlanIssue, PlanNode, PlanScope, PlanValidation } from "./types.ts";
+import type { AnalysisPlan, PlanGoal, PlanIntent, PlanIssue, PlanKind, PlanNode, PlanScope, PlanValidation } from "./types.ts";
 
 const OPS = ["measure", "contrast", "decompose", "drill", "scan", "robust", "scenario"] as const;
 const CHECKS = ["largest_store", "largest_order", "halves", "alternative_window"] as const;
@@ -10,6 +10,16 @@ export const LIMITS = { nodes: 12, metrics: 6, by: 2, path: 3, dimensions: 30, t
 const NEEDS_SOURCE: readonly string[] = ["decompose", "drill", "scan", "robust", "scenario"];
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const strings = (value: unknown, max: number) => Array.isArray(value) && value.length <= max && value.every((item) => typeof item === "string" && item.length > 0 && item.length <= 120) ? value as string[] : undefined;
+const KINDS: readonly PlanKind[] = ["lookup", "review", "attribution", "mechanism", "scenario", "opportunity"];
+const GOALS: readonly PlanGoal[] = ["frequency", "basket", "series", "revenue", "profit", "acquisition", "none"];
+const MAX_REASON = 200;
+// 模型没写 intent 时按复盘、无目标处理，不报错。
+export const DEFAULT_INTENT: PlanIntent = { kind: "review", goal: "none", reason: "" };
+// 货对齐涉及的维度；只要求能力目录里有的那几个（数据控制不了的不要求）。
+const GOODS = [{ dimension: "category", filter: "categories", label: "货类" }, { dimension: "material", filter: "materials", label: "材料" }] as const;
+type Goods = typeof GOODS[number];
+// 只列出这次缺的那几项。
+const alignMessage = (missing: readonly Goods[]) => `机制比较要先对齐货：目标和参照固定同一${missing.map((item) => `${item.label}（${item.filter}）`).join("和")}，或在 align.controls 里控制 ${missing.map((item) => item.dimension).join("、")}；不同优惠吸引的货不同，不对齐时差异主要是选择效应`;
 const label = (dimension: string) => SEMANTIC_DIMENSIONS[dimension as SemanticDimensionId].label;
 
 // 结构解析：只检查形状，不查能力目录；问题全部收集后一次返回。
@@ -33,7 +43,32 @@ export function parsePlan(raw: unknown, maxNodes: number = LIMITS.nodes): { plan
     if (duplicate || !known) continue;
     nodes.push(item as PlanNode);
   }
-  return { plan: { question: raw.question, nodes }, issues };
+  return { plan: { question: raw.question, nodes, intent: parseIntent(raw.intent, issues) }, issues };
+}
+
+// 问题类型和活动目标：缺省用默认值；取值不对时报问题，该项按默认值继续，reason 超长时截断。
+function parseIntent(raw: unknown, issues: PlanIssue[]): PlanIntent {
+  if (raw === undefined || raw === null) return { ...DEFAULT_INTENT };
+  if (!isObject(raw)) { issues.push({ field: "intent", message: "intent 需要 kind、goal、reason" }); return { ...DEFAULT_INTENT }; }
+  const kind = KINDS.includes(raw.kind as PlanKind) ? raw.kind as PlanKind : undefined;
+  const goal = GOALS.includes(raw.goal as PlanGoal) ? raw.goal as PlanGoal : undefined;
+  if (!kind) issues.push({ field: "intent.kind", message: `intent.kind 取 ${KINDS.join("、")}` });
+  if (!goal) issues.push({ field: "intent.goal", message: `intent.goal 取 ${GOALS.join("、")}` });
+  let reason = "";
+  if (raw.reason !== undefined && typeof raw.reason !== "string") issues.push({ field: "intent.reason", message: "intent.reason 需要是文字" });
+  else if (typeof raw.reason === "string") {
+    if (raw.reason.length > MAX_REASON) issues.push({ field: "intent.reason", message: `intent.reason 最多 ${MAX_REASON} 字` });
+    reason = raw.reason.slice(0, MAX_REASON);
+  }
+  return { kind: kind ?? DEFAULT_INTENT.kind, goal: goal ?? DEFAULT_INTENT.goal, reason };
+}
+
+// 两组取值都非空且集合相等。
+const sameValues = (a: readonly string[] | undefined, b: readonly string[] | undefined) => Boolean(a?.length && b?.length) && new Set(a).size === new Set(b).size && a!.every((value) => b!.includes(value));
+// 机制比较的货对齐：能力目录里有的货类、材料维度，逐项要求目标和参照固定同一组取值，或在 align.controls 里控制它。返回没对齐的项。
+function unalignedGoods(target: AnalysisScope, reference: AnalysisScope, controls: readonly string[], capabilities: AnalysisCapabilities): Goods[] {
+  const t = target.filters as Record<string, string[] | undefined>; const r = reference.filters as Record<string, string[] | undefined>;
+  return GOODS.filter((item) => capabilities.dimensions.includes(item.dimension) && !controls.includes(item.dimension) && !sameValues(t[item.filter], r[item.filter]));
 }
 
 // 筛选值的就近建议：先找包含关系（「七夕」→「七夕节」、「一般足金」→「一般足金类」），再找相同字最多的。
@@ -90,6 +125,7 @@ function checkDimensions(node: string, field: string, value: unknown, max: numbe
 // 静态校验：按节点顺序检查；依赖的节点被丢弃时，依赖方也丢弃。
 export function validatePlan(plan: AnalysisPlan, capabilities: AnalysisCapabilities, constraints: AnalysisConstraints): PlanValidation {
   const issues: PlanIssue[] = []; const valid: PlanNode[] = []; const dropped: PlanValidation["dropped"] = [];
+  const kind = (plan.intent ?? DEFAULT_INTENT).kind;
   const kept = new Map<string, PlanNode>(); const order = new Map(plan.nodes.map((node, index) => [node.id, index]));
   for (const [index, node] of plan.nodes.entries()) {
     const own: PlanIssue[] = [];
@@ -112,7 +148,9 @@ export function validatePlan(plan: AnalysisPlan, capabilities: AnalysisCapabilit
     } else if (node.op === "contrast") {
       const target = checkScope(node.id, "target", node.target, capabilities, constraints, own); const reference = checkScope(node.id, "reference", node.reference, capabilities, constraints, own);
       const by = checkDimensions(node.id, "by", node.by, LIMITS.by, capabilities, own); const controls = checkDimensions(node.id, "align.controls", node.align?.controls, LIMITS.controls, capabilities, own);
-      if (target && reference) { if (target.population !== reference.population) own.push({ node: node.id, message: "目标与参照口径必须相同" }); checkMetrics(node.id, node.metrics, [target, reference], [...by, ...controls], capabilities, own); }
+      if (target && reference) { if (target.population !== reference.population) own.push({ node: node.id, message: "目标与参照口径必须相同" }); checkMetrics(node.id, node.metrics, [target, reference], [...by, ...controls], capabilities, own);
+        const missing = kind === "mechanism" ? unalignedGoods(target, reference, controls, capabilities) : [];
+        if (missing.length) own.push({ node: node.id, field: "align", message: alignMessage(missing) }); }
     } else if (node.op === "decompose") {
       if (source && source.op !== "contrast") own.push({ node: node.id, field: "of", message: "decompose 只能拆解 contrast 节点" });
       if (source?.op === "contrast" && !source.metrics.includes("amount") && !source.metrics.includes("amount_per_day")) own.push({ node: node.id, field: "of", message: "decompose 需要被拆解的 contrast 含实收或日均实收" });

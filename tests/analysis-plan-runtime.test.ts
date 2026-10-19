@@ -13,7 +13,7 @@ import { planAnswerV4Text, validatePlanAnswerV4 } from "../app/lib/analytics/pla
 import { sampleDataset } from "../app/lib/analytics/sample.ts";
 import { runAnalysis } from "../app/lib/analytics/engine.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
-import { capabilityBrief } from "../app/lib/analytics/plan/prompt.ts";
+import { answerPrompt, answerReviewPrompt, capabilityBrief, planPrompt, planReviewPrompt } from "../app/lib/analytics/plan/prompt.ts";
 import { buildPlanSystemPrompt } from "../agent/analytics-system-prompt.ts";
 import { semanticDimensionCatalog, ANALYSIS_DIMENSIONS } from "../app/lib/analytics/semantic/model.ts";
 import type { AnalysisDataProvider, PlanAnswerV4 } from "../app/lib/analytics/analysis-v2-types.ts";
@@ -382,3 +382,151 @@ test("补交那次模型仍只说出含引用的正文时，同样按正文采�
   assert.equal(steps.filter((step) => step === "submit_answer").length, 2);
   assert.ok(markdown(answer)[0].refs.length > 0);
 });
+
+// 问题类型与活动目标：机制比较的对比节点要对齐货，补充计划同样检查；intent 记进审计。
+const MECHANISM = { kind: "mechanism", goal: "basket", reason: "比较两种优惠对客单的作用" };
+// 示例数据的能力目录没有材料维度，只要求对齐货类：控制 category 即可通过。
+const alignedC1 = { ...c1, align: { controls: ["category"] } };
+const auditRecords = (config: ReturnType<typeof setup>) => {
+  const [file] = readdirSync(config.auditDirectory);
+  return readFileSync(join(config.auditDirectory, file), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+};
+
+test("机制比较计划没对齐货：首次退回问题，改成控制货类后通过，审计 plan 记下 intent", async (t) => {
+  const config = setup(t); let first: Record<string, unknown> | undefined; let second: Record<string, unknown> | undefined;
+  const { query, steps } = scripted({ submit_plan: async (call) => {
+    first = await call("submit_plan", { plan: { question: request.question, intent: MECHANISM, nodes: [m1, c1] } });
+    second = await call("submit_plan", { plan: { question: request.question, intent: MECHANISM, nodes: [m1, alignedC1] } });
+  } });
+  const answer = await run(config, query);
+  assert.equal(first?.accepted, false);
+  assert.ok((first?.issues as string[]).some((issue) => issue.startsWith("c1") && issue.includes("机制比较要先对齐货")));
+  assert.ok((first?.issues as string[]).some((issue) => issue.includes("控制 category；") && !issue.includes("material")));
+  assert.equal(second?.accepted, true); assert.deepEqual(second?.nodes, ["m1", "c1"]);
+  assert.equal(steps.length, 5); assert.equal(answer.status, "answered");
+  assert.equal(answer.plan.find((row) => row.id === "c1")?.status, "completed");
+  assert.deepEqual(auditRecords(config).find((record) => record.kind === "plan").value.intent, MECHANISM);
+});
+
+test("计划没写 intent 时审计记默认值，对比节点不做货对齐检查", async (t) => {
+  const config = setup(t);
+  const answer = await run(config, scripted({}).query);
+  assert.equal(answer.status, "answered");
+  assert.deepEqual(auditRecords(config).find((record) => record.kind === "plan").value.intent, { kind: "review", goal: "none", reason: "" });
+});
+
+test("intent 取值不对：首次退回问题清单", async (t) => {
+  const config = setup(t); let first: Record<string, unknown> | undefined;
+  const { query } = scripted({ submit_plan: async (call) => {
+    first = await call("submit_plan", { plan: { question: request.question, intent: { kind: "guess", goal: "none", reason: "" }, nodes: [m1, c1] } });
+    await call("submit_plan", { plan: { question: request.question, intent: { kind: "review", goal: "none", reason: "" }, nodes: [m1, c1] } });
+  } });
+  await run(config, query);
+  assert.equal(first?.accepted, false);
+  assert.ok((first?.issues as string[]).some((issue) => issue.includes("intent.kind 取 lookup、review")));
+});
+
+test("补充计划沿用主计划的 intent：机制比较下没对齐货的补充对比被退回，再交仍不对齐就丢弃", async (t) => {
+  const config = setup(t); let first: Record<string, unknown> | undefined; let result: Record<string, unknown> | undefined;
+  const loose = { ...c1, id: "c2" };
+  const { query } = scripted({
+    submit_plan: async (call) => { await call("submit_plan", { plan: { question: request.question, intent: MECHANISM, nodes: [m1, alignedC1] } }); },
+    submit_followup: async (call) => {
+      first = await call("submit_followup", { nodes: [loose] });
+      result = await call("submit_followup", { nodes: [loose] });
+    },
+  });
+  const answer = await run(config, query);
+  assert.equal(first?.accepted, false);
+  assert.ok((first?.issues as string[]).some((issue) => issue.startsWith("c2") && issue.includes("机制比较要先对齐货")));
+  assert.deepEqual(result?.nodes, []);
+  assert.equal(answer.plan.find((row) => row.id === "c2")?.status, "dropped");
+});
+
+// 提示词：问题分型、目标对照、原则 A；intent 传给正文和复核。
+test("计划提示词含六类问题类型、目标对照和原则 A；复核提示检查 intent、护栏、对齐货和相近维度", () => {
+  const prompt = planPrompt("七夕活动效果怎么样", [], "目录", []);
+  for (const kind of ["lookup", "review", "attribution", "mechanism", "scenario", "opportunity"]) assert.match(prompt, new RegExp(`\\| ${kind} \\|`));
+  for (const ask of ["8 月卖了多少", "七夕活动效果怎么样", "为什么华南跌了", "克减和满减哪个好", "每克再减 10 元会怎样", "下次活动往哪推"]) assert.ok(prompt.includes(ask), ask);
+  for (const line of ["frequency（提高到店频次）：主指标 日均订单 orders_per_day", "revenue（冲业绩）：主指标 日均实收 amount_per_day；护栏 毛利率 margin_rate", "acquisition（拉新）"]) assert.ok(prompt.includes(line), line);
+  assert.match(prompt, /intent: \{ kind, goal, reason \}/);
+  assert.match(prompt, /克减 50 的件均克重是克减 30 的 3 倍/);
+  assert.match(prompt, /缺数据不硬答（原则 A）/);
+  assert.match(prompt, /节点上限仍是 12/);
+  assert.match(prompt, /本流程不能中途追问/);
+  assert.match(prompt, /会员分组（memberSegment）不等于会员等级/);
+  assert.match(prompt, /"offers":\["一般開單"\]/); assert.match(prompt, /"festivals":\["非节庆"\]/);
+  assert.doesNotMatch(prompt, /grams ÷ quantity/); assert.match(prompt, /不要自己相除/);
+  const review = planReviewPrompt("q", "{}");
+  for (const item of ["intent 是否和问题一致", "主指标和护栏是否都在计划里", "机制比较是否对齐货", "原则 A"]) assert.ok(review.includes(item), item);
+});
+
+test("补充计划提示去掉「先判断」节，沿用主计划的类型和目标", () => {
+  const prompt = planPrompt("q", [], "目录", [], undefined, { followup: { kind: "mechanism", goal: "basket", reason: "" } });
+  assert.match(prompt, /沿用主计划的问题类型和目标：mechanism\/basket/);
+  assert.doesNotMatch(prompt, /### 先判断|intent: \{ kind, goal, reason \}|submit_plan\(/);
+  assert.match(prompt, /### 算子与示例/); assert.match(prompt, /### 能力目录\n目录/);
+});
+
+test("复核退回重提时带上上一版 intent", () => {
+  const prompt = planPrompt("q", [], "目录", ["改"], { nodes: [], dropped: [], intent: { kind: "mechanism", goal: "basket", reason: "比两种优惠" } });
+  assert.match(prompt, /上一版 intent：\{"kind":"mechanism","goal":"basket"/);
+});
+
+test("正文提示词：goal 不为 none 时写目标说明和护栏要求，none 时不写；原则 A 有会员等级示例", () => {
+  const withGoal = answerPrompt("七夕卖得怎么样", "结果", [], { kind: "review", goal: "revenue", reason: "七夕是冲业绩的节点" });
+  assert.match(withGoal, /本题按复盘处理，目标 冲业绩（主指标日均实收，护栏毛利率）：七夕是冲业绩的节点/);
+  assert.match(withGoal, /以「按冲业绩看：」开头/);
+  assert.doesNotMatch(withGoal, /三个例子/); assert.match(withGoal, /四个例子/);
+  const acquisition = answerPrompt("q", "结果", [], { kind: "review", goal: "acquisition", reason: "" });
+  assert.doesNotMatch(acquisition, /### 目标和护栏|以「按拉新看：」开头/); assert.match(acquisition, /新会员数测不了/);
+  assert.match(withGoal, /护栏恶化时/);
+  const lookup = answerPrompt("8 月卖了多少", "结果", [], { kind: "lookup", goal: "none", reason: "" });
+  assert.match(lookup, /本题按查数处理，不涉及活动目标/);
+  assert.doesNotMatch(lookup, /### 目标和护栏|按.{1,10}看（主指标/);
+  assert.doesNotMatch(answerPrompt("q", "结果"), /### 本题判断|### 目标和护栏/);
+  assert.match(lookup, /七夕对不同等级会员影响有什么不同/);
+  assert.match(lookup, /不是模板/);
+  assert.doesNotMatch(lookup, /先用最接近的现有数据回答/);
+});
+
+test("正文复核提示：有目标时检查目标和护栏，始终检查相近维度凑结论", () => {
+  const withGoal = answerReviewPrompt("q", [], "正文", [], { kind: "review", goal: "profit", reason: "" });
+  assert.match(withGoal, /没写目标/); assert.match(withGoal, /护栏没提/); assert.match(withGoal, /拿相近维度凑结论（原则 A）/);
+  const none = answerReviewPrompt("q", [], "正文", []);
+  assert.doesNotMatch(none, /没写目标|护栏没提/); assert.match(none, /原则 A/);
+});
+
+test("计划系统提示词换成原则 A，不再要求避免说答不了", () => {
+  const prompt = buildPlanSystemPrompt("2026-10-18");
+  assert.doesNotMatch(prompt, /不以“不能做”/);
+  assert.match(prompt, /缺数据不硬答/);
+  assert.match(prompt, /不要用相近数据凑出原问题的结论/);
+});
+
+test("复核退回后重提的计划漏写 intent 时沿用上一版；intent 为 null 当作没写", async (t) => {
+  const config = setup(t); const prompts: string[] = [];
+  const base = scripted({
+    submit_plan_review: async (call) => { await call("submit_plan_review", { verdict: "revise", issues: ["需要补充件数对比"] }); },
+    submit_plan: async (call, round) => {
+      const result = await call("submit_plan", { plan: round === 1 ? { question: request.question, intent: MECHANISM, nodes: [m1, alignedC1] } : { question: request.question, intent: null, nodes: [m1, alignedC1] } });
+      assert.equal(result.accepted, true);
+    },
+  });
+  const query: AgentQuery = (params) => { prompts.push(String(params.prompt)); return base.query(params); };
+  await run(config, query);
+  const plans = auditRecords(config).filter((record) => record.kind === "plan");
+  assert.equal(plans.length, 2);
+  assert.deepEqual(plans[1].value.intent, MECHANISM);
+  // 正文和复核提示拿到的是计划判断的类型
+  assert.ok(prompts.some((item) => item.includes("## 本步：写回答") && item.includes("本题按机制比较处理，目标 提高客单")));
+  assert.ok(prompts.some((item) => item.includes("## 本步：复核回答") && item.includes("本题按机制比较处理")));
+  assert.ok(prompts.some((item) => item.includes("## 本步改为：补充计划") && item.includes("沿用主计划的问题类型和目标：mechanism/basket") && !item.includes("### 先判断")));
+});
+
+test("计划复核提示：按原则 A 只算事实的计划，不要求补相近维度的对比", async () => {
+  const { planReviewPrompt } = await import("../app/lib/analytics/plan/prompt.ts");
+  const text = planReviewPrompt("七夕对不同等级会员影响", "{}");
+  assert.match(text, /不要以「回答不了原问题」为由退回/);
+});
+

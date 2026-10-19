@@ -170,3 +170,95 @@ test("超出节点上限的节点逐个报原因；补充计划可传入算上�
   assert.equal(widened.plan!.nodes.length, 14);
   assert.equal(widened.issues.length, 0);
 });
+
+// 问题类型与活动目标；机制比较时对比节点必须对齐货。
+const goods = (categories: string[], materials: string[]) => scope({ categories, materials });
+const mechanism = (nodes: unknown[], intent: unknown = { kind: "mechanism", goal: "basket", reason: "比较克减50和克减30" }) => {
+  const { plan, issues } = parsePlan({ question: "q", intent, nodes });
+  return { plan: plan!, parseIssues: issues, checked: validatePlan(plan!, capabilities, { filters: {} }) };
+};
+
+test("intent 缺省时按复盘、无目标处理，不报错", () => {
+  const { plan, issues } = parsePlan({ question: "q", nodes: [measure] });
+  assert.deepEqual(issues, []);
+  assert.deepEqual(plan!.intent, { kind: "review", goal: "none", reason: "" });
+});
+
+test("intent 取值不对时报问题：kind、goal 越界，reason 超过 200 字", () => {
+  const { plan, issues } = parsePlan({ question: "q", intent: { kind: "guess", goal: "money", reason: "长".repeat(201) }, nodes: [measure] });
+  const text = issues.map((issue) => issue.message).join("\n");
+  assert.match(text, /intent\.kind 取 lookup、review/);
+  assert.match(text, /intent\.goal 取 frequency/);
+  assert.match(text, /最多 200 字/);
+  assert.equal(plan!.intent!.reason.length, 200);
+  const valid = parsePlan({ question: "q", intent: { kind: "mechanism", goal: "basket", reason: "比较两种优惠" }, nodes: [measure] });
+  assert.deepEqual(valid.issues, []); assert.deepEqual(valid.plan!.intent, { kind: "mechanism", goal: "basket", reason: "比较两种优惠" });
+});
+
+test("机制比较：没对齐货的对比节点报问题并丢弃", () => {
+  const cases = [
+    { target: scope({ offers: ["克减50"] }), reference: scope({ offers: ["克减30"] }) },
+    // 只固定货类，没固定材料
+    { target: scope({ categories: ["一般足金类"] }), reference: scope({ categories: ["一般足金类"] }) },
+    // 货类不同
+    { target: goods(["一般足金类"], ["足金"]), reference: goods(["定价黄金类"], ["足金"]) },
+  ];
+  for (const sides of cases) {
+    const { checked } = mechanism([{ id: "c", op: "contrast", ...sides, metrics: ["amount_per_order"] }]);
+    assert.ok(checked.dropped.some((item) => item.node.id === "c"));
+    const issue = checked.issues.find((item) => item.node === "c");
+    assert.match(issue!.message, /机制比较要先对齐货/); assert.match(issue!.message, /选择效应/);
+  }
+  // 只控制货类不够
+  const { checked } = mechanism([{ id: "c", op: "contrast", target: scope(), reference: scope(), metrics: ["amount_per_order"], align: { controls: ["category"] } }]);
+  assert.match(checked.issues.map((item) => item.message).join("\n"), /机制比较要先对齐货/);
+});
+
+test("机制比较：固定同一组货类和材料的对比通过，顺序不同也算相同", () => {
+  const { checked } = mechanism([{ id: "c", op: "contrast", target: goods(["一般足金类", "定价黄金类"], ["足金"]), reference: goods(["定价黄金类", "一般足金类"], ["足金"]), metrics: ["amount_per_order"] }]);
+  assert.deepEqual(checked.issues, []); assert.deepEqual(checked.valid.map((node) => node.id), ["c"]);
+});
+
+test("机制比较：align.controls 同时控制 category、material 时通过", () => {
+  const { checked } = mechanism([{ id: "c", op: "contrast", target: scope(), reference: scope(), metrics: ["amount_per_order"], align: { controls: ["category", "material"] } }]);
+  assert.deepEqual(checked.issues, []); assert.deepEqual(checked.valid.map((node) => node.id), ["c"]);
+});
+
+test("非机制比较（复盘、缺省）不检查货对齐；机制比较只查对比节点", () => {
+  const loose = { id: "c", op: "contrast", target: scope(), reference: scope(), metrics: ["amount_per_order"] };
+  assert.deepEqual(mechanism([loose], { kind: "review", goal: "revenue", reason: "" }).checked.issues, []);
+  assert.deepEqual(mechanism([loose], null).checked.issues, []);
+  assert.deepEqual(mechanism([measure]).checked.issues, []);
+});
+
+test("货对齐只要求能力目录里有的维度：目录没有材料时只对齐货类即可通过", () => {
+  const noMaterial: AnalysisCapabilities = { ...capabilities, dimensions: capabilities.dimensions.filter((item) => item !== "material") };
+  const nodes = [
+    { id: "f", op: "contrast", target: scope({ categories: ["一般足金类"] }), reference: scope({ categories: ["一般足金类"] }), metrics: ["amount_per_order"] },
+    { id: "k", op: "contrast", target: scope(), reference: scope(), metrics: ["amount_per_order"], align: { controls: ["category"] } },
+    { id: "x", op: "contrast", target: scope(), reference: scope(), metrics: ["amount_per_order"] },
+  ];
+  const { plan } = parsePlan({ question: "q", intent: { kind: "mechanism", goal: "basket", reason: "" }, nodes });
+  const checked = validatePlan(plan!, noMaterial, { filters: {} });
+  assert.deepEqual(checked.valid.map((node) => node.id), ["f", "k"]);
+  const issue = checked.issues.find((item) => item.node === "x")!;
+  assert.match(issue.message, /固定同一货类（categories），或在 align\.controls 里控制 category；/);
+  assert.doesNotMatch(issue.message, /材料|material/);
+  // 货类、材料都不在目录里：不检查
+  const neither: AnalysisCapabilities = { ...noMaterial, dimensions: noMaterial.dimensions.filter((item) => item !== "category") };
+  const bare = parsePlan({ question: "q", intent: { kind: "mechanism", goal: "basket", reason: "" }, nodes: [nodes[2]] });
+  assert.deepEqual(validatePlan(bare.plan!, neither, { filters: {} }).issues, []);
+});
+
+test("目录有材料时：货类对齐了但材料没对齐，报问题且只提材料", () => {
+  for (const sides of [
+    { target: scope({ categories: ["一般足金类"] }), reference: scope({ categories: ["一般足金类"] }) },
+    { target: scope(), reference: scope(), align: { controls: ["category"] } },
+  ]) {
+    const { checked } = mechanism([{ id: "c", op: "contrast", ...sides, metrics: ["amount_per_order"] }]);
+    const issue = checked.issues.find((item) => item.node === "c")!;
+    assert.match(issue.message, /固定同一材料（materials），或在 align\.controls 里控制 material；/);
+    assert.doesNotMatch(issue.message, /货类|categor/);
+  }
+});
+

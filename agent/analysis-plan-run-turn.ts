@@ -14,12 +14,12 @@ import type { AnalyticsExplainRequest, AnalyticsExplainResult } from "../app/lib
 import type { AnalysisCapabilities, AnalysisConstraints, AnalysisDataProvider, AnalysisDataSession, PlanAnswerV4 } from "../app/lib/analytics/analysis-v2-types.ts";
 import { createEvidenceRegistry } from "../app/lib/analytics/analysis-v2-evidence.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
-import { parsePlan, validatePlan } from "../app/lib/analytics/plan/validate.ts";
+import { DEFAULT_INTENT, parsePlan, validatePlan } from "../app/lib/analytics/plan/validate.ts";
 import { executePlan, type NodeRow, type PlanExecution } from "../app/lib/analytics/plan/execute.ts";
 import { formatRoleValue, totalAcrossWindows } from "../app/lib/analytics/plan/bind.ts";
 import { assemblePlanAnswerV4, chartLabels, planAnswerV4Text, summarize, validatePlanAnswerV4 } from "../app/lib/analytics/plan/answer.ts";
 import { REF, parseRef, quoteRefValue, resolveBody, resolveRef, type ResolvedBody } from "../app/lib/analytics/plan/refs.ts";
-import { DEFAULT_MIN_ROWS, type PlanNode } from "../app/lib/analytics/plan/types.ts";
+import { DEFAULT_MIN_ROWS, type PlanIntent, type PlanNode } from "../app/lib/analytics/plan/types.ts";
 import { answerPrompt, answerReviewPrompt, capabilityBrief, planPrompt, planReviewPrompt, type PreviousPlan, type ReviewRef } from "../app/lib/analytics/plan/prompt.ts";
 import { PLAN_ANALYTICS_TOOL_LABELS, type PlanAnalyticsToolName } from "../app/lib/analytics/tool-names.ts";
 import type { AnalyticsProgressEvent } from "../app/lib/analytics/stream.ts";
@@ -32,7 +32,9 @@ type Dependencies = { query: AgentQuery; provider?: AnalysisDataProvider };
 
 // 入参只做形状和长度上限，真实校验交给 parsePlan / validatePlan / resolveBody，错误以结构化问题返回模型。
 const looseNode = z.looseObject({ id: z.string().max(40).optional(), op: z.string().max(20).optional() });
-const planShape = { plan: z.object({ question: z.string().max(2000).optional(), nodes: z.array(looseNode).max(20) }) };
+// intent 只限形状和长度，取值范围由 parsePlan 校验并以中文问题返回；reason 的 200 字上限同样由 parsePlan 报。null 当作没写。
+const looseIntent = z.looseObject({ kind: z.string().max(40).optional(), goal: z.string().max(40).optional(), reason: z.string().max(1000).optional() });
+const planShape = { plan: z.object({ question: z.string().max(2000).optional(), intent: looseIntent.nullish(), nodes: z.array(looseNode).max(20) }) };
 const reviewShape = { verdict: z.enum(["ok", "revise"]), issues: z.array(z.string().max(500)).max(10) };
 // 补充计划单独计数：已执行节点不占补充名额。
 const FOLLOWUP_NODES = 8;
@@ -230,30 +232,32 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       const droppedNodes: Array<{ id: string; reason: string }> = [];
 
       // 计划：首次调用允许同一调用内修改一次；复核退回后的第二次调用首次提交即为最终。
-      const planStep = async (issues: string[], allowRetry: boolean, previous?: PreviousPlan): Promise<PreviousPlan> => {
+      const planStep = async (issues: string[], allowRetry: boolean, previous?: PreviousPlan): Promise<PreviousPlan & { intent: PlanIntent }> => {
         let submittedRaw: unknown;
-        let accepted: { nodes: PlanNode[]; dropped: Array<{ id: string; reason: string }> } | undefined; let attempts = 0;
+        let accepted: { nodes: PlanNode[]; dropped: Array<{ id: string; reason: string }>; intent: PlanIntent } | undefined; let attempts = 0;
         await runStep({
           name: "submit_plan", description: "提交声明式分析计划；有问题时会返回问题清单", shape: planShape, thinking: true,
           prompt: planPrompt(request.question, context, brief, issues, previous),
           done: () => Boolean(accepted),
           handle: (input) => {
             attempts++;
-            const raw = input.plan as { question?: string; nodes: unknown[] };
+            const raw = input.plan as { question?: string; intent?: unknown; nodes: unknown[] };
             const oversized = JSON.stringify(raw).length > MAX_PLAN_JSON;
-            const parsed = oversized ? { issues: [{ message: "计划过长，请只保留回答原问题需要的节点" }] } : parsePlan({ question: raw.question ?? request.question, nodes: raw.nodes });
+            // 复核退回后重提时漏写 intent（或写 null），沿用上一版的判断，不静默退回默认的复盘。
+            const intent = raw.intent ?? previous?.intent;
+            const parsed = oversized ? { issues: [{ message: "计划过长，请只保留回答原问题需要的节点" }] } : parsePlan({ question: raw.question ?? request.question, intent, nodes: raw.nodes });
             const validation = parsed.plan ? validatePlan(parsed.plan, capabilities, constraints) : { valid: [], dropped: [], issues: [] };
             const all = [...parsed.issues, ...validation.issues];
             if (all.length && allowRetry && attempts === 1) return { accepted: false, issues: all.map(issueText) };
             const keptIds = new Set(validation.valid.map((node) => node.id));
             const dropped = [...new Set(nodeIds(raw.nodes ?? []))].filter((id) => !keptIds.has(id)).map((id) => ({ id, reason: all.filter((issue) => issue.node === id).map((issue) => issue.message).join("；") || "节点未通过校验" }));
-            accepted = { nodes: validation.valid, dropped }; submittedRaw = raw;
+            accepted = { nodes: validation.valid, dropped, intent: parsed.plan?.intent ?? { ...DEFAULT_INTENT } }; submittedRaw = raw;
             return { accepted: true, nodes: validation.valid.map((node) => node.id), dropped };
           },
         });
         if (!accepted) throw new Error("分析计划没有提交，本轮无法继续");
         // 原始提交一并记下，便于复盘被丢弃节点的写法。
-        audit("plan", { attempts, nodes: accepted.nodes, dropped: accepted.dropped, submitted: submittedRaw });
+        audit("plan", { attempts, intent: accepted.intent, nodes: accepted.nodes, dropped: accepted.dropped, submitted: submittedRaw });
         return accepted;
       };
       let plan = await planStep([], true);
@@ -261,7 +265,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       let review: { verdict: "ok" | "revise"; issues: string[] } | undefined;
       await runStep({
         name: "submit_plan_review", description: "提交计划复核意见", shape: reviewShape, thinking: true,
-        prompt: planReviewPrompt(request.question, JSON.stringify({ nodes: plan.nodes, dropped: plan.dropped }), brief),
+        prompt: planReviewPrompt(request.question, JSON.stringify({ intent: plan.intent, nodes: plan.nodes, dropped: plan.dropped }), brief),
         done: () => Boolean(review),
         handle: (input) => { review = { verdict: input.verdict as "ok" | "revise", issues: input.issues as string[] }; return { recorded: true }; },
       });
@@ -288,13 +292,14 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       let followup: PreviousPlan | undefined; let followupAttempts = 0;
       await runStep({
         name: "submit_followup", description: "提交补充节点；不需要补充时提交空数组", shape: followupShape, thinking: true,
-        prompt: `${planPrompt(request.question, context, brief, [])}\n\n## 本步改为：补充计划\n已执行的计划和结果如下。只有结果不足以回答原问题时，才用 submit_followup({ nodes }) 补充最多 ${FOLLOWUP_NODES} 个节点；新节点 id 不能与已有节点重复，可以用 of 引用已有节点。不需要补充时提交 { "nodes": [] }。\n\n### 已执行节点\n${JSON.stringify(plan.nodes)}\n\n### 执行结果\n${executionSummary(execution, capabilities)}`,
+        prompt: `${planPrompt(request.question, context, brief, [], undefined, { followup: plan.intent })}\n\n## 本步改为：补充计划\n已执行的计划和结果如下。只有结果不足以回答原问题时，才用 submit_followup({ nodes }) 补充最多 ${FOLLOWUP_NODES} 个节点；新节点 id 不能与已有节点重复，可以用 of 引用已有节点。不需要补充时提交 { "nodes": [] }。\n\n### 已执行节点\n${JSON.stringify(plan.nodes)}\n\n### 执行结果\n${executionSummary(execution, capabilities)}`,
         done: () => Boolean(followup),
         handle: (input) => {
           followupAttempts++;
           const raw = input.nodes as unknown[];
           if (!raw.length) { followup = { nodes: [], dropped: [] }; return { accepted: true, nodes: [] }; }
-          const parsed = parsePlan({ question: request.question, nodes: [...plan.nodes, ...raw] }, plan.nodes.length + FOLLOWUP_NODES);
+          // 带上主计划的 intent：机制比较时补充的对比节点同样要对齐货。
+          const parsed = parsePlan({ question: request.question, intent: plan.intent, nodes: [...plan.nodes, ...raw] }, plan.nodes.length + FOLLOWUP_NODES);
           const validation = parsed.plan ? validatePlan(parsed.plan, capabilities, constraints) : { valid: [], dropped: [], issues: [] };
           const existing = new Set(plan.nodes.map((node) => node.id));
           const all = [...parsed.issues, ...validation.issues];
@@ -330,7 +335,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       let first: { body: string; resolved: ResolvedBody } | undefined; let accepted: { body: string; resolved: ResolvedBody } | undefined; let answerAttempts = 0;
       const answerStep = (nudge: string) => runStep({
         name: "submit_answer", description: "提交回答正文（Markdown，数字写成 {{节点.指标}} 引用）；有问题时会返回问题清单", shape: answerShape, thinking: false,
-        prompt: `${answerPrompt(request.question, executionSummary(execution, capabilities), earlier)}${nudge}`,
+        prompt: `${answerPrompt(request.question, executionSummary(execution, capabilities), earlier, plan.intent)}${nudge}`,
         done: () => Boolean(accepted),
         handle: (input) => {
           answerAttempts++;
@@ -362,7 +367,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
         let review: { verdict: "ok" | "rewrite"; body?: string; notes: string[] } | undefined;
         await runStep({
           name: "submit_answer_review", description: "提交回答复核结果", shape: answerReviewShape, thinking: false,
-          prompt: answerReviewPrompt(request.question, earlier, original.body, reviewRefs(original.body, execution, capabilities)),
+          prompt: answerReviewPrompt(request.question, earlier, original.body, reviewRefs(original.body, execution, capabilities), plan.intent),
           done: () => Boolean(review),
           handle: (input) => { review = input as unknown as NonNullable<typeof review>; return { recorded: true }; },
         });
