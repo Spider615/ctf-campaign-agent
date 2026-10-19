@@ -180,10 +180,12 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
     const runStep = async (options: { name: PlanAnalyticsToolName; description: string; shape: z.ZodRawShape; prompt: string; thinking: boolean; handle: (input: Record<string, unknown>) => unknown; done: () => boolean }): Promise<string> => {
       let spoken = "";
       throwIfTurnCancelled(controller.signal); modelCalls++;
+      // 模型想的时候就亮出这一步，不等它调用工具；被退回后的再次提交仍在调用时才记。
+      let pending: AgentTraceEvent | undefined = begin(options.name, "model");
       const submit = tool(options.name, options.description, options.shape, async (input: Record<string, unknown>) => {
         // 本步已接受后再提交一律忽略，不改状态。
         if (options.done()) return textResult({ accepted: true, note: "本步骤已完成" });
-        const event = begin(options.name, "model");
+        const event = pending ?? begin(options.name, "model"); pending = undefined;
         try {
           throwIfTurnCancelled(controller.signal);
           const value = options.handle(input) as { accepted?: boolean };
@@ -216,7 +218,11 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
           }
           if (message.type === "result") { if (message.subtype === "error_max_turns") break; if (message.subtype !== "success" || message.is_error) throw modelFailure(message, "分析运行未完成"); break; }
         }
-      } finally { stepController.abort(); stop(); if (iterator.return) void iterator.return().catch(() => {}); }
+      } finally {
+        stepController.abort(); stop(); if (iterator.return) void iterator.return().catch(() => {});
+        // 没等到提交的那一步收尾，不留一直转圈的步骤。
+        if (pending && !controller.signal.aborted) end(pending, "warning", "没有调用提交工具");
+      }
       throwIfTurnCancelled(controller.signal);
       return spoken;
     };

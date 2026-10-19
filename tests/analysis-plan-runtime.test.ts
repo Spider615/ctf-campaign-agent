@@ -107,6 +107,23 @@ test("正常路径：五次调用，正文数字与证据一致，审计按步�
   assert.doesNotMatch(readFileSync(join(config.auditDirectory, file), "utf8"), /secret-key/);
 });
 
+test("每一步在模型调用工具之前就出现在轨迹里", async (t) => {
+  const config = setup(t); const events: Array<{ tool: string; status: string }> = []; let before: Array<{ tool: string; status: string }> = [];
+  const { query } = scripted({ submit_plan: async (c) => { before = [...events]; await c("submit_plan", { plan: { question: request.question, nodes: [m1, c1] } }); } });
+  await createPlanAnalyticsRunner(config, { query, provider: createSnapshotAnalysisProvider(dataset) })(request, undefined, (event) => { if (event.type === "trace") events.push({ tool: event.event.tool, status: event.event.status }); });
+  assert.deepEqual(before, [{ tool: "submit_plan", status: "started" }]);
+  assert.equal(events.filter((item) => item.tool === "submit_plan" && item.status === "started").length, 1);
+});
+
+test("模型没调用提交工具时，提前亮出的步骤会收尾", async (t) => {
+  const config = setup(t); const traced: Array<{ tool: string; status: string }> = [];
+  const { query } = scripted({ submit_answer: async () => BODY });
+  const answer = await createPlanAnalyticsRunner(config, { query, provider: createSnapshotAnalysisProvider(dataset) })(request, undefined, (event) => { if (event.type === "trace") traced.push({ tool: event.event.tool, status: event.event.status }); }) as PlanAnswerV4;
+  assert.equal(answer.status, "answered");
+  assert.ok(answer.trace!.steps.every((step) => step.status !== "started"));
+  assert.ok(traced.some((item) => item.tool === "submit_answer" && item.status === "warning"));
+});
+
 test("计划第一次有错：同一调用内修正，调用数仍为五，没有丢弃节点", async (t) => {
   const config = setup(t); let first: Record<string, unknown> | undefined;
   const { query, steps } = scripted({ submit_plan: async (call) => {
