@@ -24,6 +24,7 @@ import {
 } from "../../lib/client/api";
 import { appendLiveReply, emptyLiveReply } from "../../lib/client/live-reply";
 import { campaignLiveTurn, campaignTurns, newerSnapshot } from "../../lib/client/background-turns";
+import { historyConversation } from "../../lib/client/history-conversation";
 import { createTurnOwnership, type TurnOwner } from "../../lib/client/turn-ownership";
 import { reconcileSubmittedText, turnWasCommitted } from "../../lib/client/turn-result";
 import { CAMPAIGN_STAGE_LABEL, DEFAULT_WORKSPACE_TAB } from "../../lib/client/campaign-workspace";
@@ -241,8 +242,8 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
       if (controller.signal.aborted) return null;
       notifySessionsChanged();
       if (!ownsUi()) {
-        // 用户已经切走：结果已落库，通知可能已切回来的新界面重新读取。
-        notifySessionUpdated(requestSessionId);
+        // 用户已经切走：结果已落库，通知可能已切回来的新界面重新读取，并在侧栏标未读。
+        notifySessionUpdated(requestSessionId); historyConversation.markCampaignUnread(requestSessionId);
         return null;
       }
       setSnapshot(next);
@@ -258,7 +259,7 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
       }
       if (!ownsUi()) {
         // 不在场时失败：Agent 失败会落一条可重试的消息，让切回来的界面读到它。
-        notifySessionUpdated(requestSessionId);
+        notifySessionUpdated(requestSessionId); historyConversation.markCampaignUnread(requestSessionId);
         return null;
       }
       if (caught instanceof ApiError && caught.status === 409) {

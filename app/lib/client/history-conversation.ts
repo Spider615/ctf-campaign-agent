@@ -13,8 +13,9 @@ export function replaceHistoryAttachment(messages: HistoryMessage[], previousId:
     ...(message.request && "attachmentIds" in message.request ? { request: { ...message.request, attachmentIds: [...new Set(message.request.attachmentIds.map((id) => id === previousId ? file.id : id))] } } : {}),
   }));
 }
-type Thread = { id: string; title: string; messages: HistoryMessage[]; context: string[]; campaignId: string | null; updatedAt: string };
-export type ConversationSummary = Pick<Thread, "id" | "title" | "updatedAt" | "campaignId">;
+// unread：回复在用户没看着这条对话时结束，侧栏标小红点；打开这条对话即清除。
+type Thread = { id: string; title: string; messages: HistoryMessage[]; context: string[]; campaignId: string | null; updatedAt: string; unread?: boolean };
+export type ConversationSummary = Pick<Thread, "id" | "title" | "updatedAt" | "campaignId" | "unread">;
 type Persistence = { getItem(key: string): string | null; setItem(key: string, value: string): void };
 const key = "ctf:conversations:v2"; const legacyKey = "ctf:history-conversation:v1";
 const empty: HistoryMessage[] = []; const emptyThreads: ConversationSummary[] = [];
@@ -43,14 +44,16 @@ export function createHistoryConversationStore(storage?: Persistence) {
   const listeners = new Set<() => void>();
   const persistence = () => { try { return storage ?? (typeof window === "undefined" ? null : window.sessionStorage); } catch { return null; } };
   const current = () => threads.find((thread) => thread.id === activeId);
-  const rebuild = () => { snapshot = current()?.messages ?? empty; index = threads.filter((thread) => thread.messages.length || thread.campaignId).map(({ id, title, updatedAt, campaignId }) => ({ id, title, updatedAt, campaignId })).reverse(); };
+  const rebuild = () => { snapshot = current()?.messages ?? empty; index = threads.filter((thread) => thread.messages.length || thread.campaignId).map(({ id, title, updatedAt, campaignId, unread }) => ({ id, title, updatedAt, campaignId, ...(unread ? { unread } : {}) })).reverse(); };
+  // 回复结束：消息从进行中变为完成、失败或已停止。
+  const settled = (before: HistoryMessage[], next: HistoryMessage[]) => next.some((message) => message.role === "assistant" && message.status !== undefined && message.status !== "running" && before.find((old) => old.id === message.id)?.status === "running");
   const makeThread = (): Thread => ({ id: crypto.randomUUID(), title: "新对话", messages: [], context: [], campaignId: null, updatedAt: new Date().toISOString() });
   const load = () => {
     if (loaded || storage === undefined && typeof window === "undefined") return;
     loaded = true;
     try {
       const saved = JSON.parse(persistence()?.getItem(key) ?? "null");
-      if (saved && Array.isArray(saved.threads) && typeof saved.activeId === "string" && saved.threads.every((t: Thread) => t && typeof t.id === "string" && typeof t.title === "string" && typeof t.updatedAt === "string" && (t.campaignId === null || typeof t.campaignId === "string") && messagesValid(t.messages) && contextValid(t.context))) {
+      if (saved && Array.isArray(saved.threads) && typeof saved.activeId === "string" && saved.threads.every((t: Thread) => t && typeof t.id === "string" && typeof t.title === "string" && typeof t.updatedAt === "string" && (t.campaignId === null || typeof t.campaignId === "string") && (t.unread === undefined || typeof t.unread === "boolean") && messagesValid(t.messages) && contextValid(t.context))) {
         threads = saved.threads.map((t: Thread) => ({ ...t, messages: restoreMessages(t.messages) })); activeId = saved.activeId;
       } else {
         const previous = JSON.parse(persistence()?.getItem(legacyKey) ?? "null"); const messages = Array.isArray(previous) ? previous : previous?.messages;
@@ -80,6 +83,7 @@ export function createHistoryConversationStore(storage?: Persistence) {
       const before = thread.messages; const next = change(before);
       thread.context = [...thread.context, ...next.filter((m) => m.role === "user" && !before.some((old) => old.id === m.id)).map((m) => m.text.slice(0, 500))].slice(0, 200);
       if (!before.length && next.some((m) => m.role === "user")) thread.title = next.find((m) => m.role === "user")!.text.slice(0, 40);
+      if (thread.id !== activeId && settled(before, next)) thread.unread = true;
       thread.messages = next.slice(-40); thread.updatedAt = new Date().toISOString(); commit();
     },
     // 一条对话只绑一个活动；已绑过的不让迟到的建活动结果改掉。
@@ -92,8 +96,27 @@ export function createHistoryConversationStore(storage?: Persistence) {
       const thread = makeThread(); threads.push(thread); activeId = thread.id; commit(); return activeId;
     },
     selectConversation(id: string) {
+      load(); const thread = threads.find((item) => item.id === id); if (!thread) return false;
+      if (activeId === id && !thread.unread) return true; activeId = id; delete thread.unread; commit(); return true;
+    },
+    // 回复来自别处（如对话里嵌着的活动）时由调用方标记；用户正看着这条对话时不标。
+    markUnread(id: string) {
+      load(); const thread = threads.find((item) => item.id === id); if (!thread || thread.id === activeId || thread.unread) return;
+      thread.unread = true; commit();
+    },
+    // 活动回复结束时按活动 id 找到它所在的对话再标记。
+    markCampaignUnread(campaignId: string) {
+      load(); const thread = threads.find((item) => item.campaignId === campaignId); if (thread) this.markUnread(thread.id);
+    },
+    // 删除只动本浏览器保存的对话记录；删的是当前对话时切到剩下的最近一条，没有就留一条空对话。
+    deleteConversation(id: string) {
       load(); if (!threads.some((thread) => thread.id === id)) return false;
-      if (activeId === id) return true; activeId = id; commit(); return true;
+      threads = threads.filter((thread) => thread.id !== id);
+      if (activeId === id) {
+        const latest = threads.filter((thread) => thread.messages.length || thread.campaignId).at(-1);
+        if (latest) activeId = latest.id; else { const thread = makeThread(); threads.push(thread); activeId = thread.id; }
+      }
+      commit(); return true;
     },
   };
 }

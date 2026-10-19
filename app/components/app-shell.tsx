@@ -20,7 +20,13 @@ import { registerCampaignTools } from "../lib/webmcp";
 import { ANALYTICS_CHANGED } from "../lib/client/analytics";
 import type { ReportSummary } from "../lib/server/analytics-store";
 import { historyConversation } from "../lib/client/history-conversation";
-import { analysisTurns, campaignTurns } from "../lib/client/background-turns";
+import { analysisTurns, campaignTurns, fileTurns } from "../lib/client/background-turns";
+
+// 回复在用户不在这条对话时结束：标小红点，打开这条对话后消失。
+function Unread() {
+  // 压在对话框左上角的边框上；pointer-events-none 让点击仍落到对话本身。
+  return <span role="img" aria-label="有新回复" className="pointer-events-none absolute -left-0.5 -top-0.5 size-2.5 rounded-full bg-[#f04438] ring-2 ring-white" />;
+}
 
 function Replying() {
   return <span className="ml-1.5 inline-flex shrink-0 items-center gap-1 text-[11px] font-normal text-[#247cff]"><span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-[#247cff] motion-reduce:animate-none" />回复中</span>;
@@ -154,6 +160,13 @@ function WorkspaceShell({ children, marketing }: { children: React.ReactNode; ma
     }
   };
 
+  // 删除营销对话：只删本浏览器保存的记录；正在回答的先停掉，免得回答写回已删除的对话。
+  const removeConversation = (id: string, title: string) => {
+    if (!window.confirm(`删除对话「${title}」？删掉后找不回来。`)) return;
+    analysisTurns.abort(id); fileTurns.abort(id);
+    historyConversation.deleteConversation(id);
+  };
+
   return (
     <div className="min-h-screen text-[#17243a]">
       <header className="sticky top-0 z-40 flex h-16 items-center border-b border-[#d9e7f6] bg-white/85 px-4 shadow-[0_6px_20px_rgba(58,104,154,0.06)] backdrop-blur-xl md:hidden">
@@ -188,7 +201,23 @@ function WorkspaceShell({ children, marketing }: { children: React.ReactNode; ma
           <nav className="flex min-h-0 flex-1 flex-col px-3 pb-3" aria-label="主导航">
             {marketing ? <>
               <p className="px-3 pb-2 pt-5 text-[11px] font-semibold tracking-[0.14em] text-[#8aa0b9]">最近对话</p>
-              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">{conversations.length ? conversations.map((conversation) => <button type="button" key={conversation.id} onClick={() => { historyConversation.selectConversation(conversation.id); close(); router.push("/analysis"); }} aria-current={conversation.id === selectedConversation ? "true" : undefined} className={`block w-full rounded-xl border px-3 py-2.5 text-left text-sm transition ${conversation.id === selectedConversation ? "border-[#c7ddff] bg-[#eaf4ff] text-[#174e96]" : "border-transparent text-[#4f6380] hover:border-[#e1ecf8] hover:bg-[#f5f9ff]"}`}><span className="flex items-start justify-between gap-1"><span className="line-clamp-2">{conversation.title}</span>{replyingAnalyses.has(conversation.id) || (conversation.campaignId && replyingCampaigns.has(conversation.campaignId)) ? <Replying /> : null}</span></button>) : <p className="px-3 py-2 text-[13px] leading-6 text-[#91a4bb]">从一个营销问题开始，<br />想换个角度，随时接着问。</p>}</div>
+              {/* 上、左各留一点空间：小红点压在对话框边角外，滚动容器会裁掉贴边的部分。 */}
+              <div className="-ml-1 min-h-0 flex-1 space-y-1 overflow-y-auto pl-1 pt-1">{conversations.length ? conversations.map((conversation) => (
+                // 删除按钮不能放进对话按钮里，点它会连带切换对话，所以外面包一层定位容器。
+                <div key={conversation.id} className="group relative">
+                  <button type="button" onClick={() => { historyConversation.selectConversation(conversation.id); close(); router.push("/analysis"); }} aria-current={conversation.id === selectedConversation ? "true" : undefined} className={`block w-full rounded-lg border py-2 pl-3 pr-9 text-left text-[13px] leading-5 transition ${conversation.id === selectedConversation ? "border-[#c7ddff] bg-[#eaf4ff] text-[#174e96]" : "border-transparent text-[#4f6380] hover:border-[#e1ecf8] hover:bg-[#f5f9ff]"}`}><span className="flex items-start justify-between gap-1"><span className="line-clamp-2">{conversation.title}</span>{replyingAnalyses.has(conversation.id) || (conversation.campaignId && replyingCampaigns.has(conversation.campaignId)) ? <Replying /> : null}</span></button>
+                  {conversation.unread && !replyingAnalyses.has(conversation.id) ? <Unread /> : null}
+                  <button
+                    type="button"
+                    aria-label={`删除对话 ${conversation.title}`}
+                    onClick={() => removeConversation(conversation.id, conversation.title)}
+                    // 触屏没有 hover，小屏上常显，否则删不掉。
+                    className="absolute right-1.5 top-1.5 grid size-7 place-items-center rounded-lg text-[#9bb0c7] opacity-0 transition hover:bg-[#ffece9] hover:text-[#c2402c] focus-visible:opacity-100 group-hover:opacity-100 max-md:opacity-100"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+              )) : <p className="px-3 py-2 text-[13px] leading-6 text-[#91a4bb]">从一个营销问题开始，<br />想换个角度，随时接着问。</p>}</div>
             </> : <>
             {reports.length ? <section className="pt-4"><p className="px-3 pb-2 text-[11px] font-semibold text-[#8aa0b9]">最近分析</p>{reports.slice(0, 5).map((report) => <Link key={report.id} href={`/analysis/${report.id}`} onClick={close} className={`mb-1 block rounded-xl px-3 py-2 text-sm ${pathname === `/analysis/${report.id}` ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-secondary"}`}><span className="line-clamp-1">{report.provenance === "sample" ? "[示例] " : ""}{report.datasetName}</span><span className="mt-1 block text-[11px]">{report.query.period.start} 至 {report.query.period.end}</span></Link>)}</section> : null}
             <p className="px-3 pb-2 pt-5 text-[11px] font-semibold tracking-[0.14em] text-[#8aa0b9]">最近对话</p>
@@ -202,7 +231,7 @@ function WorkspaceShell({ children, marketing }: { children: React.ReactNode; ma
                       onClick={close}
                       className={`relative block rounded-xl border py-2.5 pl-3 pr-10 transition ${session.id === activeId ? "border-[#c7ddff] bg-[#eaf4ff] text-[#174e96] shadow-[0_8px_22px_rgba(36,124,255,0.09)] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-[#247cff]" : "border-transparent text-[#4f6380] hover:border-[#e1ecf8] hover:bg-[#f5f9ff] hover:text-[#223d63]"}`}
                     >
-                      <span className="flex items-center justify-between"><span className="line-clamp-1 text-sm font-medium">{session.title}</span>{replyingCampaigns.has(session.id) ? <Replying /> : null}</span>
+                      <span className="flex items-center justify-between"><span className="line-clamp-1 text-[13px] font-medium">{session.title}</span>{replyingCampaigns.has(session.id) ? <Replying /> : null}</span>
                       <span className={`mt-0.5 block text-[11px] ${session.id === activeId ? "text-[#5f82ad]" : "text-[#8da0b7]"}`}>{sessionStatusLabel(session.status)}</span>
                     </Link>
                     <button

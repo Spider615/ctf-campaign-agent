@@ -89,7 +89,10 @@ body {
   font-family: var(--font-sans);
 }
 
-button, input, textarea, select { font: inherit; }
+/* 放进 base 层：不分层的规则优先级高于所有工具类，会让按钮上的 text-sm 等字号失效。 */
+@layer base {
+  button, input, textarea, select { font: inherit; }
+}
 button, summary, a { -webkit-tap-highlight-color: transparent; }
 ::selection { background: rgb(36 124 255 / 22%); }
 .user-message-text::selection { background: #ffffff; color: #174e96; }

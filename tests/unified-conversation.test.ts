@@ -64,3 +64,76 @@ test("切换对话不结束另一条对话里进行中的回答", () => {
   store.update((items) => items.map((message) => message.id === "a" ? { ...message, status: "running" } : message), first);
   assert.equal(storage.createHistoryConversationStore({ getItem: (key: string) => values.get(key) ?? null, setItem: () => {} }).snapshot().at(-1)?.status, "cancelled");
 });
+
+test("删除对话：从列表和存储中移除；删的是当前对话时切到最近一条，删光后留一条空对话", () => {
+  const values = new Map<string, string>();
+  const persistence = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const store = storage.createHistoryConversationStore(persistence);
+  const first = store.activeId();
+  store.update(() => [{ id: "q1", role: "user", text: "第一条", createdAt: "2026-10-13T00:00:00Z" }], first);
+  const second = store.newConversation();
+  store.update(() => [{ id: "q2", role: "user", text: "第二条", createdAt: "2026-10-13T00:01:00Z" }], second);
+  assert.equal(store.deleteConversation("不存在"), false);
+  // 删别的对话：当前对话不变。
+  assert.equal(store.deleteConversation(first), true);
+  assert.equal(store.activeId(), second);
+  assert.deepEqual(store.threadsSnapshot().map((thread) => thread.title), ["第二条"]);
+  // 删当前对话且没有其他对话：留一条空的新对话，列表为空。
+  assert.equal(store.deleteConversation(second), true);
+  assert.notEqual(store.activeId(), second);
+  assert.deepEqual(store.snapshot(), []); assert.deepEqual(store.threadsSnapshot(), []);
+  // 刷新后仍然是删过的状态。
+  assert.deepEqual(storage.createHistoryConversationStore(persistence).threadsSnapshot(), []);
+});
+
+test("删除当前对话时切到剩下的最近一条", () => {
+  const values = new Map<string, string>();
+  const store = storage.createHistoryConversationStore({ getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } });
+  const ids = [store.activeId()];
+  store.update(() => [{ id: "a", role: "user", text: "甲", createdAt: "2026-10-13T00:00:00Z" }], ids[0]);
+  for (const text of ["乙", "丙"]) { const id = store.newConversation(); ids.push(id); store.update(() => [{ id: text, role: "user", text, createdAt: "2026-10-13T00:00:00Z" }], id); }
+  assert.equal(store.selectConversation(ids[2]), true);
+  assert.equal(store.deleteConversation(ids[2]), true);
+  assert.equal(store.activeId(), ids[1]);
+  assert.deepEqual(store.snapshot().map((message) => message.text), ["乙"]);
+});
+
+test("未读提醒：不在当前对话里的回答结束（完成或失败）时标未读，打开后清除，刷新后保留", () => {
+  const values = new Map<string, string>();
+  const persistence = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const store = storage.createHistoryConversationStore(persistence);
+  const first = store.activeId();
+  store.update(() => [{ id: "q", role: "user", text: "8月销售额", createdAt: "2026-10-13T00:00:00Z" }, { id: "a", role: "assistant", text: "", status: "running", createdAt: "2026-10-13T00:00:00Z" }], first);
+  const unread = () => Object.fromEntries(store.threadsSnapshot().map((thread) => [thread.id, Boolean(thread.unread)]));
+  // 当前对话里的回答结束：用户正看着，不标。
+  store.update((items) => items.map((message) => message.id === "a" ? { ...message, status: "done", text: "100 万" } : message), first);
+  assert.equal(unread()[first], false);
+  // 切走后，原对话里新的回答结束：标未读。
+  store.update((items) => [...items, { id: "a2", role: "assistant", text: "", status: "running", createdAt: "2026-10-13T00:02:00Z" }], first);
+  const second = store.newConversation();
+  store.update((items) => items.map((message) => message.id === "a2" ? { ...message, status: "failed", text: "失败" } : message), first);
+  assert.equal(unread()[first], true);
+  // 进度更新（还在跑）不标。
+  store.update(() => [{ id: "q2", role: "user", text: "第二条", createdAt: "2026-10-13T00:03:00Z" }, { id: "b", role: "assistant", text: "", status: "running", createdAt: "2026-10-13T00:03:00Z" }], second);
+  store.selectConversation(first);
+  store.update((items) => items.map((message) => message.id === "b" ? { ...message, phase: "writing" as const } : message), second);
+  assert.equal(unread()[second], false);
+  // 打开即清除；刷新后保持。
+  assert.equal(unread()[first], false);
+  store.update((items) => items.map((message) => message.id === "b" ? { ...message, status: "done", text: "好了" } : message), second);
+  assert.equal(storage.createHistoryConversationStore(persistence).threadsSnapshot().find((thread) => thread.id === second)?.unread, true);
+});
+
+test("未读提醒：其他来源的回复（活动对话）可以直接标记，当前对话不标", () => {
+  const values = new Map<string, string>();
+  const store = storage.createHistoryConversationStore({ getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } });
+  const first = store.activeId();
+  store.update(() => [{ id: "q", role: "user", text: "建一个活动", createdAt: "2026-10-13T00:00:00Z" }], first);
+  store.markUnread(first);
+  assert.equal(store.threadsSnapshot()[0].unread, undefined);
+  store.newConversation(); store.markUnread(first);
+  assert.equal(store.threadsSnapshot().find((thread) => thread.id === first)?.unread, true);
+  store.selectConversation(first); assert.equal(store.bindCampaign("camp-1", "建一个活动", first), true);
+  store.newConversation(); store.markCampaignUnread("camp-1"); store.markCampaignUnread("不存在");
+  assert.equal(store.threadsSnapshot().find((thread) => thread.id === first)?.unread, true);
+});
