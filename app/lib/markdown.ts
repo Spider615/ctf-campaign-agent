@@ -12,7 +12,7 @@ export type InlineNode = { kind: "text"; text: string } | { kind: "bold"; text: 
 export type Block =
   | { kind: "para"; inline: InlineNode[] }
   | { kind: "heading"; level: number; inline: InlineNode[] }
-  | { kind: "list"; ordered: boolean; items: InlineNode[][] };
+  | { kind: "list"; ordered: boolean; items: InlineNode[][]; start?: number };
 
 // 必须成对闭合、且不跨行：回复有 800 字截断，模型的话被从中间切开时会留下半个 **，
 // 贪婪匹配会把后面整段正文吃掉，那比不渲染更糟。句中单个 * 同样不该被当成标记。
@@ -55,6 +55,9 @@ export function parseChatMarkdown(text: string): Block[] {
   let para: string[] = [];
   let listItems: string[] = [];
   let listOrdered = false;
+  let listStart = 1;
+  // 列表项之间隔着空行（模型常这样写「1. …\n\n2. …」）仍算同一个列表；只在空行后接的不是同类列表项时才结束。
+  let blankAfterList = false;
 
   const flushPara = () => {
     if (!para.length) return;
@@ -63,20 +66,22 @@ export function parseChatMarkdown(text: string): Block[] {
   };
   const flushList = () => {
     if (!listItems.length) return;
-    blocks.push({ kind: "list", ordered: listOrdered, items: listItems.map((item) => parseInline(item)) });
+    blocks.push({ kind: "list", ordered: listOrdered, items: listItems.map((item) => parseInline(item)), ...(listOrdered && listStart !== 1 ? { start: listStart } : {}) });
     listItems = [];
+    blankAfterList = false;
   };
 
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line) {
       flushPara();
-      flushList();
+      if (listItems.length) blankAfterList = true;
       continue;
     }
     const heading = HEADING.exec(line);
     if (heading) {
       flushPara();
+      blankAfterList = false;
       flushList();
       blocks.push({ kind: "heading", level: heading[1].length, inline: parseInline(heading[2]) });
       continue;
@@ -88,10 +93,15 @@ export function parseChatMarkdown(text: string): Block[] {
       const isOrdered = ordered !== null;
       // 中途从「1.」换成「-」时断成两个列表，不把两种标记混进同一组。
       if (listItems.length && listOrdered !== isOrdered) flushList();
+      // 有序列表保留模型写的起始编号：中间被段落隔开后接着写「3.」，不能重新从 1 开始。
+      if (!listItems.length && ordered) listStart = Number(ordered[1]) || 1;
       listOrdered = isOrdered;
+      blankAfterList = false;
       listItems.push(ordered ? ordered[2] : (bullet as RegExpExecArray)[1]);
       continue;
     }
+    // 列表项紧跟着的非列表行（没有空行）是这一项的续行；隔了空行就是新段落。
+    if (listItems.length && !blankAfterList) { listItems[listItems.length - 1] += `\n${line}`; continue; }
     flushList();
     para.push(line);
   }

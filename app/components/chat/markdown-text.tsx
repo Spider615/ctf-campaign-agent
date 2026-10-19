@@ -29,9 +29,9 @@ export function MarkdownText({ text, trailing }: { text: string; trailing?: Reac
           const Heading = block.level <= 2 ? "h2" : block.level === 3 ? "h3" : "h4";
           return <Heading key={`${index}-h`} className={`pt-2 font-semibold tracking-tight first:pt-0 ${block.level <= 2 ? "text-[18px]" : "text-base"}`}>{inlineNodes(block.inline)}{suffix}</Heading>;
         }
-        const items = block.items.map((item, itemIndex) => <li key={`${itemIndex}-li`} className="pl-1">{inlineNodes(item)}{itemIndex === block.items.length - 1 ? suffix : null}</li>);
+        const items = block.items.map((item, itemIndex) => <li key={`${itemIndex}-li`} className="whitespace-pre-wrap pl-1">{inlineNodes(item)}{itemIndex === block.items.length - 1 ? suffix : null}</li>);
         return block.ordered ? (
-          <ol key={`${index}-ol`} className="list-decimal space-y-1 pl-5">{items}</ol>
+          <ol key={`${index}-ol`} start={block.start} className="list-decimal space-y-1 pl-5">{items}</ol>
         ) : (
           <ul key={`${index}-ul`} className="list-disc space-y-1 pl-5">{items}</ul>
         );

@@ -79,3 +79,21 @@ test("不完整标题和普通句中的井号保持原文", () => {
     assert.deepEqual(blocks, [{ kind: "para", inline: [{ kind: "text", text }] }]);
   }
 });
+
+test("列表项之间隔着空行仍是同一个有序列表，编号连续", () => {
+  const blocks = parseChatMarkdown("影响最大的是克减力度。\n\n1. 克减力度：强度 36。\n\n2. 其余维度都偏弱。\n\n3. 金 / 珠宝算不出。\n\n强度不是因果。");
+  assert.deepEqual(blocks.map((b) => b.kind), ["para", "list", "para"]);
+  assert.equal(blocks[1].kind === "list" && blocks[1].items.length, 3);
+  assert.equal(blocks[1].kind === "list" && blocks[1].start, undefined);
+});
+
+test("被段落隔开后接着写的编号保留起始号", () => {
+  const blocks = parseChatMarkdown("1. 第一点\n2. 第二点\n\n中间说明一句。\n\n3. 第三点");
+  assert.equal(blocks[2].kind === "list" && blocks[2].start, 3);
+});
+
+test("列表项紧跟的续行并进这一项", () => {
+  const blocks = parseChatMarkdown("- 克减力度：强度 36\n  让利最多的是克减50\n- 价位段：9");
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].kind === "list" && blocks[0].items.length, 2);
+});

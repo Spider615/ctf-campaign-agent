@@ -233,7 +233,7 @@ export function PlanAnswerV4View({ answer }: { answer: PlanAnswerV4 }) {
           return <Heading key={index} className={`pt-2 font-semibold tracking-tight first:pt-0 ${item.level <= 2 ? "text-[18px]" : "text-base"}`}>{inline(item.inline, key)}</Heading>;
         }
         const items = item.items.map((entry, at) => <li key={at} className="pl-1">{inline(entry, key)}</li>);
-        return item.ordered ? <ol key={index} className="list-decimal space-y-1 pl-5">{items}</ol> : <ul key={index} className="list-disc space-y-1 pl-5 marker:text-[#8aa0b9]">{items}</ul>;
+        return item.ordered ? <ol key={index} start={item.start} className="list-decimal space-y-1 pl-5">{items}</ol> : <ul key={index} className="list-disc space-y-1 pl-5 marker:text-[#8aa0b9]">{items}</ul>;
       })}
     </div>;
   };

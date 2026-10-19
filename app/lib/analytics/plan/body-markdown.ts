@@ -10,7 +10,7 @@ export type BodyInline = { bold: boolean; parts: BodyPart[] };
 export type BodyMarkdownBlock =
   | { kind: "para"; inline: BodyInline[] }
   | { kind: "heading"; level: number; inline: BodyInline[] }
-  | { kind: "list"; ordered: boolean; items: BodyInline[][] };
+  | { kind: "list"; ordered: boolean; items: BodyInline[][]; start?: number };
 
 type Ref = { start: number; end: number; factIds: string[] };
 
@@ -52,6 +52,6 @@ export function parseBodyMarkdown(text: string, refs: readonly Ref[]): BodyMarkd
   };
   const inline = (nodes: Extract<Block, { kind: "para" }>["inline"]): BodyInline[] => nodes.map((node) => ({ bold: node.kind === "bold", parts: parts(node.text) })).filter((node) => node.parts.length);
   return parseChatMarkdown(source).map((block): BodyMarkdownBlock => block.kind === "list"
-    ? { kind: "list", ordered: block.ordered, items: block.items.map(inline) }
+    ? { kind: "list", ordered: block.ordered, items: block.items.map(inline), ...(block.start ? { start: block.start } : {}) }
     : block.kind === "heading" ? { kind: "heading", level: block.level, inline: inline(block.inline) } : { kind: "para", inline: inline(block.inline) });
 }
