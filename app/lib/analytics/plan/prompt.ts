@@ -62,6 +62,7 @@ export function planPrompt(question: string, context: string[], brief: string, i
     "- 不同天数的窗口用 amount_per_day 等日均指标比较。decompose、drill、scan、robust、scenario 必须用 of 引用前面已声明的节点。",
     "- 节点只写当前问题真正需要的，最多 12 个；id 用字母数字。计划里不写结论。",
     "- 数据覆盖不到、目录里没有的维度或指标不要硬凑，后面在结论里直接说明缺什么。",
+    "- 问「有多少个活动 / 门店 / 货品」时，按对应维度分组的 measure 会给出分组个数（distinct_count），一个节点就够；不要为了个数再拆别的对比。",
     `### 能力目录\n${brief}`,
     `### 原问题\n${question}`,
     context.length ? `### 用户此前说过\n${context.map((item) => `- ${item}`).join("\n")}` : "",
@@ -70,13 +71,15 @@ export function planPrompt(question: string, context: string[], brief: string, i
   ].filter(Boolean).join("\n\n");
 }
 
-export function claimsPrompt(question: string, summary: string): string {
+// context：用户此前说过的话。追问（如「每个活动 id 算一个」）只有和前面的问题连起来才知道要答什么。
+export function claimsPrompt(question: string, summary: string, context: readonly string[] = []): string {
   return [
     "## 本步：写结论",
     "根据执行结果写给业务人员看的分析，调用 submit_claims 提交 { headline, claims, actions, cannotConclude, questions }。关键数据表、图表和口径说明由代码生成，你只写判断和措辞。",
     "### 写什么",
-    "- headline：一句话直接回答原问题，给出方向和最关键的一个数。要说整体或覆盖面大的规律；单个门店、商场这类小样本个案只能写进 claims。",
+    "- headline：一句话直接回答原问题，开头就是答案和最关键的一个数（如「8月有成交的活动共{value}」），口径和说明放在后半句，不要在句首写「按……口径」。整句只放一个最关键的数。问「有多少个活动 / 门店 / 货品」时，headline 就是那个个数（选分组汇总节点 metric 为 distinct_count 的行，assert 用 value），先报个数再说其他。要说整体或覆盖面大的规律；单个门店、商场这类小样本个案只能写进 claims。",
     "- 两段时间天数不同（如七夕 7 天对 8 月其余日子）时，比较日均类指标，不比实收、件数这些合计值。",
+    "- claims 不要重复 headline 已经说过的那个数；从 headline 往下补充：构成、最高最低、需要注意的口径。",
     "- claims：3 到 5 条主要发现。每条是一句完整的业务判断：先说现象和数字，再说为什么值得注意或它意味着什么。原问题问到的每个方面（如整体对比、大区分区下钻、局部特别好或特别差）都要有对应发现；有分组结果时至少写出最好和最差的分组。",
     "- actions：2 到 3 条建议，每条写清做什么、针对哪个对象、依据哪条发现（claim 填该发现在 claims 里的序号）。",
     "- 原问题问到数据里没有的维度（如会员等级、金价）时，headline 先用最接近的现有数据回答（如会员与非会员对比、每克牌价走势），再在 cannotConclude 写明缺什么；不要因为缺一个维度就不回答。",
@@ -89,11 +92,12 @@ export function claimsPrompt(question: string, summary: string): string {
     "- 一条只说一个指标：占位符只会填入所选 metric 的数。要说另一个指标（如客单价、门店数），另写一条并选那个指标的行。",
     "- actions、cannotConclude、questions 不能写占位符或算出来的数字，用文字指向对应发现即可。",
     "- 业务名称和原话里的日期可以照写（如「H-克减30元」「东区/B区」「七夕7天」），其他算出来的数字只能用占位符。",
-    "- assert 要和数据一致：up/higher 对应正的变化、偏离或贡献，down/lower 对应负的，flat 是变化不到 1%，largest/smallest 是同一节点同一指标里最大或最小的那组。汇总（measure）节点没有参照，分组之间只能用 largest/smallest 说谁最高最低；要说比什么高或低，选 contrast、drill、scan 节点。",
+    "- assert 要和数据一致：value 只陈述这个数、不判断方向（如活动个数、本月实收）；up/higher 对应正的变化、偏离或贡献，down/lower 对应负的，flat 是变化不到 1%，largest/smallest 是同一节点同一指标里最大或最小的那组。汇总（measure）节点没有参照，分组之间只能用 largest/smallest 说谁最高最低；要说比什么高或低，选 contrast、drill、scan 节点。",
     "- 只能引用执行结果里列出的行；不支持、失败的节点和稳健性检查不能作为结论节点。",
     `### 原问题\n${question}`,
+    context.length ? `### 用户此前说过\n${context.map((item) => `- ${item}`).join("\n")}\n原问题如果是在补充口径或回答上一轮的疑问，就按补充后的口径回答前面的问题。` : "",
     `### 执行结果\n${summary}`,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
 }
 
 // brief：计划复核时附上能力目录，便于判断筛选键和指标是否可用。

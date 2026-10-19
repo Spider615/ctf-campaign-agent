@@ -39,7 +39,7 @@ const followupShape = { nodes: z.array(looseNode).max(FOLLOWUP_NODES) };
 const ROLES = ["value", "target", "reference", "delta", "change", "deviation", "share", "contribution", "check"] as const satisfies readonly NodeRole[];
 const claimSchema = z.object({
   node: z.string().max(40), select: z.object({}).catchall(z.string().max(120)).optional(), metric: z.string().max(80),
-  role: z.enum(ROLES).optional(), assert: z.enum(["up", "down", "flat", "higher", "lower", "largest", "smallest", "unavailable"]), text: z.string().min(1).max(300),
+  role: z.enum(ROLES).optional(), assert: z.enum(["value", "up", "down", "flat", "higher", "lower", "largest", "smallest", "unavailable"]), text: z.string().min(1).max(300),
 });
 const claimsShape = {
   headline: claimSchema, claims: z.array(claimSchema).max(8),
@@ -301,7 +301,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       let firstDraft: ClaimDraft | undefined; let firstBinding: Binding | undefined;
       await runStep({
         name: "submit_claims", description: "提交绑定计划节点的结论措辞", shape: claimsShape, thinking: false,
-        prompt: claimsPrompt(request.question, executionSummary(execution, capabilities)),
+        prompt: claimsPrompt(request.question, executionSummary(execution, capabilities), context.filter((item) => item !== request.question)),
         done: () => Boolean(binding),
         handle: (input) => {
           claimAttempts++;

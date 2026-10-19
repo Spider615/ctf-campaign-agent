@@ -4,9 +4,10 @@ import type { NodeResult, NodeRole, NodeRow, PlanExecution } from "./execute.ts"
 import type { PlanNode, PlanScope } from "./types.ts";
 
 // 结论绑定：模型只写带占位的措辞并指向计划节点，数字、方向和可信度都由代码查出来。
-export type Claim = { node: string; select?: Record<string, string>; metric: string; role?: NodeRole; assert: "up" | "down" | "flat" | "higher" | "lower" | "largest" | "smallest" | "unavailable"; text: string };
+export type Claim = { node: string; select?: Record<string, string>; metric: string; role?: NodeRole; assert: "value" | "up" | "down" | "flat" | "higher" | "lower" | "largest" | "smallest" | "unavailable"; text: string };
 export type ClaimDraft = { headline: Claim; claims: Claim[]; actions: Array<{ text: string; claim: number }>; cannotConclude: string[]; questions: string[] };
-export type BoundClaim = Claim & { factIds: string[]; rendered: string; confidence: "kept" | "flipped" | "unchecked" };
+// keyFigure：措辞里第一个占位填入的数，界面把它作为这条结论的重点数字放大显示。
+export type BoundClaim = Claim & { factIds: string[]; rendered: string; confidence: "kept" | "flipped" | "unchecked"; keyFigure?: { value: string; factId: string } };
 // actions[].claim 指向保留后 claims 中的序号；指向 headline 或被丢弃结论的行动会被丢弃。
 // droppedText 记录被丢弃的行动、不能下的结论和追问（它们不是 Claim）。
 export type DroppedText = { kind: "action" | "cannotConclude" | "question"; text: string; reason: string };
@@ -106,6 +107,14 @@ function headlineIssue(claim: Claim, execution: PlanExecution): string | undefin
   return `主结论要说整体或有代表性的规律：这一组只占该维度样本的 ${(share * 100).toFixed(2)}%，属个案，请把它写成发现之一，主结论改用整体或覆盖面更大的分组`;
 }
 
+// 填值自带单位；紧跟着的同一单位（个个、条条、元元、家家）只留一个。
+const UNIT_WORDS = ["个百分点", "元/日", "元/家", "元/件", "元/单", "元/克", "单/日", "个", "条", "家", "件", "单", "克", "元", "日", "%"];
+function dedupeUnits(text: string): string {
+  let result = text;
+  for (const unit of UNIT_WORDS) result = result.split(`${unit}${unit}`).join(unit);
+  return result.replace(/(\d[\d,.]*)(元\/[日家件单克]|个百分点|[个条家件单克%])\s*\2/g, "$1$2");
+}
+
 // 计划节点里写到的筛选值和日期，也是用户语境里的业务名称。
 function nodeLiterals(node: NodeResult["node"]): string[] {
   const scopes = node.op === "measure" ? [node.scope] : node.op === "contrast" ? [node.target, node.reference] : [];
@@ -189,7 +198,10 @@ function bindOne(claim: Claim, execution: PlanExecution, forbidden: (text: strin
     return null;
   };
   const wrong = (detail: string): Outcome => ({ reason: `方向与事实不符：声明 ${claim.assert}，${detail}` });
-  if (claim.assert === "unavailable") {
+  // value：只陈述这个数（如有多少个活动、本月实收多少），不判断方向；值要能算出来。
+  if (claim.assert === "value") {
+    if (value === null) return { reason: "所选行暂无可计算值" };
+  } else if (claim.assert === "unavailable") {
     if (value !== null) return wrong("该值实际可以计算");
   } else if (claim.assert === "up" || claim.assert === "higher" || claim.assert === "down" || claim.assert === "lower") {
     const signal = directional();
@@ -220,18 +232,24 @@ function bindOne(claim: Claim, execution: PlanExecution, forbidden: (text: strin
   // 占位填值：取同节点、同指标、同分组中对应角色的行。
   const factIds = [selectedFact.id];
   for (const id of evidence) if (!factIds.includes(id)) factIds.push(id);
-  const failure: { reason?: string } = {};
-  const rendered = claim.text.replace(/\{([^}]*)\}/g, (_match, name: string) => {
+  const failure: { reason?: string } = {}; let keyFigure: BoundClaim["keyFigure"];
+  let rendered = claim.text.replace(/\{([^}]*)\}/g, (_match, name: string) => {
     const wanted: NodeRole = name === "value" ? valueRole : (name as NodeRole);
     const row = wanted === selected.role ? selected : sibling(wanted);
     const fact = row && factOf(row);
     if (!fact) { failure.reason ??= `占位符 {${name}} 在节点「${claim.node}」没有对应的数据行`; return ""; }
     if (fact.value === null && claim.assert !== "unavailable") { failure.reason ??= `占位符 {${name}} 的值暂无可计算值`; return ""; }
     if (!factIds.includes(fact.id)) factIds.push(fact.id);
-    return formatRoleValue(fact, wanted);
+    const text = formatRoleValue(fact, wanted); keyFigure ??= { value: text, factId: fact.id };
+    return text;
   });
   if (failure.reason) return { reason: failure.reason };
-  return { bound: { ...claim, factIds, rendered, confidence: confidenceOf(claim.node, claim.metric, execution) } };
+  // 模型常在占位符后再写一遍单位（「{value}个」「{value}条」），填值后去掉重复的单位。
+  rendered = dedupeUnits(rendered);
+  // 重点数字只在问题的答案就是一个数时放大：只陈述数值的结论，或措辞里只有一个数。
+  // 有好几个数的结论（目标、参照、变化并列），第一个不一定是重点，不放大。
+  const single = claim.assert === "value" || used.length === 1;
+  return { bound: { ...claim, factIds, rendered, confidence: confidenceOf(claim.node, claim.metric, execution), ...(keyFigure && single ? { keyFigure } : {}) } };
 }
 
 // literals：问题原文和用户此前说过的话；维度取值从执行结果的分组键里自动收集。
@@ -256,8 +274,11 @@ export function bindClaims(draft: ClaimDraft, execution: PlanExecution, literals
   let headline = attempt(draft.headline);
   if (headline) { const issue = headlineIssue(headline, execution); if (issue) { dropped.push({ claim: draft.headline, reason: issue }); headline = undefined; } }
   // 序号映射：草稿里的 claims 序号 → 保留后的序号；被提升为 headline 或被丢弃的不在映射里。
+  // 和主结论绑同一个数、做同一判断（同节点、分组、指标、角色、方向）的发现只是把主结论再说一遍，去掉。
+  const rowOf = (claim: Claim) => JSON.stringify([claim.node, claim.metric, Object.entries(claim.select ?? {}).sort(), claim.role ?? null, claim.assert]);
   const kept: BoundClaim[] = []; const remap = new Map<number, number>();
   draft.claims.slice(0, MAX_CLAIMS).forEach((claim, index) => {
+    if (headline && rowOf(claim) === rowOf(headline)) { dropped.push({ claim, reason: "与主结论重复：同一组数据已经在主结论里说过" }); return; }
     const bound = attempt(claim);
     if (bound) { remap.set(index, kept.length); kept.push(bound); }
   });

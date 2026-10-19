@@ -77,7 +77,9 @@ test("flat 看变化幅度；行动随结论重新编号；数量有上限", () 
   assert.equal(flat.headline, undefined); assert.match(flat.dropped[0].reason, /方向/);
   const ok = { node: "c", metric: "amount_per_day", assert: "up" as const, text: "上升" };
   const bad = { ...ok, assert: "down" as const };
-  const many = bindClaims({ headline: ok, claims: [bad, ok, ok, ok, ok, ok, ok], actions: [{ text: "A", claim: 0 }, { text: "B", claim: 2 }, { text: "C", claim: 4 }, { text: "D", claim: 3 }], cannotConclude: ["一", "二", "三", "四", "五", "六", "1"].map((x) => `缺${x}`), questions: [] }, e);
+  // 发现绑变化率那一行，和主结论（差额）不是同一个数，不触发去重。
+  const other = { ...ok, role: "change" as const };
+  const many = bindClaims({ headline: ok, claims: [bad, other, other, other, other, other, other], actions: [{ text: "A", claim: 0 }, { text: "B", claim: 2 }, { text: "C", claim: 4 }, { text: "D", claim: 3 }], cannotConclude: ["一", "二", "三", "四", "五", "六", "1"].map((x) => `缺${x}`), questions: [] }, e);
   assert.equal(many.claims.length, 4); // 前 5 条里去掉被丢弃的一条，行动序号随之重排
   assert.deepEqual(many.actions, [{ text: "B", claim: 1 }, { text: "C", claim: 3 }, { text: "D", claim: 2 }]);
   assert.equal(many.cannotConclude.length, 5);
@@ -166,7 +168,8 @@ test("lower、{reference}、unavailable 与方向依据的兄弟事实", () => {
 
 test("claims 只取前 5 条，第 6 条起不绑定也不能被行动引用", () => {
   const ok = { node: "c", metric: "amount_per_day", assert: "up" as const, text: "上升" };
-  const bound = bindClaims({ headline: ok, claims: [ok, ok, ok, ok, ok, { ...ok, text: "第六条" }], actions: [{ text: "指向第六条", claim: 5 }], cannotConclude: [], questions: [] }, execution());
+  const other = { ...ok, role: "change" as const };
+  const bound = bindClaims({ headline: ok, claims: [other, other, other, other, other, { ...other, text: "第六条" }], actions: [{ text: "指向第六条", claim: 5 }], cannotConclude: [], questions: [] }, execution());
   assert.equal(bound.claims.length, 5); assert.equal(bound.claims.some((item) => item.text === "第六条"), false);
   assert.equal(bound.dropped.length, 0); assert.equal(bound.actions.length, 0);
 });
@@ -220,7 +223,7 @@ test("百分比指标的差额写成个百分点", async () => {
 });
 
 test("建议里原样留下的占位符被剔除并说明原因", () => {
-  const bound = bindClaims({ headline: { node: "c", metric: "amount_per_day", assert: "up", text: "日均高 {delta}" }, claims: [{ node: "c", metric: "amount_per_day", assert: "up", text: "变化 {change}" }], actions: [{ text: "钻石日均成交{change}，加大陈列", claim: 0 }, { text: "加大钻石陈列", claim: 0 }], cannotConclude: ["缺 {value} 的拆分"], questions: [] }, execution());
+  const bound = bindClaims({ headline: { node: "c", metric: "amount_per_day", assert: "up", text: "日均高 {delta}" }, claims: [{ node: "c", metric: "amount_per_day", role: "change", assert: "up", text: "变化 {change}" }], actions: [{ text: "钻石日均成交{change}，加大陈列", claim: 0 }, { text: "加大钻石陈列", claim: 0 }], cannotConclude: ["缺 {value} 的拆分"], questions: [] }, execution());
   assert.deepEqual(bound.actions.map((action) => action.text), ["加大钻石陈列"]);
   assert.deepEqual(bound.cannotConclude, []);
   assert.ok(bound.droppedText.every((item) => /占位符/.test(item.reason)));
@@ -236,7 +239,7 @@ test("选了变化行时 {value} 填目标值，可以和 {change} 同时写", (
 
 test("业务名称的简称（克减50档）不算算出来的数字", () => {
   const exec = execution();
-  const bound = bindClaims({ headline: { node: "c", metric: "amount_per_day", assert: "up", text: "克减50档比克减30档日均高 {delta}" }, claims: [{ node: "c", metric: "amount_per_day", assert: "up", text: "高出50元，{delta}" }], actions: [], cannotConclude: [], questions: [] }, exec, ["「H-克减30元」和「H-克减50元」"]);
+  const bound = bindClaims({ headline: { node: "c", metric: "amount_per_day", assert: "up", text: "克减50档比克减30档日均高 {delta}" }, claims: [{ node: "c", metric: "amount_per_day", role: "change", assert: "up", text: "高出50元，{delta}" }], actions: [], cannotConclude: [], questions: [] }, exec, ["「H-克减30元」和「H-克减50元」"]);
   assert.ok(bound.headline);
   assert.equal(bound.claims.length, 0); assert.match(bound.dropped[0].reason, /数字/);
 });
@@ -244,7 +247,7 @@ test("业务名称的简称（克减50档）不算算出来的数字", () => {
 test("档位简称（50元档）和大小写不同的价位段名称不算算出来的数字", () => {
   const exec = execution();
   exec.results.get("d")!.rows.push(row("fs", "deviation", { priceBand: "30K-50K" }));
-  const bound = bindClaims({ headline: { node: "c", metric: "amount_per_day", assert: "up", text: "50元档比30元档日均高 {delta}，30k-50k 价位段贡献最大" }, claims: [{ node: "c", metric: "amount_per_day", assert: "up", text: "50元档高出30元，{delta}" }], actions: [], cannotConclude: [], questions: [] }, exec, ["「H-克减30元」和「H-克减50元」"]);
+  const bound = bindClaims({ headline: { node: "c", metric: "amount_per_day", assert: "up", text: "50元档比30元档日均高 {delta}，30k-50k 价位段贡献最大" }, claims: [{ node: "c", metric: "amount_per_day", role: "change", assert: "up", text: "50元档高出30元，{delta}" }], actions: [], cannotConclude: [], questions: [] }, exec, ["「H-克减30元」和「H-克减50元」"]);
   assert.ok(bound.headline, JSON.stringify(bound.dropped));
   assert.equal(bound.claims.length, 0); assert.match(bound.dropped[0].reason, /数字/);
 });
@@ -254,7 +257,7 @@ test("下钻行可以写 {target}、{reference} 和 {deviation}；{value} 不与
   const d: PlanNode = { id: "d", op: "drill", of: "c", path: ["district"] };
   const key = { district: "南区/N区" };
   const exec: PlanExecution = { results: new Map([["d", result(d, [row("dv", "deviation", key), row("t", "target", key), row("r", "reference", key)])]]), evidence: { frames: [], objects: [], methods: [], facts } };
-  const bound = bindClaims({ headline: { node: "d", select: key, metric: "amount_per_day", assert: "higher", text: "南区/N区七夕日均{target}，基线{reference}，相对整体偏离{deviation}" }, claims: [{ node: "d", select: key, metric: "amount_per_day", assert: "higher", text: "南区/N区日均{value}，偏离{deviation}" }], actions: [], cannotConclude: [], questions: [] }, exec);
+  const bound = bindClaims({ headline: { node: "d", select: key, metric: "amount_per_day", assert: "higher", text: "南区/N区七夕日均{target}，基线{reference}，相对整体偏离{deviation}" }, claims: [{ node: "d", select: key, metric: "amount_per_day", role: "target", assert: "higher", text: "南区/N区日均{value}，偏离{deviation}" }], actions: [], cannotConclude: [], questions: [] }, exec);
   assert.equal(bound.headline!.rendered, "南区/N区七夕日均300.00元/日，基线150.00元/日，相对整体偏离+12.50个百分点");
   assert.equal(bound.claims[0].rendered, "南区/N区日均300.00元/日，偏离+12.50个百分点");
 });
@@ -291,4 +294,39 @@ test("主结论不能是只占样本不到 1% 的个案，改由有代表性的�
   const bound = bindClaims({ headline: { node: "s", select: { mallGroup: "某商场" }, metric: "amount_per_day", assert: "largest", text: "某商场偏离{value}" }, claims: [{ node: "s", select: { mallGroup: "大集团" }, metric: "amount_per_day", assert: "higher", text: "大集团偏离{value}" }], actions: [], cannotConclude: [], questions: [] }, exec);
   assert.equal(bound.headline!.rendered, "大集团偏离+30.00个百分点");
   assert.match(bound.dropped[0].reason, /个案/);
+});
+
+test("assert value：只陈述数值（如活动个数），不做方向判断；值为空时丢弃", () => {
+  const facts = [fact("n", 442, "个"), fact("e", null, "个")];
+  const m: PlanNode = { id: "m", op: "measure", scope, by: ["offer"], metrics: ["amount"] };
+  const exec: PlanExecution = { results: new Map([["m", result(m, [{ key: {}, metric: "distinct_count", factId: "n", role: "value" }])], ["e", result({ ...m, id: "e" }, [{ key: {}, metric: "distinct_count", factId: "e", role: "value" }])]]), evidence: { frames: [], objects: [], methods: [], facts } };
+  const bound = bindClaims({ headline: { node: "m", metric: "distinct_count", assert: "value", text: "有成交的活动共{value}" }, claims: [{ node: "e", metric: "distinct_count", assert: "value", text: "共{value}" }], actions: [], cannotConclude: [], questions: [] }, exec);
+  assert.ok(bound.headline, JSON.stringify(bound.dropped)); assert.equal(bound.headline!.rendered, "有成交的活动共442个");
+  assert.equal(bound.claims.length, 0); assert.match(bound.dropped[0].reason, /暂无可计算值/);
+});
+
+test("占位符后又写了单位时只保留一个", () => {
+  const facts = [fact("n", 442, "个"), fact("r", 510750, "条")];
+  const m: PlanNode = { id: "m", op: "measure", scope, by: ["offer"], metrics: ["rows"] };
+  const exec: PlanExecution = { results: new Map([["m", result(m, [{ key: {}, metric: "distinct_count", factId: "n", role: "value" }, { key: { offer: "一般開單" }, metric: "rows", factId: "r", role: "value" }])]]), evidence: { frames: [], objects: [], methods: [], facts } };
+  const bound = bindClaims({ headline: { node: "m", metric: "distinct_count", assert: "value", text: "共{value}个活动" }, claims: [{ node: "m", select: { offer: "一般開單" }, metric: "rows", assert: "value", text: "一般開單（{value}条）" }], actions: [], cannotConclude: [], questions: [] }, exec);
+  assert.equal(bound.headline!.rendered, "共442个活动");
+  assert.equal(bound.claims[0].rendered, "一般開單（510,750条）");
+});
+
+test("主结论记下第一个占位的数值作为重点数字；和主结论绑同一行的发现被去掉", () => {
+  const facts = [fact("n", 442, "个"), fact("r", 510750, "条")];
+  const m: PlanNode = { id: "m", op: "measure", scope, by: ["offer"], metrics: ["rows"] };
+  const exec: PlanExecution = { results: new Map([["m", result(m, [{ key: {}, metric: "distinct_count", factId: "n", role: "value" }, { key: { offer: "一般開單" }, metric: "rows", factId: "r", role: "value" }])]]), evidence: { frames: [], objects: [], methods: [], facts } };
+  const bound = bindClaims({ headline: { node: "m", metric: "distinct_count", assert: "value", text: "共有{value}活动" }, claims: [{ node: "m", metric: "distinct_count", assert: "value", text: "活动共{value}" }, { node: "m", select: { offer: "一般開單" }, metric: "rows", assert: "value", text: "一般開單{value}" }], actions: [], cannotConclude: [], questions: [] }, exec);
+  assert.deepEqual(bound.headline!.keyFigure, { value: "442个", factId: "n" });
+  assert.deepEqual(bound.claims.map((claim) => claim.rendered), ["一般開單510,750条"]);
+  assert.match(bound.dropped[0].reason, /重复/);
+});
+
+test("措辞里有好几个数时不设重点数字", () => {
+  const bound = bindClaims({ headline: { node: "c", metric: "amount_per_day", assert: "up", text: "高 {delta}，即 {change}" }, claims: [], actions: [], cannotConclude: [], questions: [] }, execution());
+  assert.equal(bound.headline!.keyFigure, undefined);
+  const one = bindClaims({ headline: { node: "c", metric: "amount_per_day", role: "change", assert: "up", text: "日均高 {change}" }, claims: [], actions: [], cannotConclude: [], questions: [] }, execution());
+  assert.deepEqual(one.headline!.keyFigure, { value: "+100.00%", factId: "fc" });
 });

@@ -61,7 +61,8 @@ export type AnalysisOperationResult = AnalysisEvidence & { operationId: string; 
 export type EvidenceRegistry = { ingest(result: AnalysisOperationResult): void; ingestAsync(result: AnalysisOperationResult, signal?: AbortSignal): Promise<void>; bundle(): AnalysisEvidence; view(): AnalysisEvidence; clear(): void };
 
 // 计划式分析的最终答案：措辞由模型写，数字、方向、可信度、图表都由代码绑定和推导。
-export type PlanAnswerClaim = { text: string; factIds: string[]; confidence: "kept" | "flipped" | "unchecked" };
+// keyFigure：这条结论的重点数字（已按单位格式化），只在主结论上用来放大显示；必须是 factIds 里某个事实的值。
+export type PlanAnswerClaim = { text: string; factIds: string[]; confidence: "kept" | "flipped" | "unchecked"; keyFigure?: { value: string; factId: string } };
 // 关键数据表：由代码从结论绑定的节点生成，每行一个指标；对比给目标、参照和变化，单值只给数值。
 export type PlanAnswerFigure = { label: string; scope?: string; target: string; reference?: string; change?: string; factIds: string[] };
 export type PlanAnswer = {

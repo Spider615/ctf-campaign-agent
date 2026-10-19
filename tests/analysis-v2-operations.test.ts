@@ -774,3 +774,12 @@ test("分组汇总登记去重计数为实测事实，回答「有多少个活�
     assert.ok(!total.facts.some((value) => value.metricId === "distinct_count"), "不分组时没有分组个数");
   } finally { await f.session.close(); }
 });
+
+test("分组个数只数有取值的分组：没填优惠的明细不算一个活动", async () => {
+  const f = await setup([row({ campaignId: "国庆", orderId: "1" }), row({ campaignId: "中秋", orderId: "2" }), row({ campaignId: "", orderId: "3" })]);
+  try {
+    const result = await f.operations.execute(request({ by: ["offer"], metrics: ["rows"] }));
+    assert.equal(fact(result, "distinct_count").value, 2);
+    assert.match(fact(result, "distinct_count").definition, /未填/);
+  } finally { await f.session.close(); }
+});

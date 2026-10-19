@@ -178,8 +178,10 @@ export function PlanAnswerView({ answer }: { answer: PlanAnswer }) {
   };
   const claims = answer.claims.slice(0, 5);
   return <div data-plan-answer className="min-w-0 select-text space-y-4">
+    {/* 主结论的重点数字单独放大放在最上面，一眼看到问题的答案；句子在下面给出口径和含义。 */}
+    {answer.headline?.keyFigure ? <p data-plan-key-figure className="break-words text-[32px] font-semibold leading-tight tracking-tight text-[#174e96] tabular-nums">{answer.headline.keyFigure.value}</p> : null}
     {answer.headline
-      ? <p data-plan-headline className="break-words text-[16px] font-semibold leading-8 text-foreground">{answer.headline.text}<ConfidenceChip confidence={answer.headline.confidence} />{sourceButton("headline", 1, answer.headline)}</p>
+      ? <p data-plan-headline className={`break-words font-semibold text-foreground ${answer.headline.keyFigure ? "-mt-2 text-[15px] leading-7" : "text-[16px] leading-8"}`}>{answer.headline.text}<ConfidenceChip confidence={answer.headline.confidence} />{sourceButton("headline", 1, answer.headline)}</p>
       : <p role="status" data-plan-headline className="rounded-lg border border-border bg-secondary/45 px-3 py-2 text-sm font-medium leading-6">这次没有得出可以直接采用的结论</p>}
     {answer.figures?.rows.length ? <Figures figures={answer.figures} /> : null}
     {claims.length ? <section data-plan-section="findings"><h3 className={sectionTitle}>主要发现</h3><ul data-plan-claims className={`list-disc space-y-2.5 pl-5 ${bodyClass} marker:text-[#8aa0b9]`}>{claims.map((claim, index) => <li key={index} data-plan-claim className="pl-1"><span>{claim.text}</span><ConfidenceChip confidence={claim.confidence} />{sourceButton(`claim:${index}`, index + 1 + (answer.headline ? 1 : 0), claim)}</li>)}</ul></section> : null}

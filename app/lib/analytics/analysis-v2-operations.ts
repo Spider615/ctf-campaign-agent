@@ -445,7 +445,12 @@ export function createAnalysisOperations(session: AnalysisDataSession, constrain
       for (const { cells } of ranked) { const ids = cells.length ? objectsFor(f, cells) : []; for (const metric of request.metrics) base(f, cells, metric, "汇总", ids); }
       method.sampleRows = sum(cells, "rows")!; method.groupCount = cells.length ? grouped.size : 0; check("完整范围汇总", `处理全部 ${method.sampleRows} 行、${method.groupCount} 组；无金额前列截取`);
       // 「有多少个活动/门店/货品」这类问题的答案就是分组个数：登记成可引用的实测事实，不让模型借情景假设填写。
-      if (request.by?.length && cells.length) add(f, "distinct_count", `${request.by.map((dimension) => GROUP_NOUNS[dimension]).join("×")}个数`, grouped.size, "个", [], undefined, `选定范围内按${request.by.map((dimension) => GROUP_NOUNS[dimension]).join("、")}分组后的不同取值个数（去重计数）`);
+      // 任一分组维度没有取值的明细（如没填优惠）不算一个对象，只在定义里注明。
+      if (request.by?.length && cells.length) {
+        const nouns = request.by.map((dimension) => GROUP_NOUNS[dimension]);
+        const named = [...grouped.keys()].filter((key) => !(JSON.parse(key) as Array<string | null>).includes(null)).length;
+        add(f, "distinct_count", `${nouns.join("×")}个数`, named, "个", [], undefined, `选定范围内按${nouns.join("、")}分组后的不同取值个数（去重计数）${named < grouped.size ? `；${nouns.join("或")}未填的明细不计入` : ""}`);
+      }
     } else if (request.method === "compare" || request.method === "scan" && request.reference) {
       if (!request.reference) throw analysisArgumentsInvalid("请补充 reference 参照范围，再执行对照");
       const by = ordered([...internalBy, ...(request.method === "scan" ? scanBy : [])]); const target = await load(request.scope, by); const reference = await load(request.reference, by);

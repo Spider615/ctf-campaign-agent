@@ -260,7 +260,8 @@ function deriveFigures(input: PlanAnswerInput, factsById: Map<string, AnalysisFa
       if (rows.length) return { targetLabel: scopeLabel(node.target, node.reference), referenceLabel: scopeLabel(node.reference, node.target), rows };
     }
     if (node.op === "measure") {
-      const metric = bound.find((claim) => claim.node === node.id)?.metric ?? node.metrics[0];
+      // 分组个数（distinct_count）只有总体一行，分组表改用同一节点上结论引用的其他指标。
+      const metric = bound.filter((claim) => claim.node === node.id).map((claim) => claim.metric).find((id) => id !== "distinct_count") ?? node.metrics[0];
       // 分组汇总：按所问指标列出各组（从高到低），每组一行；没有分组时列出各指标的总体值。
       const grouped = result!.rows.filter((row) => row.metric === metric && row.role === "value" && Object.keys(row.key).length).map((row) => ({ row, fact: factsById.get(row.factId) })).filter((item): item is { row: NodeRow; fact: AnalysisFact } => item.fact !== undefined && item.fact.value !== null);
       if (grouped.length >= 2) {
@@ -321,13 +322,15 @@ function citedEvidence(evidence: AnalysisEvidence, cited: Iterable<string>): Ana
 
 // ---- 组装 ----
 const toClaim = (claim: BoundClaim): PlanAnswerClaim => ({ text: claim.rendered, factIds: [...claim.factIds], confidence: claim.confidence });
+// 主结论另带重点数字，界面放在最上面；发现不放大，免得满屏都是大数字。
+const toHeadline = (claim: BoundClaim): PlanAnswerClaim => ({ ...toClaim(claim), ...(claim.keyFigure ? { keyFigure: { ...claim.keyFigure } } : {}) });
 
 export function assemblePlanAnswer(input: PlanAnswerInput): PlanAnswer {
   const { binding, execution } = input;
   const bound = [...(binding.headline ? [binding.headline] : []), ...binding.claims];
   const { definitions, assumptions } = collectDefinitions(bound, execution.evidence, input.capabilities);
   const factsById = new Map(execution.evidence.facts.map((fact) => [fact.id, fact]));
-  const headline = binding.headline ? toClaim(binding.headline) : fallbackHeadline(input, factsById);
+  const headline = binding.headline ? toHeadline(binding.headline) : fallbackHeadline(input, factsById);
   const status: PlanAnswer["status"] = !headline ? "unavailable" : !binding.headline || input.droppedNodes.length || binding.dropped.length ? "partial" : "answered";
   const chartPlan = deriveChart(input, factsById);
   const figures = deriveFigures(input, factsById);
@@ -362,7 +365,13 @@ function claimOf(value: unknown, name: string, factIds: Set<string>): PlanAnswer
   if (value.confidence !== "kept" && value.confidence !== "flipped" && value.confidence !== "unchecked") fail(`${name}的可信度不正确`);
   const ids = strings(value.factIds, `${name}的事实编号`);
   for (const id of ids) if (!factIds.has(id)) fail(`${name}引用了不存在的事实 ${id}`);
-  return { text: value.text, factIds: ids, confidence: value.confidence };
+  let keyFigure: PlanAnswerClaim["keyFigure"];
+  if (value.keyFigure !== undefined) {
+    const figure = value.keyFigure;
+    if (!isRecord(figure) || typeof figure.value !== "string" || typeof figure.factId !== "string" || !ids.includes(figure.factId)) fail(`${name}的重点数字格式不正确`);
+    keyFigure = { value: figure.value, factId: figure.factId };
+  }
+  return { text: value.text, factIds: ids, confidence: value.confidence, ...(keyFigure ? { keyFigure } : {}) };
 }
 function chartOf(value: unknown, factIds: Set<string>): ResolvedVisualization {
   if (!isRecord(value)) fail("图表格式不正确");

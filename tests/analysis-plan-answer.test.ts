@@ -188,3 +188,11 @@ test("主结论绑定分组汇总时，关键数据表和图按分组从高到�
   assert.equal(answer.chart?.kind, "bar");
   assert.deepEqual(answer.chart?.categories.map((item) => item.label), ["东区/A区", "南区/B区"]);
 });
+
+test("主结论是分组个数时，关键数据表按同一节点上结论引用的指标列出各组", () => {
+  const m: PlanNode = { id: "m", op: "measure", scope: scope(), by: ["district"], metrics: ["orders"] };
+  const exec = build([[m, [{ key: {}, metric: "distinct_count", factId: "n", role: "value" }, { key: { district: "南区/B区" }, metric: "orders", factId: "g1", role: "value" }, { key: { district: "东区/A区" }, metric: "orders", factId: "g2", role: "value" }]]], [fact("n", 2, "个", [], "distinct_count"), fact("g1", 10, "单", ["o1"], "orders"), fact("g2", 30, "单", ["o2"], "orders")]);
+  const answer = assemblePlanAnswer(input(exec, binding({ headline: bound("m", ["n"], "共 2 个分区", { metric: "distinct_count", assert: "value" as never }), claims: [bound("m", ["g2"], "东区/A区最多", { metric: "orders", select: { district: "东区/A区" }, assert: "largest" })] })));
+  assert.equal(answer.figures?.targetLabel, "单数");
+  assert.deepEqual(answer.figures?.rows.map((item) => item.label), ["东区/A区", "南区/B区"]);
+});

@@ -124,3 +124,13 @@ test("历史消息用 PlanAnswerView 渲染 v3 答案", async (t) => {
   const html = renderToStaticMarkup(provider(createElement(HistoryMessageView, { message: { id: "m", role: "assistant", text: "", createdAt: "2026-10-18T00:00:00Z", status: "done", answer }, busy: false, onRetry() {} })));
   assert.match(html, /data-plan-answer/); assert.match(html, /甲店领先/);
 });
+
+test("主结论带重点数字时放在答案最上面单独放大，句子紧跟在下面", async (t) => {
+  const base = simulatedPlanAnswer(); const factId = base.evidence.facts[0].id;
+  const html = await render(t, { ...base, headline: { text: "8月有成交的活动共442个", factIds: [factId], confidence: "kept", keyFigure: { value: "442个", factId } } });
+  const figure = html.indexOf("data-plan-key-figure"); const sentence = html.indexOf("data-plan-headline");
+  assert.ok(figure >= 0 && figure < sentence, "重点数字在主结论句子之前");
+  assert.match(html, /data-plan-key-figure[^>]*text-\[32px\][^>]*>442个</);
+  const plain = await render(t, { ...base, headline: { text: "甲店领先", factIds: [factId], confidence: "kept" } });
+  assert.doesNotMatch(plain, /data-plan-key-figure/);
+});
