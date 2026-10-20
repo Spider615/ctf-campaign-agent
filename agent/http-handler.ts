@@ -13,7 +13,7 @@ import type { PlanAnswer } from "../app/lib/analytics/analysis-v2-types.ts";
 import { isDatabaseExplainRequest, type AnalyticsDatabase } from "../app/lib/analytics/database.ts";
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
-import { InsightRequestError, parseInsightRequest, type InsightGraphService } from "./insight-graph.ts";
+import type { InsightGraphService } from "./insight-graph.ts";
 import type { InsightAskRunner } from "./insight-ask.ts";
 import { parseAskBody } from "../app/lib/insight/ask.ts";
 
@@ -72,24 +72,21 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlan
     if (isAttachment) return attachmentHandler!(request, response);
     if (isInsight) {
       if (!insight) return send(response, 503, { error: "历史数据库尚未启用，洞察图谱暂不可用" });
-      let parsed;
-      try { parsed = parseInsightRequest(new URL(request.url ?? "", "http://agent").searchParams); }
-      catch (error) { return send(response, 400, { error: error instanceof InsightRequestError ? error.message : "洞察请求不正确" }); }
-      // 图谱按请求缓存，断开连接也让计算跑完，下次直接命中。
-      try { return send(response, 200, await insight.graph(parsed)); }
+      // 图谱只有一张，算好后缓存；断开连接也让计算跑完，下次直接命中。
+      try { return send(response, 200, await insight.graph()); }
       catch (error) { logger.error(`[insight] 计算失败：${error instanceof Error ? error.message : error}`); return send(response, 502, { error: "洞察图谱暂时算不出来，请稍后重试" }); }
     }
     if (isInsightAsk) {
       if (!insight || !insightAsk) return send(response, 503, { error: "历史数据库尚未启用，图谱问答暂不可用" });
       const controller = new AbortController();
       response.on("close", () => { if (!response.writableEnded) controller.abort(); });
-      let parsed; let body;
-      try { parsed = parseInsightRequest(new URL(request.url ?? "", "http://agent").searchParams); body = parseAskBody(await readJson(request)); }
+      let body;
+      try { body = parseAskBody(await readJson(request)); }
       catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "请求不正确" }); }
       try {
         // 图谱命中缓存，问答只读已算好的内容。
-        const graph = await insight.graph(parsed);
-        return send(response, 200, await insightAsk({ ...body, request: parsed }, graph, controller.signal));
+        const graph = await insight.graph();
+        return send(response, 200, await insightAsk(body, graph, controller.signal));
       } catch (error) {
         if (controller.signal.aborted || isTurnCancelled(error)) return;
         logger.error(`[insight] 问答失败：${error instanceof Error ? error.message : error}`);

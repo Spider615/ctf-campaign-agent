@@ -3,8 +3,9 @@
 import { MessagesSquare, Network } from "lucide-react";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { historyConversation } from "../../lib/client/history-conversation";
-import { focusSearch, parseFocus, type InsightFocus } from "../../lib/insight/context";
-import { INSIGHT_DEFAULT_REQUEST, type InsightDimensionId } from "../../lib/insight/types";
+import { parseSelection, selectionSearch, type InsightFocus } from "../../lib/insight/context";
+import type { InsightSelection } from "../../lib/insight/paths";
+import type { InsightNodeId } from "../../lib/insight/types";
 import { InsightWorkspace } from "../insight/insight-workspace";
 import { HistoryConversation } from "./history-conversation";
 
@@ -24,9 +25,10 @@ const subscribeLocation = (listener: () => void) => {
 };
 const locationSearch = () => window.location.search;
 const serverSearch = () => "";
-function writeUrl(mode: AnalysisMode, focus: InsightFocus) {
-  // 问答模式也带上洞察的选中状态，切回洞察时连线还在。
-  const search = `mode=${mode}&${focusSearch(focus)}`;
+function writeUrl(mode: AnalysisMode, selection: InsightSelection | null) {
+  // 问答模式也带上洞察的选中状态，切回洞察时选中的节点、连线还在。
+  const rest = selectionSearch(selection);
+  const search = `mode=${mode}${rest ? `&${rest}` : ""}`;
   window.history.replaceState(window.history.state, "", `/analysis?${search}`);
   for (const listener of locationListeners) listener();
 }
@@ -39,24 +41,22 @@ export function AnalysisModes() {
   const params = new URLSearchParams(search); const urlMode = params.get("mode");
   // URL 没指定模式时：当前对话已有内容进问答，否则进洞察。
   const mode: AnalysisMode = urlMode === "insight" || urlMode === "qa" ? urlMode : hasMessages ? "qa" : "insight";
-  const focus = parseFocus(search) ?? INSIGHT_DEFAULT_REQUEST;
+  const selection = parseSelection(search);
   const [askFocus, setAskFocus] = useState<InsightFocus | null>(null);
   const [draft, setDraft] = useState<{ text: string; nonce: number } | null>(null);
-  const [highlight, setHighlight] = useState<InsightDimensionId | null>(null);
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   // 洞察第一次打开才去算图谱；之后一直挂着，切回来不用重算。用渲染期派生 state 记住「看过」，不在 effect 里补。
   const [visitedInsight, setVisitedInsight] = useState(false);
   if (hydrated && mode === "insight" && !visitedInsight) setVisitedInsight(true);
   const nonce = useRef(0);
 
-  const switchTo = (next: AnalysisMode) => { writeUrl(next, focus); if (next === "qa") setHighlight(null); };
-  const changeFocus = (next: InsightFocus) => { setHighlight(null); writeUrl("insight", next); };
+  const switchTo = (next: AnalysisMode) => writeUrl(next, selection);
+  const changeSelection = (next: InsightSelection | null) => writeUrl("insight", next);
   // 从洞察带着范围去问答、去建活动时开一个新对话：不把这次的范围和问题混进最近那条旧对话。
   // 当前对话还是空的就直接用它，不多留一条空对话。
   const freshConversation = () => { if (historyConversation.snapshot().length || historyConversation.campaignId()) historyConversation.newConversation(); };
-  const ask = (next: InsightFocus) => { freshConversation(); setAskFocus(next); switchTo("qa"); };
-  const startDraft = (text: string) => { freshConversation(); nonce.current += 1; setDraft({ text, nonce: nonce.current }); switchTo("qa"); };
-  const locate = (dimension: InsightDimensionId) => { const next: InsightFocus = { ...focus, dimension }; delete next.value; setHighlight(dimension); writeUrl("insight", next); };
+  const askQa = (question: string, focus: InsightFocus | null) => { freshConversation(); setAskFocus(focus); nonce.current += 1; setDraft({ text: question, nonce: nonce.current }); switchTo("qa"); };
+  const locate = (id: InsightNodeId) => writeUrl("insight", { kind: "node", id });
 
   const keyDown = (event: React.KeyboardEvent, index: number) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -76,7 +76,7 @@ export function AnalysisModes() {
       <p className="hidden text-[12px] text-[#7187a1] sm:block">{active === "insight" ? "没想好问什么？先看哪些因素和活动表现有关" : "有具体问题，直接问小福"}</p>
     </div>
     <div id="mode-panel-insight" role="tabpanel" aria-labelledby="mode-tab-insight" hidden={active !== "insight"} className="min-h-0 flex-1 flex-col data-[on=true]:flex" data-on={active === "insight"}>
-      {visitedInsight ? <InsightWorkspace focus={focus} onFocusChange={changeFocus} highlight={highlight} onAsk={ask} onDraft={startDraft} onAskQa={(question, next) => { freshConversation(); setAskFocus(next); nonce.current += 1; setDraft({ text: question, nonce: nonce.current }); switchTo("qa"); }} /> : null}
+      {visitedInsight ? <InsightWorkspace selection={selection} onSelect={changeSelection} onAskQa={askQa} /> : null}
     </div>
     <div id="mode-panel-qa" role="tabpanel" aria-labelledby="mode-tab-qa" hidden={active !== "qa"} className="min-h-0 flex-1" style={{ "--workspace-h": "100%" } as React.CSSProperties}>
       <HistoryConversation embedded insightFocus={askFocus} onClearFocus={() => setAskFocus(null)} draft={draft} onLocate={locate} />

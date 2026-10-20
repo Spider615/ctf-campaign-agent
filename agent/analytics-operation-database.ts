@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import mysql from "mysql2/promise";
 import { TurnCancelledError, throwIfTurnCancelled } from "../app/lib/cancellation.ts";
@@ -13,7 +13,8 @@ import { ANALYSIS_DIMENSIONS, ANALYSIS_FILTER_DIMENSIONS, SEMANTIC_BASELINES, SE
 
 export type MysqlAnalysisConfig = { host: string; port: number; user: string; password: string; database: string; table: string; evidenceDir: string };
 // 单次完整查询保留资源上限；客户端额外留传输余量，避免合法慢查询清空整轮证据。
-export const ANALYSIS_DATABASE_QUERY_TIMEOUT_MS = 60000;
+// 一条超时会让整个分析会话失效、整轮回答作废。本地 16GB 机器内存吃紧时，平时 10 秒的查询偶尔要 60 秒以上，所以给 3 分钟。
+export const ANALYSIS_DATABASE_QUERY_TIMEOUT_MS = 180000;
 const ANALYSIS_DATABASE_IO_TIMEOUT_MS = ANALYSIS_DATABASE_QUERY_TIMEOUT_MS + 5000;
 
 type Dependencies = { connect: () => Promise<HistoryConnection>; pruneSource?: (connection: HistoryConnection, table: string, columns: readonly string[]) => Promise<string>; queryTimeoutMs?: number };
@@ -42,6 +43,21 @@ const lengthMeasurable = (dimension: AnalysisDimension) => sourceOf(dimension)?.
 const DIMENSION_VALUE_LISTS: readonly AnalysisDimension[] = ["dayType", "festival", "region", "area", "district", "cityTier", "storeType", "storeGroup", "sameStore", "shopType", "storeComposition", "imageLevel", "salesLevel", "storeLevel", "retailExperience", "storeArea", "storeAge", "category", "productGroup", "material", "materialGroup", "priceBand", "seriesGroup", "keySeries", "campaignType", "memberFlag", "offer"];
 const MAX_DIMENSION_VALUES = 600;
 const dimensionValueCache = new Map<string, Map<string, string[]>>();
+// 维度取值的磁盘缓存：放在证据目录旁（同级的「目录名-dimension-values」），不混进证据文件；文件名是数据版本的哈希。读写失败都当没有缓存。
+const dimensionValueFile = (evidenceDir: string, key: string) => join(dirname(evidenceDir), `${basename(evidenceDir)}-dimension-values`, `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.json`);
+export const clearDimensionValueCacheForTest = () => dimensionValueCache.clear();
+async function readDimensionValues(evidenceDir: string, key: string): Promise<Map<string, string[]> | undefined> {
+  try {
+    const saved = JSON.parse(await readFile(dimensionValueFile(evidenceDir, key), "utf8")) as { key?: unknown; values?: unknown };
+    if (saved.key !== key || !saved.values || typeof saved.values !== "object") return undefined;
+    const entries = Object.entries(saved.values as Record<string, unknown>).filter((e): e is [string, string[]] => Array.isArray(e[1]) && e[1].every((v) => typeof v === "string"));
+    return new Map(entries);
+  } catch { return undefined; }
+}
+async function writeDimensionValues(evidenceDir: string, key: string, values: Map<string, string[]>): Promise<void> {
+  const file = dimensionValueFile(evidenceDir, key);
+  try { await mkdir(dirname(file), { recursive: true, mode: 0o700 }); await writeFile(`${file}.${process.pid}.tmp`, JSON.stringify({ key, values: Object.fromEntries(values) }), { mode: 0o600 }); await rename(`${file}.${process.pid}.tmp`, file); } catch { /* 写不了就下次再查 */ }
+}
 const metricColumns = { amount: "实际销售金额", quantity: "销售件数", grams: "销售金重", profit: "零售毛利", tag_amount: "销售牌仔价" } as const;
 type GroupDimension = AnalysisAggregateQuery["by"][number];
 type LengthField = GroupDimension | "saleNo";
@@ -230,23 +246,26 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
       });
       const capabilities = availableCapabilities(columns, coverage.currency, coverage.period);
       // 取值不多的维度读出全部实际取值：模型写筛选值时照抄，校验时据此拦截写错的值。
-      // 一次 UNION 查询读完，同一张表同一行数在进程内只读一次。
+      // 只扫一遍源表：先按全部维度的组合去重（几万行），再在去重结果上逐维取值；分维度各扫一遍视图要 8 分钟。
+      // 同一张表同一行数在进程内只读一次，并按数据版本落盘，重启后不再查库。
       const catalog = capabilities.dimensionCatalog ?? [];
       const listed = catalog.filter((item) => DIMENSION_VALUE_LISTS.includes(item.id));
       if (listed.length) {
         const cacheKey = `${config.database}.${config.table}:${coverage.rows}:${coverage.period.start}:${coverage.period.end}`;
-        let cached = dimensionValueCache.get(cacheKey);
+        let cached = dimensionValueCache.get(cacheKey) ?? await readDimensionValues(config.evidenceDir, cacheKey);
         if (!cached) {
           const relation = dependencies.pruneSource ? await resource(() => dependencies.pruneSource!(connection!, config.table, listed.flatMap((item) => sourceColumns(sourceOf(item.id)!)))) : quoted(config.table);
-          // 每个维度各取去重值，合并成一条查询；超过上限的维度不列取值。
-          const parts = listed.map((item, index) => `(SELECT '${item.id}' AS d, v FROM (SELECT CAST(${dimensionExpression(item.id)} AS CHAR) AS v FROM ${relation} GROUP BY v LIMIT ${MAX_DIMENSION_VALUES + 1}) AS t${index})`);
-          const sql = `SELECT /*+ MAX_EXECUTION_TIME(${ANALYSIS_DATABASE_QUERY_TIMEOUT_MS}) */ d, v FROM (${parts.join(" UNION ALL ")}) AS dimension_values`;
+          // 超过上限的维度不列取值。
+          const columns = listed.map((item, index) => `CAST(${dimensionExpression(item.id)} AS CHAR) AS c${index}`);
+          const parts = listed.map((item, index) => `(SELECT '${item.id}' AS d, c${index} AS v FROM combos GROUP BY c${index} LIMIT ${MAX_DIMENSION_VALUES + 1})`);
+          const sql = `WITH combos AS (SELECT /*+ MAX_EXECUTION_TIME(${ANALYSIS_DATABASE_QUERY_TIMEOUT_MS}) */ ${columns.join(", ")} FROM ${relation} GROUP BY ${listed.map((_, index) => `c${index}`).join(", ")}) SELECT d, v FROM (${parts.join(" UNION ALL ")}) AS dimension_values`;
           const [result] = await resource(() => connection!.execute(sql));
           const found = new Map<string, string[]>();
           for (const row of rows(result)) { const value = row.v; if (typeof value !== "string" || !value.trim()) continue; const list = found.get(String(row.d)) ?? []; list.push(value); found.set(String(row.d), list); }
           cached = new Map([...found].filter(([, values]) => values.length <= MAX_DIMENSION_VALUES).map(([id, values]) => [id, values.sort()]));
-          dimensionValueCache.set(cacheKey, cached);
+          await writeDimensionValues(config.evidenceDir, cacheKey, cached);
         }
+        dimensionValueCache.set(cacheKey, cached);
         for (const item of listed) { const values = cached.get(item.id); if (values) item.values = [...values]; }
       }
       const prepareRelation = async (requiredColumns: readonly string[], by: GroupDimension[], querySignal?: AbortSignal) => {

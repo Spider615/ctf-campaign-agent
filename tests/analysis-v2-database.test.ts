@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMysqlAnalyticsDatabase, HISTORY_COLUMNS, type HistoryConnection } from "../agent/analytics-database.ts";
 import type { AnalysisAggregateQuery } from "../app/lib/analytics/analysis-v2-types.ts";
+import { createMysqlAnalysisProvider } from "../agent/analytics-operation-database.ts";
 
 const query: AnalysisAggregateQuery = { scope: { period: { start: "2025-08-01", end: "2025-08-31" }, population: "sales", filters: {} }, by: ["store"] };
 function fixture(t: { after(fn: () => void): void }, columns: string[] = HISTORY_COLUMNS) {
@@ -274,4 +276,36 @@ test("主动关闭立即结束挂起的数据库读取，而不是等待资源�
 test("连接函数同步失败也不会泄露私有凭据", async (t) => {
   const f = fixture(t); const { createMysqlAnalysisProvider } = await provider();
   await assert.rejects(createMysqlAnalysisProvider(f.config, { connect: () => { throw new Error("private-user private-password"); } }).open(), (error: unknown) => error instanceof Error && !error.message.includes("private-"));
+});
+
+test("维度取值只扫一遍源表，按数据版本落盘，换进程直接读盘", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ctf-dimension-values-"));
+  const statements: string[] = [];
+  const columns = ["_import_id", "交易日期wid", "实际销售金额", "销售件数", "币种描述", "实体分店店号", "销售单号", "大区描述", "优惠小类"];
+  const connection: HistoryConnection = {
+    async query(sql) { statements.push(sql); return [sql.startsWith("SHOW COLUMNS") ? columns.map((Field) => ({ Field, Type: "varchar(64)" })) : [], []]; },
+    async execute(sql) {
+      statements.push(sql);
+      if (sql.includes("min_day")) return [[{ rows_count: 4, unique_rows: 4, min_day: "20250801", max_day: "20250831", currencies: 1, currency: "人民币", missing_currency: 0 }], []];
+      if (sql.includes("dimension_values")) return [[{ d: "region", v: "北区" }, { d: "region", v: "东区" }, { d: "offer", v: "一般開單" }], []];
+      return [[], []];
+    },
+    destroy() {},
+  };
+  const config = { host: "h", port: 3306, user: "u", password: "p", database: "db", table: "sales", evidenceDir: dir };
+  const open = async () => { const session = await createMysqlAnalysisProvider(config, { connect: async () => connection }).open(); const catalog = session.capabilities.dimensionCatalog ?? []; await session.close(); return catalog; };
+  try {
+    const first = await open();
+    const sql = statements.find((s) => s.includes("dimension_values"))!;
+    assert.match(sql, /^WITH combos AS \(SELECT .* FROM `sales` GROUP BY c0/);
+    assert.equal(sql.split("FROM `sales`").length - 1, 1, "源表只扫一遍");
+    assert.deepEqual(first.find((d) => d.id === "region")?.values, ["东区", "北区"]);
+    // 模拟重启：清掉进程内缓存后再开，不再发取值查询。
+    const { clearDimensionValueCacheForTest } = await import("../agent/analytics-operation-database.ts");
+    clearDimensionValueCacheForTest();
+    statements.length = 0;
+    const second = await open();
+    assert.equal(statements.filter((s) => s.includes("dimension_values")).length, 0);
+    assert.deepEqual(second.find((d) => d.id === "offer")?.values, ["一般開單"]);
+  } finally { await rm(dir, { recursive: true, force: true }); await rm(`${dir}-dimension-values`, { recursive: true, force: true }); }
 });

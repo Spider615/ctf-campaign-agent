@@ -95,16 +95,19 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 
 ### 智能洞察 `app/lib/insight/`
 
-`/analysis` 分「智能洞察 / 智能问答」两种模式（`app/components/analytics/analysis-modes.tsx`），模式和图上选中状态都存在 URL 里（`?mode=&metric=&offer=&category=&dim=`），两边一直挂载，切换只隐藏。设计见 `docs/superpowers/specs/2026-10-19-insight-graph-design.md`。
+`/analysis` 分「智能洞察 / 智能问答」两种模式（`app/components/analytics/analysis-modes.tsx`），模式和图上选中的节点、连线、来源筛选都存在 URL 里（`?mode=&node=` / `&edge=from>to` / `&source=`），两边一直挂载，切换只隐藏。设计见 `docs/superpowers/specs/2026-10-20-insight-drivers-design.md`（取代 10-19 那份的图谱部分）。
 
-- 数据流：页面 `GET /api/analytics/insight` → Agent `GET /insight/graph` → `agent/insight-graph.ts` 按「维度取值 × 日 × 活动/一般開單」查立方（默认源表 `sales_detail_202508`，`CTF_INSIGHT_TABLE` 可改；投影表缺回收金标识和 sku 年龄）→ `score.ts` 组装图谱。立方按优惠和货类缓存，切指标不重查；每组首次约 1 分钟，Agent 启动时预热默认图。
-- 纯函数：`metrics.ts`（目标指标目录，7 族，`MISSING_METRICS` 是缺数据的指标）、`ontology.ts`（维度分组、待采集项、分解与取舍）、`score.ts`（连线强度、依据、异常、推荐，数字全由代码算，文字模板拼）、`context.ts`（问答上下文、建活动草稿话、回答定位到图上）。
-- 每个节点带 `source`：`field` 原始字段、`derived` 数据计算（这两类是数据里真实存在的）、`inferred` AI 判断（取值来自数据，含义或归类是 AI 解读，必须写 `judgement`）、`suggested` AI 补全待采集、`grouping` 分组。维度的来源在 `ontology.ts` 的 `origin`，语义层标了 assumption 的自动算 AI 判断；指标的在 `metrics.ts` 的 `INSIGHT_METRIC_SOURCES`。
-- 点击高亮由 `highlight.ts` 的 `highlightOf` 算：维度高亮到中心的路径，并按 `graph.influence`（同一份立方对每个指标算的强度）列出它明显影响的指标；待采集项按 `INSIGHT_GROUPS[*].missing[*].affects`（AI 推测）高亮。每条线都能点：中心—组等于点组，组—待采集项等于点该项。
-- 图谱问答（侧栏「问这张图」，`insight-chat.tsx` → `POST /api/analytics/insight/ask` → `agent/insight-ask.ts`）：一次模型调用、只开放 `submit_insight_answer`，依据只有 `ask.ts` 的 `askContext`（图谱概况 + 选中对象的依据、异常、推荐、取值表、来源和 AI 判断），不查库。回答里依据和用户原话之外的数字、乱码字符整句删掉（`checkAnswerNumbers`）；`highlights` 只保留图上有的节点 id，界面加「问」标记。要新口径的问题引导去智能问答。从洞察去问答（问一问、去智能问答、按这个建活动）都开新对话（当前对话为空时复用），不混进最近的旧对话。
-- 每克让利按日对齐（`alignedGive`），剔除金价逐日波动；样本够要求活动侧 ≥ 500 行、日均 ≥ 5 家店、对照侧 ≥ 500 行。推荐只写「8 月里……」，不写预测。
-- 「按这个建活动」只把草稿话填进问答输入框，不写事实层；草稿话必须路由到执行（测试锁住）。「问一问」把 `focusContext` 追加进请求 `context`，不改问题原文；`focusContext` 要用问答语义层认得的写法（没有「克减类」这个优惠名）。
-- 加指标：`types.ts` 的 `INSIGHT_METRIC_IDS` + `metrics.ts` 的 `INSIGHT_METRICS` + `context.ts` 的 `QA_METRIC`（后两个是穷举 Record）；需要新列时改 `buildInsightCubeSql` 和 `InsightCell`。加维度：`INSIGHT_DIMENSION_IDS` + `ontology.ts` 的 `INSIGHT_DIMENSIONS`；语义层已有的维度直接复用来源。
+- 图谱只有一张：「销售额、毛利、销量受哪些因素影响」，四列从左往右是细项因素 → 因素 → 指标拆解 → 指标，节点固定 23 个（`types.ts` 的 `INSIGHT_NODE_IDS`）。没有指标、优惠、货类筛选。
+- 数据流：页面 `GET /api/analytics/insight` → Agent `GET /insight/graph` → `agent/insight-graph.ts` 发 8 条聚合查询（门店日面板、门店属性、货类、逐日、一般足金类按日按优惠组、15–25 克逐克件数、以旧换新按单关联、范围）→ `drivers.ts` 的 `buildDriverGraph`。默认源表 `sales_detail_202508`，`CTF_INSIGHT_TABLE` 可改。查询结果按数据版本落盘（`CTF_INSIGHT_CACHE_DIR`，默认 `~/Library/Application Support/ctf-campaign-agent/insight-cache`），Agent 启动时 `warm()` 预热：第一次约 2 分钟，之后重启只读盘、20–30 秒内算好。
+- 纯函数：`stats.ts`（最小二乘、门店 + 日期双向固定效应、同店同日去均值回归、属性独有贡献、对数方差拆分，不引数值库）、`drivers.ts`（统计量 → 节点、连线、依据；图上数字全部由这里的模板填）、`paths.ts`（上下游、到指标的完整链路、高亮）、`context.ts`（URL、问答上下文、问答回答定位到图上节点）、`ask.ts`（图谱问答的依据材料和数字核对）。
+- 强弱用解释度分数：每条线带 `score`（0–100，这一因素能解释结果差异的百分比，门店属性用多变量独有贡献、日期用逐日单变量解释度、活动用去掉门店和日期后的偏 R²），档位由分数换算（≥ 10 强、2–10 中、< 2 弱，`stats.ts` 的 `strengthOf`），图上线越粗分数越高、线上标数字。活动内部的机制（每克让多少、门槛、以旧换新、新增还是挪动、力度和客单）测不出解释度，带 `effect`（带单位的效应值和各自门槛），不和分数比大小。恒等式线是 `id`，缺数据线是 `missing`，两者都没有分数。
+- 每条线三段（2026-10-19 会议定的）：`basis` 依据、`anomalies` 异常、`recommendation` 推荐（给不出时 `noRecommendation` 写原因），全部由 `drivers.ts` 从数据算出来拼字。点线时右栏按这三段展示；点节点时依据是节点本身的事实，异常、推荐汇总相连的线。
+- 每个节点带 `source`：`field` 数据表字段、`derived` 数据计算（这两类是数据里真实存在的）、`grouping` AI 归类、`inferred` AI 判断（都必须写 `judgement`，测试锁住）、`suggested` AI 提出待采集。每条线带 `basis`（具体数字），来源说法在 `INSIGHT_EDGE_SOURCE`。
+- 优惠按名称归组（克减 50 / 克减 30 / 金色星期二 / 一般開單 / 其他，名称里的「克减」兼容繁体）是 AI 归类；「全国克减铺开日」取活动计价金超过一般開單、之后每天都超过的第一天。
+- 交互：悬停节点或线只亮上下游；点节点看来源、依据、到指标的每条链路（每段标强中弱）；点线看两者的依据、来源和经过它的全部链路，注明各段不能相乘；点「来源」图例只亮这一类。连线点击按离指针最近的线判定（扇出处线挨得近，不用透明粗线）。
+- 图谱问答（侧栏「问这张图」，`insight-chat.tsx` → `POST /api/analytics/insight/ask` → `agent/insight-ask.ts`）：一次模型调用、只开放 `submit_insight_answer`，依据只有 `askContext`（全部连线依据 + 选中对象的来源、链路、相连节点），不查库。依据和用户原话之外的数字、乱码字符整句删掉（`checkAnswerNumbers`）；`highlights` 只保留图上有的节点 id。
+- 从洞察去问答（「去智能问答查更细的数据」）开新对话（当前对话为空时复用），`focusContext` 写明选中的节点或连线及其依据，不改问题原文。问答回答用到的语义层维度能对上图上节点时，消息下给「在洞察图上看」（`locateAnswer`）。
+- 加节点：`types.ts` 的 `INSIGHT_NODE_IDS` 和 `INSIGHT_NODE_LABEL`、`drivers.ts` 里的节点和连线；需要新数据时在 `insightQueries` 加一条查询、`toDriverData` 加转换。测试用 `tests/helpers/insight-fixture.ts` 的合成数据，不需要数据库。
 
 ### Agent 工具 `app/lib/agent/`
 

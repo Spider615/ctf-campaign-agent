@@ -1,57 +1,78 @@
-// 智能洞察关系图谱的数据结构。图谱由 Agent 服务离线算好，页面只读不算。
-// 设计见 docs/superpowers/specs/2026-10-19-insight-graph-design.md。
+// 智能洞察：指标影响因素图谱的数据结构。图谱由 Agent 服务算好，页面只读不算。
+// 设计见 docs/superpowers/specs/2026-10-20-insight-drivers-design.md。
 
-export const INSIGHT_DIMENSION_IDS = ["materialGroup", "category", "priceBand", "keySeries", "offerDepth", "itemWeight", "storeArea", "salesLevel", "cityTier", "shopType", "region", "storeAge", "storeType", "festival", "dayType"] as const;
-export type InsightDimensionId = typeof INSIGHT_DIMENSION_IDS[number];
-export type InsightGroupId = "product" | "param" | "store" | "time" | "people";
+// 节点从左到右四列：细项因素 → 因素 → 指标拆解 → 指标。
+export const INSIGHT_NODE_IDS = [
+  "image", "shoptype", "areaage", "region", "nature",
+  "qixi", "weekday",
+  "depth", "threshold", "tradein", "shift",
+  "gold", "member",
+  "store", "day", "promo", "mix",
+  "orders", "aov", "gm",
+  "qty", "sales", "gp",
+] as const;
+export type InsightNodeId = typeof INSIGHT_NODE_IDS[number];
+// 节点的固定名字。「七夕」是 8 月数据里的节日，换了数据由 drivers.ts 按日历表里的节日改写。
+export const INSIGHT_NODE_LABEL: Record<InsightNodeId, string> = {
+  image: "商圈形象级别", shoptype: "店型", areaage: "面积、店龄、城市", region: "大区 / 区域", nature: "自营 / 加盟",
+  qixi: "七夕", weekday: "星期", depth: "每克让多少", threshold: "克重门槛", tradein: "以旧换新", shift: "新增还是挪动",
+  gold: "每日金价", member: "新老会员", store: "门店本身", day: "日期和活动", promo: "活动和力度", mix: "货品结构",
+  orders: "订单数", aov: "客单价", gm: "毛利率", qty: "销量", sales: "销售额", gp: "毛利",
+};
+export type InsightColumn = 0 | 1 | 2 | 3;
+export type InsightSection = "门店" | "时间" | "活动" | "缺数据";
+export type InsightNodeKind = "leaf" | "factor" | "decomp" | "metric";
 
-export const INSIGHT_METRIC_IDS = ["give_per_gram", "lift_per_store_day", "penetration", "discount_rate", "margin_rate", "grams_per_item", "items_per_order", "amount_per_order", "trade_in_rate", "aged_share", "key_series_share", "return_rate"] as const;
-export type InsightMetricId = typeof INSIGHT_METRIC_IDS[number];
-export type InsightFamily = "卖得多" | "让得少" | "赚得多" | "买得大" | "换得多" | "去库存" | "留得住";
+// 强弱档：强、中、弱由解释度分数定；id 是恒等式；missing 是数据里没有、AI 推测的关系。
+export type InsightStrength = "strong" | "med" | "weak" | "id" | "missing";
+// 解释度分数（0–100）：这一因素能解释结果差异的百分比，有分数的线用同一把尺子，可以直接比大小。
+// 档位由分数换算：≥ 10 强，2–10 中，< 2 弱。怎么算写在 measure 里。
+// 活动机制（每克让多少、门槛、以旧换新、新增还是挪动、力度和客单）另带 effect：一个带单位的效应值，帮业务看懂差多少。
+// 拆解线（恒等式）也有分数：门店之间结果的差异多少来自这一项；缺数据的线没有分数。
+export type InsightScore = { value: number; measure: string };
+export type InsightEffect = { text: string; measure: string };
 
-// real 实线；inferred 实线带「推断」；missing 虚线黄框（待采集）。
-export type InsightStatus = "real" | "inferred" | "missing";
-
-// 节点的来源：前两种是数据里真实存在的，后两种是 AI 判断的。图上按这四类上色，侧栏写明字段和判断内容。
-// field 原始字段：取值直接来自数据表的某一列。
-// derived 代码计算：由几列按固定公式算出来（如克重 ÷ 件数分段），公式写在 how 里。
-// inferred AI 判断：取值来自数据，但含义或归类是 AI 的解读，没经过业务确认，判断内容写在 judgement 里。
-// suggested AI 补全：数据里没有，AI 认为应该有，需要另外采集。
-// grouping 分组：只是把维度归成几类，本身不是数据。
-export type InsightSourceKind = "field" | "derived" | "inferred" | "suggested" | "grouping";
-export type InsightSource = { kind: InsightSourceKind; columns: string[]; how: string; judgement?: string };
-export const INSIGHT_SOURCE_LABEL: Record<InsightSourceKind, string> = { field: "数据原始字段", derived: "数据计算", inferred: "AI 判断", suggested: "AI 补全·待采集", grouping: "分组" };
+// 节点的来源。field 数据表里本来就有；derived 按固定公式算出；grouping AI 归类；
+// inferred 取值来自数据，概念或解读是 AI 定的；suggested 数据里没有、AI 认为该补。
+export type InsightSourceKind = "field" | "derived" | "grouping" | "inferred" | "suggested";
+export const INSIGHT_SOURCE_KINDS: readonly InsightSourceKind[] = ["field", "derived", "grouping", "inferred", "suggested"];
+export const INSIGHT_SOURCE_LABEL: Record<InsightSourceKind, { tag: string; name: string; desc: string }> = {
+  field: { tag: "字段", name: "数据表字段", desc: "数据表里本来就有，直接汇总" },
+  derived: { tag: "计算", name: "数据计算", desc: "按固定公式从字段算出来，没有解读" },
+  grouping: { tag: "AI 归类", name: "AI 归类", desc: "AI 把几个字段或取值归成一类" },
+  inferred: { tag: "AI 判断", name: "AI 判断", desc: "取值来自数据，但概念、对照组或解读是 AI 定的，待业务确认" },
+  suggested: { tag: "待采集", name: "AI 提出待采集", desc: "数据里没有，AI 认为应该补" },
+};
 export const isRealSource = (kind: InsightSourceKind) => kind === "field" || kind === "derived";
+export type InsightSource = { kind: InsightSourceKind; columns: string[]; how: string; judgement?: string };
 
-// 立方的一个格子：一个维度取值 × 一侧（活动 / 一般開單对照）× 一天，基础字段已在数据库汇总。
-export type InsightCell = {
-  value: string; side: "offer" | "base"; day: string;
-  rows: number; stores: number; amount: number; grams: number; quantity: number; tagAmount: number; profit: number;
-  orders: number; lines: number; tradeInOrders: number | null; agedAmount: number | null; keySeriesAmount: number; returnAmount: number;
+// 节点详情里的小表：第一行是表头。
+export type InsightTable = { head: string[]; rows: string[][] };
+export type InsightNode = {
+  id: InsightNodeId; column: InsightColumn; section?: InsightSection; kind: InsightNodeKind;
+  label: string; subtitle: string; strength?: InsightStrength; score?: InsightScore; effect?: InsightEffect;
+  source: InsightSource; paragraphs: string[]; table?: InsightTable; note?: string;
 };
-// 多个格子累加后的结果；门店数和订单数在格子内去重，跨格相加是近似，见 limitations。
-export type CellSum = Omit<InsightCell, "value" | "side" | "day"> & { days: number };
-
-export type InsightRequest = { metric: InsightMetricId; offer: string; category: string };  // offer 为「克减类」或具体优惠名
-export type InsightFact = { label: string; value: string };
-export type InsightRow = { value: string; offer: number | null; base: number | null; delta: number | null; rows: number; small: boolean };
+// 每条线三部分（2026-10-19 会议定的）：依据 basis（数据验证的关联）、异常 anomalies（特殊案例和数据里能看到的共同点）、
+// 推荐 recommendation（表现最好的取值和搭配；恒等式、缺数据或关系太弱时为 null，noRecommendation 写原因）。
 export type InsightEdge = {
-  dimension: InsightDimensionId; status: InsightStatus; strength: number | null; weak: boolean;
-  basis: string[]; anomalies: string[]; recommendation: string | null; draft: string | null; best: string | null; table: InsightRow[];
-};
-// affects：点这个节点时要高亮的节点和指标。维度的影响由数据算（graph.influence），待采集项的影响是 AI 推测。
-export type InsightAffects = { dimensions: InsightDimensionId[]; metrics: string[] };
-export type InsightNode = { id: string; kind: "metric" | "group" | "dimension" | "missing"; label: string; group?: InsightGroupId; status: InsightStatus; source: InsightSource; facts: InsightFact[]; note?: string; affects?: InsightAffects };
-export type InsightDecomposition = { label: string; offer: number | null; base: number | null; share: number | null };
-export type InsightGraph = {
-  schema: "insight-graph/v2"; datasetVersion: string; builtAt: string; request: InsightRequest;
-  metric: { id: InsightMetricId; label: string; unit: string; definition: string; status: InsightStatus; offer: number | null; base: number | null; delta: number | null };
-  nodes: InsightNode[]; edges: InsightEdge[]; decomposition: InsightDecomposition[]; limitations: string[];
-  // 每个维度对每个目标指标的关系强度（0–1），同一份数据算出；null 是这个指标在当前数据下算不了。
-  influence: Partial<Record<InsightDimensionId, Partial<Record<InsightMetricId, number | null>>>>;
+  from: InsightNodeId; to: InsightNodeId; strength: InsightStrength; score?: InsightScore; effect?: InsightEffect;
+  basis: string; anomalies: string[]; recommendation: string | null; noRecommendation?: string;
 };
 
-export const INSIGHT_SAMPLE_MIN_ROWS = 500;
-export const INSIGHT_DEFAULT_REQUEST: InsightRequest = { metric: "give_per_gram", offer: "克减类", category: "一般足金类" };
-export const INSIGHT_OFFER_CHOICES = ["克减类", "H-克减30元", "H-克减50元", "七夕克减50", "周末礼献克减30", "H-金色星期二", "H-定价类92折"] as const;
-export const INSIGHT_CATEGORY_CHOICES = ["一般足金类", "定价黄金类", "钻石类", "工艺金条/金章"] as const;
+export type InsightKpi = { id: "sales" | "gp" | "qty"; label: string; value: string; unit: string; detail: string };
+export type InsightGraph = {
+  schema: "insight-drivers/v2"; datasetVersion: string; builtAt: string;
+  scope: { period: string; rows: number; stores: number; note: string };
+  kpis: InsightKpi[]; nodes: InsightNode[]; edges: InsightEdge[]; summary: string[]; methods: Array<{ title: string; text: string }>;
+};
+
+export const INSIGHT_STRENGTH_LABEL: Record<InsightStrength, string> = { strong: "强", med: "中", weak: "弱", id: "拆解", missing: "缺数据" };
+export const INSIGHT_KIND_LABEL: Record<InsightNodeKind, string> = { leaf: "细项因素", factor: "因素", decomp: "指标拆解", metric: "指标" };
+export const INSIGHT_EDGE_SOURCE: Record<InsightStrength, string> = {
+  strong: "数据算出的关联；强、中、弱的分档是按解释比例定的",
+  med: "数据算出的关联；强、中、弱的分档是按解释比例定的",
+  weak: "数据算出的关联；强、中、弱的分档是按解释比例定的",
+  id: "定义（恒等式）；分数是对数方差拆分",
+  missing: "AI 推测，没有数据",
+};

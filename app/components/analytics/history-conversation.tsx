@@ -25,7 +25,7 @@ import { attachmentReferences, attachmentSubmission, postAttachmentStream, retry
 import { useAttachmentDraft } from "../attachments/use-attachments";
 import { useAttachmentAvailability } from "../attachments/use-attachment-availability";
 import { focusContext, focusLabel, type InsightFocus } from "../../lib/insight/context";
-import type { InsightDimensionId } from "../../lib/insight/types";
+import type { InsightNodeId } from "../../lib/insight/types";
 
 const prompts = [
   { title: "审视优惠方案", text: "帮我看看这档优惠方案，哪里还能改进？", icon: MessageCircle },
@@ -36,7 +36,7 @@ const now = () => performance.now();
 const noCampaign = () => null;
 
 // 嵌在「智能洞察 / 智能问答」工作台里时，由洞察传入当前看的范围、建活动草稿话和「在图上看」的回调。
-export type InsightLink = { insightFocus?: InsightFocus | null; onClearFocus?: () => void; draft?: { text: string; nonce: number } | null; onLocate?: (dimension: InsightDimensionId) => void };
+export type InsightLink = { insightFocus?: InsightFocus | null; onClearFocus?: () => void; draft?: { text: string; nonce: number } | null; onLocate?: (id: InsightNodeId) => void };
 
 export function HistoryConversation({ embedded = false, ...link }: InsightLink & { embedded?: boolean }) {
   const id = useSyncExternalStore(historyConversation.subscribe, historyConversation.activeId, historyConversation.serverActiveId);

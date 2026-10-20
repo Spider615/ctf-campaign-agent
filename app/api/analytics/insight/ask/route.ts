@@ -6,6 +6,6 @@ export function POST(request: Request) {
   return analyticsResponse(request, async () => {
     const body = await request.text();
     if (body.length > 20000) throw new Error("请求太大");
-    return askInsightGraph(new URL(request.url).searchParams, body, request.signal);
+    return askInsightGraph(body, request.signal);
   });
 }
