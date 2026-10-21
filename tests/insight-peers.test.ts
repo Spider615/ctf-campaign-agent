@@ -49,3 +49,15 @@ test("图谱：门店层面的线带同类店对比，离群店写进异常", ()
   for (const x of g.edges) if (x.peers) { assert.ok(x.peers.groups >= 1); assert.ok(x.peers.example.n >= 20); if (x.peers.verdict !== "works") assert.deepEqual(x.peers.laggards, []); }
   assert.equal(e("orders>sales").peers, undefined);
 });
+
+test("图上三步讲解：和三句结论一一对应，链路上的节点都在图上、相邻两点之间都有线", () => {
+  const g = fakeGraph();
+  assert.equal(g.stories.length, g.summary.length);
+  g.stories.forEach((s, i) => {
+    assert.equal(s.text, g.summary[i]); assert.ok(s.title.length <= 8, s.title);
+    for (const id of s.path) assert.ok(g.nodes.some((n) => n.id === id), id);
+    const ends = new Set(s.path.slice(1));
+    for (const id of s.path.slice(0, -1)) assert.ok(g.edges.some((e) => e.from === id && ends.has(e.to)), `${id} 没有连到链路上的下一站`);
+  });
+  for (const id of ["orders", "aov", "gm", "qty", "sales", "gp"]) assert.ok(g.nodes.find((n) => n.id === id)?.value, id);
+});

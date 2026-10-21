@@ -58,43 +58,43 @@ export function InsightChat({ graph, selection, onSelect, onHighlight, onAskQa, 
   };
   const stop = () => { active.current?.abort(); setInput((v) => v || turns.filter((t) => t.role === "user").at(-1)?.text || ""); };
 
-  return <section aria-label="针对图谱提问" className={`flex flex-col rounded-xl border border-[#c7ddff] bg-white ${fill ? "min-h-0 flex-1" : ""}`}>
+  return <section aria-label="针对图谱提问" className={`flex flex-col rounded-xl border border-[#e8dcc3] bg-white ${fill ? "min-h-0 flex-1" : ""}`}>
     <header className="flex items-center gap-2 border-b border-[#e4edf7] px-3 py-2.5">
-      <MessageCircle aria-hidden="true" className="size-4 text-[#247cff]" />
-      <h3 className="text-[13px] font-semibold text-[#27415f]">问这张图</h3>
+      <MessageCircle aria-hidden="true" className="size-4 text-[#a8823f]" />
+      <h3 className="text-[13px] font-semibold text-[#3a332c]">问这张图</h3>
       <span className="ml-auto text-[11px] text-[#8397af]">只依据图上算好的数据回答</span>
     </header>
     {turns.length ? <div ref={list} className={`space-y-3 overflow-y-auto overscroll-contain px-3 py-3 ${fill ? "min-h-0 flex-1" : "max-h-[420px]"}`} aria-live="polite">
-      {turns.map((t) => t.role === "user" ? <div key={t.id} className="ml-6 rounded-xl bg-[#eaf4ff] px-3 py-2 text-[13px] text-[#174e96]">
-        <button type="button" onClick={() => onSelect(t.selection)} className="mb-0.5 block text-[11px] text-[#5c7392] underline-offset-2 hover:underline" title="回到提问时选中的对象">关于 {t.about}</button>{t.text}
-      </div> : <div key={t.id} className="text-[13px] leading-6 text-[#27415f]">
-        {t.status === "running" ? <p role="status" className="flex items-center gap-2 text-[#7187a1]"><span className="size-3 animate-spin rounded-full border-2 border-[#c7ddff] border-t-[#247cff] motion-reduce:animate-none" />小福正在读图…</p>
+      {turns.map((t) => t.role === "user" ? <div key={t.id} className="ml-6 rounded-xl bg-[#eaf4ff] px-3 py-2 text-[13px] text-[#7d5f2a]">
+        <button type="button" onClick={() => onSelect(t.selection)} className="mb-0.5 block text-[11px] text-[#7a7064] underline-offset-2 hover:underline" title="回到提问时选中的对象">关于 {t.about}</button>{t.text}
+      </div> : <div key={t.id} className="text-[13px] leading-6 text-[#3a332c]">
+        {t.status === "running" ? <p role="status" className="flex items-center gap-2 text-[#8a8178]"><span className="size-3 animate-spin rounded-full border-2 border-[#e8dcc3] border-t-[#a8823f] motion-reduce:animate-none" />小福正在读图…</p>
           : t.status === "failed" ? <p role="alert" className="text-[#a43f37]">{t.text}</p>
           : <><MarkdownText text={t.text} />
             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px]">
               {t.highlights?.length ? <button type="button" onClick={() => onHighlight(t.highlights!)} className="min-h-8 text-[#2470cc] underline-offset-2 hover:underline">在图上标出相关节点</button> : null}
-              <button type="button" onClick={() => onAskQa(turns[turns.indexOf(t) - 1]?.text ?? "")} className="min-h-8 text-[#5c7392] underline-offset-2 hover:underline">去智能问答查更细的数据</button>
+              <button type="button" onClick={() => onAskQa(turns[turns.indexOf(t) - 1]?.text ?? "")} className="min-h-8 text-[#7a7064] underline-offset-2 hover:underline">去智能问答查更细的数据</button>
             </div></>}
       </div>)}
     </div> : <div className={`px-3 pt-3 ${fill ? "min-h-0 flex-1 overflow-y-auto" : ""}`}>
-      <p className="text-[12px] text-[#7187a1]">点图上的节点或连线后提问，小福会针对它回答；不选就是问整张图。</p>
-      <div className="mt-2 flex flex-wrap gap-1.5">{suggestions(graph, selection).map((q) => <button key={q} type="button" onClick={() => { setInput(q); box.current?.focus(); }} className="min-h-8 rounded-lg border border-[#d4e4f5] bg-[#f8fbff] px-2.5 text-left text-[12px] text-[#27415f] hover:border-[#a8caff]">{q}</button>)}</div>
+      <p className="text-[12px] text-[#8a8178]">点图上的节点或连线后提问，小福会针对它回答；不选就是问整张图。</p>
+      <div className="mt-2 flex flex-wrap gap-1.5">{suggestions(graph, selection).map((q) => <button key={q} type="button" onClick={() => { setInput(q); box.current?.focus(); }} className="min-h-8 rounded-lg border border-[#ece5d9] bg-[#f8fbff] px-2.5 text-left text-[12px] text-[#3a332c] hover:border-[#a8caff]">{q}</button>)}</div>
     </div>}
     <div className="shrink-0 p-3">
       <div className="mb-1.5 flex items-center gap-1.5">
-        <span className="inline-flex min-h-7 max-w-full items-center gap-1 rounded-full border border-[#c7ddff] bg-[#eef5ff] py-0.5 pl-2.5 pr-1 text-[11px] text-[#174e96]">
+        <span className="inline-flex min-h-7 max-w-full items-center gap-1 rounded-full border border-[#e8dcc3] bg-[#eef5ff] py-0.5 pl-2.5 pr-1 text-[11px] text-[#7d5f2a]">
           <span className="truncate">针对：{about}</span>
           {selection ? <button type="button" aria-label="改为问整张图" onClick={() => onSelect(null)} className="grid size-6 shrink-0 place-items-center rounded-full hover:bg-[#dbe9ff]"><X aria-hidden="true" className="size-3" /></button> : null}
         </span>
       </div>
       {error ? <p role="alert" className="mb-1.5 text-[12px] text-[#a43f37]">{error}</p> : null}
-      <div className="flex items-end gap-2 rounded-xl border border-[#d4e4f5] bg-white p-1.5 focus-within:border-[#7ea7dc]">
+      <div className="flex items-end gap-2 rounded-xl border border-[#ece5d9] bg-white p-1.5 focus-within:border-[#7ea7dc]">
         <label htmlFor="insight-chat-input" className="sr-only">针对图谱提问</label>
         <textarea id="insight-chat-input" ref={box} rows={2} maxLength={500} value={input} onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }}
           placeholder="比如：为什么大区之间差别不大？" className="min-h-11 flex-1 resize-none bg-transparent px-1.5 py-1 text-[13px] outline-none placeholder:text-[#9aabbf]" />
-        {busy ? <button type="button" aria-label="停止" onClick={stop} className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#5c7392] text-white"><Square aria-hidden="true" className="size-3.5" /></button>
-          : <button type="button" aria-label="发送" disabled={!input.trim()} onClick={() => void send()} className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#247cff] text-white disabled:bg-[#b7c7da]"><ArrowUp aria-hidden="true" className="size-4" /></button>}
+        {busy ? <button type="button" aria-label="停止" onClick={stop} className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#7a7064] text-white"><Square aria-hidden="true" className="size-3.5" /></button>
+          : <button type="button" aria-label="发送" disabled={!input.trim()} onClick={() => void send()} className="grid size-10 shrink-0 place-items-center rounded-lg bg-[#a8823f] text-white disabled:bg-[#b7c7da]"><ArrowUp aria-hidden="true" className="size-4" /></button>}
       </div>
     </div>
   </section>;

@@ -2,7 +2,7 @@
 // 图上的数字全部出自这里，文字是模板，不经过模型。
 import { comparePeers, findOutliers, mainPart, peerGroups, type PeerMetric, type PeerStore } from "./peers.ts";
 import { etaSquared, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayFit } from "./stats.ts";
-import type { InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
+import type { InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStory, InsightStrength } from "./types.ts";
 
 // 优惠按名称归成几组（AI 归类）：克减 50、克减 30、金色星期二、一般開單、其他。
 export type OfferGroup = "base" | "k50" | "k30" | "gt" | "other";
@@ -306,25 +306,25 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       paragraphs: [`门店之间毛利率差多少，单是「计价金占销售额多少」一个数就解释了 ${pct(mixOnly)}。`, `8 个门店属性一起只解释毛利率的 ${pct(uGm.full * 100)}；加上货品结构到 ${pct(uGmMix.full * 100)}。`],
       table: { head: ["货类", "销售额占比", "毛利占比", "毛利率"], rows: [gold, fixed, inlay].map((p) => [p.ptype, pct(share(p.sales, total.sales)), pct(share(p.gp, total.gp)), pct(ptGm(p))]) } }),
 
-    N({ id: "orders", column: 2, kind: "decomp", label: "订单数", subtitle: `门店间差异 ${pct(storeSplit.orders)}`,
+    N({ id: "orders", column: 2, kind: "decomp", label: "订单数", subtitle: `门店间差异 ${pct(storeSplit.orders)}`, value: `${n1(total.orders / 1e4)} 万单`,
       source: { kind: "derived", columns: ["实体分店店号", "销售单号"], how: "店号 + 销售单号去重计数（单号跨店会重复）" },
       paragraphs: [`销售额 = 订单数 × 客单价。门店之间销售额差多少，${pct(storeSplit.orders)} 是订单数的差，客单价占 ${pct(storeSplit.aov)}（其余是两者同向）。全国逐日看，订单数占 ${pct(daySplit.orders)}。`],
       note: "客流和转化率缺数据，订单数再往下拆不了。" }),
-    N({ id: "aov", column: 2, kind: "decomp", label: "客单价", subtitle: `门店间差异 ${pct(storeSplit.aov)}`,
+    N({ id: "aov", column: 2, kind: "decomp", label: "客单价", subtitle: `门店间差异 ${pct(storeSplit.aov)}`, value: `${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元`,
       source: { kind: "derived", columns: ["实际销售金额", "实体分店店号", "销售单号"], how: "销售额 ÷ 订单数" },
       paragraphs: [`8 月客单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。门店属性里，店型对客单独有 ${pct(u(uAov, "店型"))}，形象级别 ${pct(u(uAov, "形象级别"))}。`, `力度大的活动卖大件：克减 50 计价金件均 ${n1(k50.gramsPerItem)} 克，金色星期二 ${n1(gtG.gramsPerItem)} 克，一般開單 ${n1(baseG.gramsPerItem)} 克。`] }),
-    N({ id: "gm", column: 2, kind: "decomp", label: "毛利率", subtitle: "结构 + 让利",
+    N({ id: "gm", column: 2, kind: "decomp", label: "毛利率", subtitle: "结构 + 让利", value: pct(gm),
       source: { kind: "derived", columns: ["零售毛利", "rsv"], how: "零售毛利 ÷（rsv ÷ 1.13）", judgement: "rsv 含 13% 增值税、零售毛利不含税，是在 9/8 样例上逐行核对过的；还没和财务确认" },
       paragraphs: [`毛利 = 不含税销售额 × 毛利率。毛利率由两件事决定：卖了什么货（结构），让了多少（活动）。8 月整体 ${pct(gm)}。`] }),
 
-    N({ id: "qty", column: 3, kind: "metric", label: "销量", subtitle: `${n0(total.items / 1e4)} 万件 · ${n0(gold.grams / 1000)} 公斤`,
+    N({ id: "qty", column: 3, kind: "metric", label: "销量", subtitle: `${n0(total.items / 1e4)} 万件 · ${n0(gold.grams / 1000)} 公斤`, value: `${n0(total.items / 1e4)} 万件`,
       source: { kind: "field", columns: ["销售件数", "销售金重"], how: "直接加总" },
       paragraphs: [`${n0(total.items / 1e4)} 万件；计价金按克卖，共 ${n0(gold.grams / 1000)} 公斤，件均 ${n1(gold.items > 0 ? gold.grams / gold.items : 0)} 克。`, `门店日件数的波动里，门店差异占 ${pct(feItems.store)}，日期占 ${pct(feItems.day)}。`] }),
-    N({ id: "sales", column: 3, kind: "metric", label: "销售额", subtitle: `${yi(total.sales)}（含税）`,
+    N({ id: "sales", column: 3, kind: "metric", label: "销售额", subtitle: `${yi(total.sales)}（含税）`, value: yi(total.sales),
       source: { kind: "field", columns: ["实际销售金额"], how: "直接加总", judgement: "只算件数 > 0 且金额 > 0 的正常销售行，回收、退货另看；这个口径是 AI 定的，还没和 Power BI 对数" },
       paragraphs: [`正常销售行实收 ${yi(total.sales)}，${n1(total.orders / 1e4)} 万单，客单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。计价金占 ${pct(share(gold.sales, total.sales))}，一口价黄金 ${pct(share(fixed.sales, total.sales))}，镶嵌及其他 ${pct(share(inlay.sales, total.sales))}。`],
       note: "还没和 Power BI 对数，绝对额先只作参考。" }),
-    N({ id: "gp", column: 3, kind: "metric", label: "毛利", subtitle: `${yi(total.gp)} · 毛利率 ${pct(gm)}`,
+    N({ id: "gp", column: 3, kind: "metric", label: "毛利", subtitle: `${yi(total.gp)} · 毛利率 ${pct(gm)}`, value: yi(total.gp),
       source: { kind: "field", columns: ["零售毛利"], how: "直接加总" },
       paragraphs: [`零售毛利 ${yi(total.gp)}，毛利率 ${pct(gm)}（毛利 ÷ 不含税 RSV）。`, `计价金卖了 ${pct(share(gold.sales, total.sales))} 的钱，贡献 ${pct(share(gold.gp, total.gp))} 的毛利；镶嵌及其他卖 ${pct(share(inlay.sales, total.sales))}、贡献 ${pct(share(inlay.gp, total.gp))}。`] }),
   ];
@@ -468,6 +468,12 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     `门店差异主要来自商圈和店型（独有 ${pct(u(uSales, "形象级别"))}、${pct(u(uSales, "店型"))}），大区、区域本身只有 ${pct(u(uSales, "区域"))}。`,
     `毛利率主要看卖了什么货（计价金占比解释 ${pct(mixOnly)}）；活动当天计价金占比高、毛利率低。`,
   ];
+  // 三步讲解：和 summary 同序，每步点亮一条从因素到指标的链路。
+  const stories: InsightStory[] = [
+    { title: "销售额看单量", text: summary[0], path: ["store", "orders", "sales"] },
+    { title: "门店差在商圈", text: summary[1], path: ["image", "shoptype", "store", "orders", "sales"] },
+    { title: "毛利率看货品", text: summary[2], path: ["promo", "mix", "gm", "gp"] },
+  ];
   const methods = [
     { title: "门店、日期各占多少", text: `${n0(panel.length / 1e4)} 万个门店日的对数销售额，做门店 + 日期双向固定效应分解。` },
     { title: "哪个门店属性有用", text: `${n0(full.length)} 家开满 20 天的店，8 个属性一起回归，逐个拿掉看 R² 掉多少（独有贡献）。属性之间相关，单看一个会重复算。` },
@@ -477,5 +483,5 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     { title: "口径", text: "只算正常销售行（件数 > 0 且金额 > 0）；毛利率 = 零售毛利 ÷ 不含税 RSV；回收旧金、退货单独看。还没和 Power BI 对数。" },
   ];
   return { schema: "insight-drivers/v2", datasetVersion: data.datasetVersion, builtAt,
-    scope: { period: data.period, rows: data.rows, stores: storeCount, note: "一个月数据，只是相关" }, kpis, nodes, edges, summary, methods };
+    scope: { period: data.period, rows: data.rows, stores: storeCount, note: "一个月数据，只是相关" }, kpis, nodes, edges, summary, stories, methods };
 }
