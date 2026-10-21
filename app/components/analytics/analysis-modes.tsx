@@ -42,7 +42,6 @@ export function AnalysisModes() {
   // URL 没指定模式时：当前对话已有内容进问答，否则进洞察。
   const mode: AnalysisMode = urlMode === "insight" || urlMode === "qa" ? urlMode : hasMessages ? "qa" : "insight";
   const selection = parseSelection(search);
-  const [askFocus, setAskFocus] = useState<InsightFocus | null>(null);
   const [draft, setDraft] = useState<{ text: string; nonce: number } | null>(null);
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   // 洞察第一次打开才去算图谱；之后一直挂着，切回来不用重算。用渲染期派生 state 记住「看过」，不在 effect 里补。
@@ -55,7 +54,7 @@ export function AnalysisModes() {
   // 从洞察带着范围去问答、去建活动时开一个新对话：不把这次的范围和问题混进最近那条旧对话。
   // 当前对话还是空的就直接用它，不多留一条空对话。
   const freshConversation = () => { if (historyConversation.snapshot().length || historyConversation.campaignId()) historyConversation.newConversation(); };
-  const askQa = (question: string, focus: InsightFocus | null) => { freshConversation(); setAskFocus(focus); nonce.current += 1; setDraft({ text: question, nonce: nonce.current }); switchTo("qa"); };
+  const askQa = (question: string, focus: InsightFocus | null) => { freshConversation(); historyConversation.setFocus(focus); nonce.current += 1; setDraft({ text: question, nonce: nonce.current }); switchTo("qa"); };
   const locate = (id: InsightNodeId) => writeUrl("insight", { kind: "node", id });
 
   const keyDown = (event: React.KeyboardEvent, index: number) => {
@@ -79,7 +78,7 @@ export function AnalysisModes() {
       {visitedInsight ? <InsightWorkspace selection={selection} onSelect={changeSelection} onAskQa={askQa} /> : null}
     </div>
     <div id="mode-panel-qa" role="tabpanel" aria-labelledby="mode-tab-qa" hidden={active !== "qa"} className="min-h-0 flex-1" style={{ "--workspace-h": "100%" } as React.CSSProperties}>
-      <HistoryConversation embedded insightFocus={askFocus} onClearFocus={() => setAskFocus(null)} draft={draft} onLocate={locate} />
+      <HistoryConversation embedded draft={draft} onLocate={locate} />
     </div>
   </div>;
 }

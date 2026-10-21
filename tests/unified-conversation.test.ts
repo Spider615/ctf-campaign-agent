@@ -137,3 +137,22 @@ test("未读提醒：其他来源的回复（活动对话）可以直接标记�
   store.newConversation(); store.markCampaignUnread("camp-1"); store.markCampaignUnread("不存在");
   assert.equal(store.threadsSnapshot().find((thread) => thread.id === first)?.unread, true);
 });
+
+test("从洞察带来的「正在看」跟着对话存：刷新后还在，换对话不带过去，移除后不再恢复", () => {
+  const values = new Map<string, string>();
+  const persistence = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const store = storage.createHistoryConversationStore(persistence);
+  const focus = { kind: "edge" as const, from: "mix" as const, to: "gm" as const, label: "货品结构 → 毛利率", basis: "计价金占比解释 79.7%" };
+  store.setFocus(focus);
+  store.update((items) => [...items, { id: "u1", role: "user", text: "这个是怎么影响的", createdAt: "2026-10-21T00:00:00.000Z" }]);
+  assert.deepEqual(storage.createHistoryConversationStore(persistence).focus(), focus);
+  store.newConversation(); assert.equal(store.focus(), null);
+  store.selectConversation(storage.createHistoryConversationStore(persistence).threadsSnapshot().at(-1)!.id);
+  assert.deepEqual(store.focus(), focus);
+  store.setFocus(null); assert.equal(storage.createHistoryConversationStore(persistence).focus(), null);
+  // 存储里结构不完整的 focus 丢掉，不影响对话本身。
+  const saved = JSON.parse(values.get("ctf:conversations:v2")!); saved.threads[0].focus = { kind: "edge", label: "坏的" };
+  values.set("ctf:conversations:v2", JSON.stringify(saved));
+  const broken = storage.createHistoryConversationStore(persistence); broken.selectConversation(saved.threads[0].id);
+  assert.equal(broken.focus(), null); assert.equal(broken.snapshot().length, 1);
+});

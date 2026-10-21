@@ -24,7 +24,7 @@ import type { AttachmentReference, ConversationRequest } from "../../lib/attachm
 import { attachmentReferences, attachmentSubmission, postAttachmentStream, retryConversationAttachments, UnavailableAttachmentsError } from "../../lib/client/attachments";
 import { useAttachmentDraft } from "../attachments/use-attachments";
 import { useAttachmentAvailability } from "../attachments/use-attachment-availability";
-import { focusContext, focusLabel, type InsightFocus } from "../../lib/insight/context";
+import { focusContext, focusLabel } from "../../lib/insight/context";
 import type { InsightNodeId } from "../../lib/insight/types";
 
 const prompts = [
@@ -34,16 +34,20 @@ const prompts = [
 ];
 const now = () => performance.now();
 const noCampaign = () => null;
+const noFocus = () => null;
 
 // 嵌在「智能洞察 / 智能问答」工作台里时，由洞察传入当前看的范围、建活动草稿话和「在图上看」的回调。
-export type InsightLink = { insightFocus?: InsightFocus | null; onClearFocus?: () => void; draft?: { text: string; nonce: number } | null; onLocate?: (id: InsightNodeId) => void };
+export type InsightLink = { draft?: { text: string; nonce: number } | null; onLocate?: (id: InsightNodeId) => void };
 
 export function HistoryConversation({ embedded = false, ...link }: InsightLink & { embedded?: boolean }) {
   const id = useSyncExternalStore(historyConversation.subscribe, historyConversation.activeId, historyConversation.serverActiveId);
   return <WorkspacePanel key={id || "loading"}><UnifiedConversation conversationId={id} embedded={embedded} {...link} /></WorkspacePanel>;
 }
 
-function UnifiedConversation({ conversationId, embedded, insightFocus, onClearFocus, draft, onLocate }: InsightLink & { conversationId: string; embedded: boolean }) {
+function UnifiedConversation({ conversationId, embedded, draft, onLocate }: InsightLink & { conversationId: string; embedded: boolean }) {
+  // 从洞察带来的「正在看」存在对话上，刷新后还在。
+  const insightFocus = useSyncExternalStore(historyConversation.subscribe, historyConversation.focus, noFocus);
+  const onClearFocus = () => historyConversation.setFocus(null);
   const messages = useSyncExternalStore(historyConversation.subscribe, historyConversation.snapshot, historyConversation.serverSnapshot);
   const campaignId = useSyncExternalStore(historyConversation.subscribe, historyConversation.campaignId, noCampaign);
   const setMessages = (change: (messages: HistoryMessage[]) => HistoryMessage[]) => historyConversation.update(change, conversationId);

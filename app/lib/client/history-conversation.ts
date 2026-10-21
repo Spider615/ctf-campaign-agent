@@ -5,6 +5,7 @@ import type { AgentTraceEvent } from "../tool-trace.ts";
 import { analyticsAnswerText, isPlanAnswer, validateAnalyticsAnswerResult, type AnalyticsAnswerResult } from "../analytics/stream.ts";
 import { isConversationAnswer } from "../attachments/answer.ts";
 import type { AttachmentReference, ConversationRequest } from "../attachments/types.ts";
+import type { InsightFocus } from "../insight/context.ts";
 
 export type HistoryMessage = { id: string; role: "user" | "assistant"; text: string; createdAt: string; answer?: AnalyticsAnswerResult; request?: DatabaseExplainRequest | ConversationRequest; attachments?: AttachmentReference[]; status?: "running" | "done" | "failed" | "cancelled"; trace?: AgentTraceEvent[]; startedAt?: number; durationMs?: number; phase?: "analyzing" | "writing"; visualizationState?: VisualizationProgressState; afterMessageId?: string };
 export function replaceHistoryAttachment(messages: HistoryMessage[], previousId: string, file: AttachmentReference): HistoryMessage[] {
@@ -14,13 +15,20 @@ export function replaceHistoryAttachment(messages: HistoryMessage[], previousId:
   }));
 }
 // unread：回复在用户没看着这条对话时结束，侧栏标小红点；打开这条对话即清除。
-type Thread = { id: string; title: string; messages: HistoryMessage[]; context: string[]; campaignId: string | null; updatedAt: string; unread?: boolean };
+// focus：从洞察带过来的「正在看」，跟着对话存，刷新、切走再切回来都还在。
+type Thread = { id: string; title: string; messages: HistoryMessage[]; context: string[]; campaignId: string | null; updatedAt: string; unread?: boolean; focus?: InsightFocus };
 export type ConversationSummary = Pick<Thread, "id" | "title" | "updatedAt" | "campaignId" | "unread">;
 type Persistence = { getItem(key: string): string | null; setItem(key: string, value: string): void };
 const key = "ctf:conversations:v2"; const legacyKey = "ctf:history-conversation:v1";
 const empty: HistoryMessage[] = []; const emptyThreads: ConversationSummary[] = [];
 const messagesValid = (value: unknown): value is HistoryMessage[] => Array.isArray(value) && value.length <= 40 && value.every((item) => item && typeof item.id === "string" && ["user", "assistant"].includes(item.role) && typeof item.text === "string" && typeof item.createdAt === "string");
 const contextValid = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 200 && value.every((text) => typeof text === "string" && text.length <= 500);
+const text = (value: unknown) => typeof value === "string" && value.length <= 2000;
+// 存储里的 focus 只认结构完整的；节点 id 是否还在图上由用的地方再看，这里不依赖图谱。
+const focusValid = (value: unknown): value is InsightFocus => {
+  const f = value as Record<string, unknown> | null;
+  return Boolean(f) && typeof f === "object" && text(f!.label) && (f!.kind === "node" ? text(f!.id) : f!.kind === "edge" && text(f!.from) && text(f!.to) && text(f!.basis));
+};
 const finishPending = (messages: HistoryMessage[]) => messages.map((m) => m.status === "running" ? { ...m, status: "cancelled" as const, text: "上次等待已结束，可以继续追问或重新分析。" } : m);
 const restoreMessages = (messages: HistoryMessage[]) => finishPending(messages).map((stored) => {
   const message = { ...stored, ...(stored.visualizationState === undefined ? {} : { visualizationState: restoreVisualizationProgress(stored.visualizationState) }) };
@@ -54,7 +62,7 @@ export function createHistoryConversationStore(storage?: Persistence) {
     try {
       const saved = JSON.parse(persistence()?.getItem(key) ?? "null");
       if (saved && Array.isArray(saved.threads) && typeof saved.activeId === "string" && saved.threads.every((t: Thread) => t && typeof t.id === "string" && typeof t.title === "string" && typeof t.updatedAt === "string" && (t.campaignId === null || typeof t.campaignId === "string") && (t.unread === undefined || typeof t.unread === "boolean") && messagesValid(t.messages) && contextValid(t.context))) {
-        threads = saved.threads.map((t: Thread) => ({ ...t, messages: restoreMessages(t.messages) })); activeId = saved.activeId;
+        threads = saved.threads.map((t: Thread) => { const { focus, ...rest } = t; return { ...rest, messages: restoreMessages(t.messages), ...(focusValid(focus) ? { focus } : {}) }; }); activeId = saved.activeId;
       } else {
         const previous = JSON.parse(persistence()?.getItem(legacyKey) ?? "null"); const messages = Array.isArray(previous) ? previous : previous?.messages;
         if (messagesValid(messages) && messages.length) {
@@ -77,6 +85,12 @@ export function createHistoryConversationStore(storage?: Persistence) {
     activeId() { load(); return activeId; },
     context() { load(); return current()?.context ?? []; },
     campaignId() { load(); return current()?.campaignId ?? null; },
+    focus() { load(); return current()?.focus ?? null; },
+    // 设在当前对话上；传 null 是用户点了 × 移除。
+    setFocus(focus: InsightFocus | null) {
+      load(); const thread = current(); if (!thread || (thread.focus ?? null) === focus) return;
+      if (focus) thread.focus = focus; else delete thread.focus; commit();
+    },
     // 指定对话 id 时写进那一条对话，不管它当前是否打开：切走后仍在跑的回答照样落到自己的对话里。
     update(change: (messages: HistoryMessage[]) => HistoryMessage[], expectedId?: string) {
       load(); const thread = expectedId === undefined ? current() : threads.find((item) => item.id === expectedId); if (!thread) return;
