@@ -28,11 +28,11 @@ type Size = { top: number; leaf: number; gap: number; secLabel: number; secGap: 
 const sizeAt = (t: number): Size => ({ top: 30 + 6 * t, leaf: 32 + 4 * t, gap: 2 * t, secLabel: 20 + 2 * t, secGap: 8 + 6 * t, node: 52 + 6 * t, f: 0.6 + 0.4 * t });
 
 export const STRENGTH_STYLE: Record<InsightStrength, { stroke: string; width: number; dash?: string; pill: string }> = {
-  strong: { stroke: "#a8823f", width: 2.4, pill: "强" },
-  med: { stroke: "#cbb489", width: 1.7, pill: "中" },
-  weak: { stroke: "#d9d1c4", width: 1.2, dash: "3 4", pill: "弱" },
-  id: { stroke: "#b9b0a3", width: 1.3, pill: "恒等式" },
-  missing: { stroke: "#c08a3e", width: 1.3, dash: "1 4", pill: "缺" },
+  strong: { stroke: "#2f6bff", width: 2.4, pill: "强" },
+  med: { stroke: "#7aa2ff", width: 1.7, pill: "中" },
+  weak: { stroke: "#c3cddb", width: 1.2, dash: "3 4", pill: "弱" },
+  id: { stroke: "#94a3b8", width: 1.3, pill: "恒等式" },
+  missing: { stroke: "#c98a1e", width: 1.3, dash: "1 4", pill: "缺" },
 };
 // 有分数的线按分数加粗：0 分 1.2px，100 分 5px；没分数的按档位默认粗细。
 const edgeWidth = (e: InsightEdge) => e.score ? 1.2 + Math.sqrt(e.score.value / 100) * 3.8 : STRENGTH_STYLE[e.strength].width;
@@ -40,13 +40,11 @@ const edgeWidth = (e: InsightEdge) => e.score ? 1.2 + Math.sqrt(e.score.value / 
 // 分数一律保留一位小数：图上、线上、详情里写的是同一个数，不能一处 13、一处 12.6。
 export const scoreText = (x: { score?: { value: number }; strength?: InsightStrength }) => x.score ? x.score.value.toFixed(1) : x.strength ? STRENGTH_STYLE[x.strength].pill : "";
 export const SOURCE_TAG: Record<InsightSourceKind, string> = {
-  field: "border-[#e7dfd2] bg-white text-[#8a8178]", derived: "border-[#e7dfd2] bg-white text-[#8a8178]",
-  grouping: "border-transparent bg-[#f3ece0] text-[#8a6a35]", inferred: "border-transparent bg-[#f3ece0] text-[#8a6a35]",
-  suggested: "border-[#d4b07a] bg-transparent text-[#a6732f]",
+  field: "border-[#dde7f3] bg-white text-[#64748b]", derived: "border-[#dde7f3] bg-white text-[#64748b]",
+  grouping: "border-transparent bg-[#efeafb] text-[#6d4fc2]", inferred: "border-transparent bg-[#efeafb] text-[#6d4fc2]",
+  suggested: "border-[#b7791f] bg-transparent text-[#b7791f]",
 };
 
-// 衬线：标题、指标名和数字用宋体 / Georgia，正文仍是无衬线。
-const SERIF = "insight-serif";
 const isAi = (k: InsightSourceKind) => k === "grouping" || k === "inferred";
 
 type Box = { x: number; y: number; w: number; h: number };
@@ -99,26 +97,26 @@ function sample(a: Box, b: Box): Array<[number, number]> {
 
 // 四种节点四种分量：细项因素只有一行字和一根分数细条；因素是发丝边白卡；拆解不画框、直接写数值；指标是最大的数字。
 function nodeClass(n: InsightNode, on: boolean, selected: boolean, dim: boolean): string {
-  const base = "group insight-in absolute flex flex-col justify-center text-left transition-[opacity,box-shadow,border-color,background-color] duration-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a8823f]/40";
-  const kind = n.kind === "metric" ? "rounded-[4px] border border-[#e6dccb] bg-white px-4 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_18px_40px_-28px_rgba(60,45,20,0.45)]"
-    : n.kind === "decomp" ? "border-l border-[#d8c7a4] pl-3 pr-1"
-    : n.kind === "factor" ? "rounded-[4px] border border-[#e6dccb] bg-[#fffdf9] px-3 shadow-[0_10px_24px_-22px_rgba(60,45,20,0.5)]"
+  const base = "group insight-in absolute flex flex-col justify-center text-left transition-[opacity,box-shadow,border-color,background-color] duration-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f6bff]/40";
+  const kind = n.kind === "metric" ? "rounded-[4px] border border-[#cfd8e6] bg-white px-4 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_18px_40px_-28px_rgba(15,23,42,0.45)]"
+    : n.kind === "decomp" ? "border-l border-[#bcd0ff] pl-3 pr-1"
+    : n.kind === "factor" ? "rounded-[4px] border border-[#cfd8e6] bg-[#ffffff] px-3 shadow-[0_10px_24px_-22px_rgba(15,23,42,0.5)]"
     : "rounded-[3px] px-2";
-  const state = selected ? (n.kind === "leaf" || n.kind === "decomp" ? "bg-[#f6efe2]" : "!border-[#a8823f] shadow-[0_0_0_3px_rgba(168,130,63,0.12)]")
-    : n.kind === "leaf" || n.kind === "decomp" ? "hover:bg-[#f7f1e6]" : "hover:border-[#cbb489]";
+  const state = selected ? (n.kind === "leaf" || n.kind === "decomp" ? "bg-[#eaf0ff]" : "!border-[#2f6bff] shadow-[0_0_0_3px_rgba(47,107,255,0.12)]")
+    : n.kind === "leaf" || n.kind === "decomp" ? "hover:bg-[#f1f5fb]" : "hover:border-[#7aa2ff]";
   return `${base} ${kind} ${state} ${dim && !on ? "opacity-[0.38]" : ""}`;
 }
 
 // 顶部只放来源筛选（会改变高亮的操作）；线型图例浮在画布左下角。
 export function InsightLegend({ graph, selection, onSelect }: { graph: InsightGraph; selection: InsightSelection | null; onSelect: (s: InsightSelection | null) => void }) {
   const count = (k: InsightSourceKind) => graph.nodes.filter((n) => n.source.kind === k).length;
-  return <div className="flex shrink-0 flex-wrap items-center gap-x-1 gap-y-1 pb-2 pr-2 text-[12px] text-[#7a7064]" aria-label="按来源筛选">
-    <span className="mr-1 text-[11px] tracking-[0.2em] text-[#b5aca0]">来源</span>
+  return <div className="flex shrink-0 flex-wrap items-center gap-x-1 gap-y-1 pb-2 pr-2 text-[12px] text-[#64748b]" aria-label="按来源筛选">
+    <span className="mr-1 text-[11px] tracking-[0.2em] text-[#94a3b8]">来源</span>
     {INSIGHT_SOURCE_KINDS.map((k) => { const on = selection?.kind === "source" && selection.source === k;
       return <button key={k} type="button" aria-pressed={on} title={INSIGHT_SOURCE_LABEL[k].desc} onClick={() => onSelect(on ? null : { kind: "source", source: k })}
         aria-label={`${INSIGHT_SOURCE_LABEL[k].name} ${count(k)} 个`}
-        className={`inline-flex min-h-7 items-center gap-1.5 border-b px-1 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a8823f]/40 ${on ? "border-[#a8823f] text-[#1c1917]" : "border-transparent text-[#8a8178] hover:text-[#1c1917]"}`}>
-        {isAi(k) ? <span aria-hidden="true" className="size-1.5 rounded-full bg-[#a8823f]" /> : null}{INSIGHT_SOURCE_LABEL[k].tag}<span className="insight-serif tabular-nums text-[#b5aca0]">{count(k)}</span>
+        className={`inline-flex min-h-7 items-center gap-1.5 border-b px-1 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f6bff]/40 ${on ? "border-[#2f6bff] text-[#0f172a]" : "border-transparent text-[#64748b] hover:text-[#0f172a]"}`}>
+        {isAi(k) ? <span aria-hidden="true" className="size-1.5 rounded-full bg-[#2f6bff]" /> : null}{INSIGHT_SOURCE_LABEL[k].tag}<span className="tabular-nums text-[#94a3b8]">{count(k)}</span>
       </button>; })}
   </div>;
 }
@@ -126,9 +124,9 @@ export function InsightLegend({ graph, selection, onSelect }: { graph: InsightGr
 // 图例压成一行细字：线越粗越强，虚线是弱或缺数据，圆点是 AI 归类 / 判断。
 function LineLegend() {
   const line = (k: InsightStrength, label: string) => <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><svg aria-hidden="true" viewBox="0 0 18 6" className="h-1.5 w-[18px]"><line x1="1" y1="3" x2="17" y2="3" stroke={STRENGTH_STYLE[k].stroke} strokeWidth={STRENGTH_STYLE[k].width} strokeDasharray={STRENGTH_STYLE[k].dash} strokeLinecap="round" /></svg>{label}</span>;
-  return <div aria-label="图例" className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[11px] text-[#a39a8e]">
+  return <div aria-label="图例" className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[11px] text-[#94a3b8]">
     {line("strong", "强")}{line("med", "中")}{line("weak", "弱")}{line("id", "拆解")}{line("missing", "缺数据")}
-    <span className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-[#a8823f]" />AI 归类 / 判断</span>
+    <span className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-[#2f6bff]" />AI 归类 / 判断</span>
   </div>;
 }
 
@@ -136,12 +134,12 @@ function LineLegend() {
 function StoryCaption({ stories, index, onStory }: { stories: InsightStory[]; index: number; onStory: (i: number) => void }) {
   const story = stories[index]; if (!story) return null;
   const go = (d: number) => onStory((index + d + stories.length) % stories.length);
-  const btn = "grid size-7 place-items-center rounded-full text-[#8a8178] transition hover:bg-[#f3ead8] hover:text-[#1c1917] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a8823f]/40";
+  const btn = "grid size-7 place-items-center rounded-full text-[#64748b] transition hover:bg-[#eaf0ff] hover:text-[#0f172a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f6bff]/40";
   return <div data-overlay className="absolute inset-x-6 top-5 flex items-start gap-5" aria-live="polite">
-    <span className={`${SERIF} pt-1 text-[12px] tracking-[0.2em] text-[#a8823f]`}>{String(index + 1).padStart(2, "0")}<span className="text-[#cdbb98]"> / {String(stories.length).padStart(2, "0")}</span></span>
+    <span className={`pt-1 text-[12px] tracking-[0.2em] text-[#2f6bff]`}>{String(index + 1).padStart(2, "0")}<span className="text-[#cbd5e1]"> / {String(stories.length).padStart(2, "0")}</span></span>
     <div key={index} className="insight-in min-w-0 flex-1">
-      <p className={`${SERIF} text-[22px] leading-tight tracking-[0.04em] text-[#1c1917]`}>{story.title}</p>
-      <p className="mt-1.5 max-w-[620px] text-[12.5px] leading-[1.75] text-[#6b6157]">{story.text}</p>
+      <p className={`text-[22px] leading-tight tracking-[0.04em] text-[#0f172a]`}>{story.title}</p>
+      <p className="mt-1.5 max-w-[620px] text-[12.5px] leading-[1.75] text-[#475569]">{story.text}</p>
     </div>
     <div className="flex shrink-0 items-center gap-0.5">
       <button type="button" aria-label="上一条" onClick={() => go(-1)} className={btn}><ChevronLeft aria-hidden="true" className="size-4" /></button>
@@ -263,13 +261,13 @@ export function InsightGraphView({ graph, selection, marked, onSelect, story, on
     if (d.kind === "pan") { const edge = nearest(e); onSelect(edge ? { kind: "edge", from: edge.from, to: edge.to } : null); }
   };
   const selectedKey = selection?.kind === "edge" ? edgeKey(selection) : null; const hoverKey = hover?.kind === "edge" ? edgeKey(hover) : null;
-  const tool = "grid size-8 place-items-center rounded-full text-[#8a8178] transition hover:bg-[#f3ead8] hover:text-[#1c1917] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a8823f]/40";
+  const tool = "grid size-8 place-items-center rounded-full text-[#64748b] transition hover:bg-[#eaf0ff] hover:text-[#0f172a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f6bff]/40";
   const center = () => ({ x: size.w / 2, y: size.h / 2 });
 
   return <div ref={stage} role="group" aria-label="指标影响因素图谱" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={() => { drag.current = null; setPanning(false); }} onPointerLeave={() => { if (!drag.current) setHover(null); }}
-    className={`relative isolate h-[70dvh] min-w-0 touch-none select-none overflow-hidden rounded-[4px] bg-[#fbf8f2] min-[1180px]:h-auto min-[1180px]:min-h-0 min-[1180px]:flex-1 ${panning ? "cursor-grabbing" : ""}`}>
-    {/* 纸面：暖白底，左上一点光。不放点阵、不放网格。 */}
-    <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(80%_70%_at_10%_0%,#fffefb_0%,transparent_65%),linear-gradient(180deg,#fbf8f2,#f6f1e8)]" />
+    className={`relative isolate h-[70dvh] min-w-0 touch-none select-none overflow-hidden rounded-[4px] bg-[#f8fafc] min-[1180px]:h-auto min-[1180px]:min-h-0 min-[1180px]:flex-1 ${panning ? "cursor-grabbing" : ""}`}>
+    {/* 浅灰底。 */}
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(80%_70%_at_10%_0%,#fffefb_0%,transparent_65%),linear-gradient(180deg,#f8fafc,#f4f7fb)]" />
     <div className="absolute left-0 top-0 origin-top-left" style={{ width: WIDTH, height, transform: `translate(${view.x}px,${view.y}px) scale(${view.k})` }}>
       {/* 列标题下的细分隔线，区分四列。 */}
       {/* 线：第一次打开时从左往右展开。点亮的线走一道慢慢移动的浅光，表示影响方向。 */}
@@ -278,19 +276,19 @@ export function InsightGraphView({ graph, selection, marked, onSelect, story, on
           const d = edgePath(boxes.get(e.from)!, boxes.get(e.to)!);
           const path = Boolean(lit?.edges.has(key));
           return <g key={key} opacity={on ? 1 : 0.18} className="transition-opacity duration-500">
-            <path d={d} fill="none" stroke={path ? "#8a6a2f" : s.stroke} strokeWidth={bold ? w + 0.8 : path ? w + 0.3 : w} strokeDasharray={s.dash} strokeLinecap="round" className="transition-[stroke] duration-500" />
-            {path ? <path d={d} fill="none" stroke="#fffaf0" strokeOpacity={0.9} strokeWidth={Math.max(0.7, w * 0.35)} strokeDasharray="1 22" strokeLinecap="round" className="insight-flow" /> : null}
+            <path d={d} fill="none" stroke={path ? "#1d4ed8" : s.stroke} strokeWidth={bold ? w + 0.8 : path ? w + 0.3 : w} strokeDasharray={s.dash} strokeLinecap="round" className="transition-[stroke] duration-500" />
+            {path ? <path d={d} fill="none" stroke="#ffffff" strokeOpacity={0.9} strokeWidth={Math.max(0.7, w * 0.35)} strokeDasharray="1 22" strokeLinecap="round" className="insight-flow" /> : null}
           </g>; })}
       </svg>
       {/* 线上的分数只在点亮的链路上标，平时靠线的粗细说强弱。 */}
       {lit ? (() => { const placed: Array<[number, number]> = [];
         return graph.edges.map((e, i) => { const key = edgeKey(e); if (!e.score || !lit.edges.has(key)) return null;
           const [x, y] = samples[i][25]; if (placed.some(([px, py]) => Math.abs(px - x) < 32 && Math.abs(py - y) < 16)) return null; placed.push([x, y]);
-          return <span key={key} aria-hidden="true" className={`insight-in pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#fbf8f2] px-1.5 text-[13px] leading-[18px] tabular-nums text-[#7d5f2a] ${SERIF}`} style={{ left: x, top: y }}>{scoreText(e)}</span>; }); })() : null}
-      {COLUMN_TITLE.map((title, i) => <div key={title} className={`absolute top-0 text-[13px] tracking-[0.36em] text-[#b39c74] ${SERIF}`} style={{ left: COL[i].x + (i === 0 ? 8 : i === 2 ? 12 : 0) }}>{title}</div>)}
-      {base.sections.map((s) => <div key={s.label} className={`absolute text-[13px] tracking-[0.2em] text-[#a39a8e] ${SERIF}`} style={{ left: COL[0].x + 8, top: s.y }}>{s.label}</div>)}
+          return <span key={key} aria-hidden="true" className={`insight-in pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#f8fafc] px-1.5 text-[13px] leading-[18px] tabular-nums text-[#1d4ed8] `} style={{ left: x, top: y }}>{scoreText(e)}</span>; }); })() : null}
+      {COLUMN_TITLE.map((title, i) => <div key={title} className={`absolute top-0 text-[13px] tracking-[0.36em] text-[#94a3b8] `} style={{ left: COL[i].x + (i === 0 ? 8 : i === 2 ? 12 : 0) }}>{title}</div>)}
+      {base.sections.map((s) => <div key={s.label} className={`absolute text-[13px] tracking-[0.2em] text-[#94a3b8] `} style={{ left: COL[0].x + 8, top: s.y }}>{s.label}</div>)}
       {graph.nodes.map((n) => { const b = boxes.get(n.id)!; const on = !lit || lit.nodes.has(n.id); const selected = selection?.kind === "node" && selection.id === n.id;
-        const aiDot = isAi(n.source.kind) ? <span aria-hidden="true" title={INSIGHT_SOURCE_LABEL[n.source.kind].name} className="size-1.5 shrink-0 rounded-full bg-[#a8823f]" /> : null;
+        const aiDot = isAi(n.source.kind) ? <span aria-hidden="true" title={INSIGHT_SOURCE_LABEL[n.source.kind].name} className="size-1.5 shrink-0 rounded-full bg-[#2f6bff]" /> : null;
         const score = n.score ? scoreText(n) : n.strength ? STRENGTH_STYLE[n.strength].pill : "";
         const tip = [n.subtitle, `来源：${INSIGHT_SOURCE_LABEL[n.source.kind].name}`].join(" · ");
         return <button key={n.id} type="button" data-node={n.id} aria-pressed={selected} aria-label={`${n.label}，${n.subtitle}，来源：${INSIGHT_SOURCE_LABEL[n.source.kind].name}`} title={tip}
@@ -299,21 +297,21 @@ export function InsightGraphView({ graph, selection, marked, onSelect, story, on
           onMouseEnter={() => { if (!drag.current) setHover({ kind: "node", id: n.id }); }} onMouseLeave={() => setHover(null)} onFocus={() => setHover({ kind: "node", id: n.id })} onBlur={() => setHover(null)}
           className={`${nodeClass(n, on, selected, Boolean(lit))} cursor-grab active:cursor-grabbing`} style={{ left: b.x, top: b.y, width: b.w, height: b.h, animationDelay: `${n.column * 140 + 80}ms` }}>
           {n.kind === "metric" ? <>
-            <span className="flex items-center gap-2 text-[13px] tracking-[0.3em] text-[#8a8178]">{n.label}<span className="h-px flex-1 bg-[#eadfca]" /></span>
-            <span className={`${SERIF} mt-1.5 text-[32px] leading-none tabular-nums tracking-[0.01em] text-[#1c1917]`}>{n.value ?? n.subtitle}</span>
+            <span className="flex items-center gap-2 text-[13px] tracking-[0.3em] text-[#64748b]">{n.label}<span className="h-px flex-1 bg-[#e2e8f0]" /></span>
+            <span className={`mt-1.5 text-[32px] leading-none tabular-nums tracking-[0.01em] text-[#0f172a]`}>{n.value ?? n.subtitle}</span>
           </> : n.kind === "decomp" ? <>
-            <span className="text-[13px] tracking-[0.2em] text-[#8a8178]">{n.label}</span>
-            <span className={`${SERIF} mt-1.5 text-[23px] leading-none tabular-nums text-[#3a2e1c]`}>{n.value ?? n.subtitle}</span>
+            <span className="text-[13px] tracking-[0.2em] text-[#64748b]">{n.label}</span>
+            <span className={`mt-1.5 text-[23px] leading-none tabular-nums text-[#1d4ed8]`}>{n.value ?? n.subtitle}</span>
           </> : n.kind === "factor" ? <span className="flex min-w-0 items-center gap-2">
-            <span className={`${SERIF} truncate text-[17px] tracking-[0.06em] text-[#1c1917]`}>{n.label}</span>{aiDot}
-            <span className={`${SERIF} ml-auto shrink-0 text-[15px] tabular-nums text-[#8a6a2f]`}>{score}</span>
+            <span className={`truncate text-[17px] tracking-[0.06em] text-[#0f172a]`}>{n.label}</span>{aiDot}
+            <span className={`ml-auto shrink-0 text-[15px] tabular-nums text-[#1d4ed8]`}>{score}</span>
           </span> : <>
             <span className="flex min-w-0 items-center gap-1.5">
-              <span className={`truncate text-[15px] ${n.strength === "missing" ? "text-[#a39a8e]" : "text-[#2a241f]"}`}>{n.label}</span>{aiDot}
-              <span className={`${SERIF} ml-auto shrink-0 text-[14px] tabular-nums ${n.strength === "strong" ? "text-[#7d5f2a]" : n.strength === "missing" ? "text-[#b98a45]" : "text-[#a39a8e]"}`}>{n.strength === "missing" ? "待采集" : score}</span>
+              <span className={`truncate text-[15px] ${n.strength === "missing" ? "text-[#94a3b8]" : "text-[#0f172a]"}`}>{n.label}</span>{aiDot}
+              <span className={`ml-auto shrink-0 text-[14px] tabular-nums ${n.strength === "strong" ? "text-[#1d4ed8]" : n.strength === "missing" ? "text-[#b7791f]" : "text-[#94a3b8]"}`}>{n.strength === "missing" ? "待采集" : score}</span>
             </span>
             {/* 分数细条：满条 = 50 分；缺数据画虚线。 */}
-            <span aria-hidden="true" className={`mt-1 block h-[2px] w-full ${n.strength === "missing" ? "bg-[repeating-linear-gradient(90deg,#d9c39a_0_2px,transparent_2px_6px)]" : "bg-[#efe8dc]"}`}>
+            <span aria-hidden="true" className={`mt-1 block h-[2px] w-full ${n.strength === "missing" ? "bg-[repeating-linear-gradient(90deg,#d9c39a_0_2px,transparent_2px_6px)]" : "bg-[#eef2f7]"}`}>
               {n.score ? <span className="block h-full transition-[width] duration-700" style={{ width: `${Math.min(100, n.score.value * 2)}%`, background: STRENGTH_STYLE[n.strength ?? "weak"].stroke }} /> : null}
             </span>
           </>}
@@ -323,11 +321,11 @@ export function InsightGraphView({ graph, selection, marked, onSelect, story, on
     {/* 浮层：右上角是讲解（选中时让位），左下角一行图例，右下角一组小按钮。 */}
     {told ? <StoryCaption stories={graph.stories} index={story} onStory={onStory} /> : null}
     <div data-overlay className="absolute bottom-3.5 left-5 hidden max-w-[calc(100%-260px)] sm:block"><LineLegend /></div>
-    <div data-overlay aria-label="画布操作" className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-full border border-[#ece3d4] bg-[#fffdf9]/90 px-1 py-0.5 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
+    <div data-overlay aria-label="画布操作" className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded-full border border-[#e4eaf2] bg-[#ffffff]/90 px-1 py-0.5 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
       <button type="button" aria-label="缩小" title="缩小" onClick={() => zoomAt(1 / 1.2, center().x, center().y)} className={tool}><Minus aria-hidden="true" className="size-3.5" /></button>
-      <span className={`${SERIF} w-10 text-center text-[11px] tabular-nums text-[#8a8178]`}>{Math.round(view.k * 100)}%</span>
+      <span className={`w-10 text-center text-[11px] tabular-nums text-[#64748b]`}>{Math.round(view.k * 100)}%</span>
       <button type="button" aria-label="放大" title="放大" onClick={() => zoomAt(1.2, center().x, center().y)} className={tool}><Plus aria-hidden="true" className="size-3.5" /></button>
-      <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-[#ece3d4]" />
+      <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-[#e4eaf2]" />
       <button type="button" aria-label="适应窗口" title="适应窗口" onClick={fitView} className={tool}><Maximize2 aria-hidden="true" className="size-3.5" /></button>
       <button type="button" aria-label="重排" title="重排（节点回到原位）" onClick={relayout} className={tool}><RotateCcw aria-hidden="true" className="size-3.5" /></button>
     </div>
