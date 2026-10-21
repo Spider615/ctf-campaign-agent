@@ -3,7 +3,7 @@
 import { AlertTriangle, ChevronRight, Database, Lightbulb, MessageCircle, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import { edgeKey, findEdge, findNode, routes, routesThrough, type InsightSelection } from "../../lib/insight/paths";
-import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightTable } from "../../lib/insight/types";
+import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightPeers, type InsightTable } from "../../lib/insight/types";
 import { SOURCE_TAG, STRENGTH_STYLE, scoreText } from "./insight-graph-view";
 
 const ORDER = { strong: 0, id: 1, med: 2, weak: 3, missing: 4 } as const;
@@ -56,6 +56,23 @@ function Part({ tone, children, empty }: { tone: keyof typeof TONE; children?: R
     <h3 className={`flex items-center gap-1.5 text-[12.5px] font-semibold ${t.ink}`}><Icon aria-hidden="true" className="size-3.5" />{t.title}<span className="font-normal text-[#94a3b8]">· {t.hint}</span></h3>
     <div className="mt-1.5 space-y-1.5 text-[13px] leading-relaxed text-[#334155]">{children ?? <p className="text-[#94a3b8]">{empty}</p>}</div>
   </section>;
+}
+
+// 同类店对比：一句结论 + 店最多的那组的高低两头，两根横条按结果值画。
+const VERDICT = { works: { tag: "成立", tone: "bg-[#e7f7ef] text-[#047857]" }, flat: { tag: "不明显", tone: "bg-[#f1f5f9] text-[#64748b]" }, reverse: { tag: "方向相反", tone: "bg-[#fdf1d8] text-[#a16207]" } } as const;
+function PeerBox({ peers }: { peers: InsightPeers }) {
+  const ex = peers.example; const top = Math.max(ex.hi.value, ex.lo.value) || 1; const v = VERDICT[peers.verdict];
+  const bar = (label: string, side: typeof ex.hi, color: string) => <div className="grid grid-cols-[88px_1fr_auto] items-center gap-2 text-[12px]">
+    <span className="truncate text-[#64748b]">{label} <span className="tabular-nums text-[#334155]">{side.param}</span></span>
+    <span className="h-2 overflow-hidden rounded-full bg-[#eef2f7]"><span className="block h-full rounded-full" style={{ width: `${Math.max(3, side.value / top * 100)}%`, background: color }} /></span>
+    <span className="tabular-nums font-semibold text-[#0f172a]">{side.outcome}</span>
+  </div>;
+  return <div className="mt-2 rounded-lg border border-[#dbe5ff] bg-white/80 p-2.5">
+    <p className="flex items-center gap-1.5 text-[12px] font-semibold text-[#1e3a8a]">同类店对比<span className={`rounded px-1.5 text-[10.5px] font-medium leading-4 ${v.tone}`}>{v.tag}</span></p>
+    <p className="mt-1 text-[12.5px] leading-relaxed">{peers.text}</p>
+    <p className="mt-2 text-[11.5px] text-[#64748b]">例：{ex.group}（{ex.n} 家），按{ex.param}各取 {ex.k} 家，看{ex.outcome}</p>
+    <div className="mt-1.5 space-y-1">{bar("最高", ex.hi, "#2f6bff")}{bar("最低", ex.lo, "#94a3b8")}</div>
+  </div>;
 }
 
 function SourceBox({ node }: { node: InsightNode }) {
@@ -146,9 +163,10 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
         <button type="button" onClick={() => onSelect({ kind: "node", id: edge.to })} className="hover:text-[#1d4ed8]">{findNode(graph, edge.to)?.label}</button>
       </Header>
       <ScoreBar x={edge} />
-      <Part tone="basis"><p>{edge.basis}</p></Part>
+      <Part tone="basis"><p>{edge.basis}</p>{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
       <Part tone="anomaly" empty="这条线上没有看到特别的案例。">{edge.anomalies.length ? edge.anomalies.map((a) => <p key={a}>{a}</p>) : undefined}</Part>
-      <Part tone="advice" empty={edge.noRecommendation}>{edge.recommendation ? <p>{edge.recommendation}</p> : undefined}</Part>
+      <Part tone="advice" empty={edge.noRecommendation}>{edge.recommendation ? <p>{edge.recommendation}</p> : undefined}
+        {edge.peers?.laggards.length ? <More title="同类店里可以推一把的店" count={edge.peers.laggards.length}>{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</More> : null}</Part>
       <More title="经过这条线的完整链路" count={all.length}>
         {all.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}
         <p className="text-[11.5px] text-[#94a3b8]">链路上每一段都是单独测的关联，不能把各段相乘当成效果。</p>

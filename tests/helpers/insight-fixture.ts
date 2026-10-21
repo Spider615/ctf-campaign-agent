@@ -1,5 +1,5 @@
 // 洞察图谱测试用的合成数据：形状和 Agent 查回来的一样，数值让各条关系有确定的强弱。
-// 40 家店 × 31 天；形象级别决定门店规模，金色星期二在周二、克减从 8/22 起全国铺开，七夕在 8/29。
+// 120 家店 × 31 天；形象级别决定门店规模，金色星期二在周二、克减从 8/22 起全国铺开，七夕在 8/29。
 import { buildDriverGraph } from "../../app/lib/insight/drivers.ts";
 import { toDriverData } from "../../agent/insight-graph.ts";
 
@@ -10,8 +10,9 @@ const dowOf = (d: string) => new Date(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.sli
 const noise = (seed: number) => { const x = Math.sin(seed * 9301 + 49297) * 233280; return x - Math.floor(x) - 0.5; };
 
 export function fakeResults() {
-  const stores = Array.from({ length: 40 }, (_, i) => ({ store: `S${i}`, big_region: ["北区", "南区"][i % 2], region: ["京津", "华南", "江苏", "湘鄂"][i % 4], city_tier: ["一线城市", "二线城市"][i % 2],
-    image: IMAGES[i % 3], shop_type: ["购物中心", "百货"][i % 2], nature: ["自营", "加盟(寄售)"][(i >> 1) % 2], area: ["60-100平方米", "100-149平方米"][(i >> 2) % 2], experience: i % 7 === 0 ? "周大福荟馆" : "周大福主流店（旧）", age: String(i % 12) }));
+  // 区域和铺型跟着店号奇偶走：形象 × 铺型 × 区域正好 6 组，每组 20 家，够做同类店对比。
+  const stores = Array.from({ length: 120 }, (_, i) => ({ store: `S${i}`, big_region: ["北区", "南区"][i % 2], region: ["京津", "华南"][i % 2], city_tier: ["一线城市", "二线城市"][(i >> 1) % 2],
+    image: IMAGES[i % 3], shop_type: ["购物中心", "百货"][i % 2], nature: ["自营", "加盟(寄售)"][(i >> 1) % 2], area: ["60-100平方米", "100-149平方米"][(i >> 2) % 2], experience: i % 7 === 0 ? "周大福荟馆" : "周大福主流店（旧）", age: String(i % 12), name: `测试店${i}` }));
   const panel = []; const daily = []; const gold = [];
   for (const d of days) {
     const dow = dowOf(d); const qixi = d === "20250829"; const promo = d >= "20250822"; const tue = dow === 2;

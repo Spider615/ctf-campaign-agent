@@ -55,9 +55,17 @@ export type InsightNode = {
 };
 // 每条线三部分（2026-10-19 会议定的）：依据 basis（数据验证的关联）、异常 anomalies（特殊案例和数据里能看到的共同点）、
 // 推荐 recommendation（表现最好的取值和搭配；恒等式、缺数据或关系太弱时为 null，noRecommendation 写原因）。
+// peers：同类店对比（peers.ts）。只有能落到门店层面的线才有；放在依据里，落后的店放在推荐里。
 export type InsightEdge = {
   from: InsightNodeId; to: InsightNodeId; strength: InsightStrength; score?: InsightScore; effect?: InsightEffect;
-  basis: string; anomalies: string[]; recommendation: string | null; noRecommendation?: string;
+  basis: string; anomalies: string[]; recommendation: string | null; noRecommendation?: string; peers?: InsightPeers;
+};
+// verdict：works 参数有利的那头结果更好；flat 两头差不多或各组方向不一；reverse 和图上的方向相反。
+export type InsightPeerSide = { param: string; outcome: string; value: number };
+export type InsightPeers = {
+  text: string; verdict: "works" | "flat" | "reverse"; groups: number; agree: number; stores: number;
+  example: { group: string; n: number; k: number; param: string; outcome: string; hi: InsightPeerSide; lo: InsightPeerSide };
+  laggards: string[];
 };
 
 export type InsightKpi = { id: "sales" | "gp" | "qty"; label: string; value: string; unit: string; detail: string };

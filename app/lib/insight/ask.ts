@@ -41,7 +41,9 @@ const edgeLine = (graph: InsightGraph, e: InsightEdge) => `- ${nodeName(graph, e
 // 选中线时展开三段和分数口径。
 const edgeDetail = (graph: InsightGraph, e: InsightEdge) => [edgeLine(graph, e),
   ...(e.score ? [`解释度口径：${e.score.measure}`] : e.effect ? [`效应口径：${e.effect.measure}`] : []),
-  `异常：${e.anomalies.length ? e.anomalies.join("；") : "无"}`, `推荐：${e.recommendation ?? `无（${e.noRecommendation ?? ""}）`}`].join("\n");
+  ...(e.peers ? [`同类店对比：${e.peers.text}例：${e.peers.example.group}（${e.peers.example.n} 家），${e.peers.example.param}最高的 ${e.peers.example.k} 家 ${e.peers.example.hi.param}、${e.peers.example.outcome} ${e.peers.example.hi.outcome}；最低的 ${e.peers.example.k} 家 ${e.peers.example.lo.param}、${e.peers.example.outcome} ${e.peers.example.lo.outcome}。`] : []),
+  `异常：${e.anomalies.length ? e.anomalies.join("；") : "无"}`, `推荐：${e.recommendation ?? `无（${e.noRecommendation ?? ""}）`}`,
+  ...(e.peers?.laggards.length ? [`同类店里可以推一把的店：${e.peers.laggards.join("；")}`] : [])].join("\n");
 
 // 依据材料：图谱概况 + 全部连线依据 + 选中对象的详情和链路 + 可高亮的节点清单。数字只出自这里。
 export function askContext(graph: InsightGraph, selection: InsightSelection | null): string {

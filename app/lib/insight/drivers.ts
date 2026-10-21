@@ -1,5 +1,6 @@
 // 从 Agent 查回来的聚合数据算出指标影响因素图谱：先算统计量，再用模板拼出节点、连线和依据。
 // 图上的数字全部出自这里，文字是模板，不经过模型。
+import { comparePeers, findOutliers, mainPart, peerGroups, type PeerMetric, type PeerStore } from "./peers.ts";
 import { etaSquared, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayFit } from "./stats.ts";
 import type { InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
 
@@ -7,7 +8,7 @@ import type { InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode,
 export type OfferGroup = "base" | "k50" | "k30" | "gt" | "other";
 // 门店日：baseGold 一般開單计价金实收；heavyGold 单件 ≥ 20 克的计价金实收；goldGrams / goldQty 计价金克重、件数。
 export type PanelRow = { store: string; day: string; sales: number; gp: number; revEx: number; items: number; orders: number; goldSales: number; baseGold: number; heavyGold: number; goldGrams: number; goldQty: number; k50: number; k30: number; gt: number };
-export type StoreRow = { store: string; bigRegion: string; region: string; cityTier: string; image: string; shopType: string; nature: string; area: string; experience: string; age: number | null };
+export type StoreRow = { store: string; bigRegion: string; region: string; cityTier: string; image: string; shopType: string; nature: string; area: string; experience: string; age: number | null; name: string };
 export type PtypeRow = { ptype: "计价金" | "一口价黄金" | "镶嵌及其他"; sales: number; gp: number; revEx: number; items: number; grams: number };
 // dow：0 周日 … 6 周六。baseGold / promoGold：一般開單、除金色星期二外的活动计价金实收。
 export type DailyRow = { day: string; dow: number; festival: string | null; sales: number; orders: number; goldSales: number; baseGold: number; promoGold: number };
@@ -328,6 +329,65 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       paragraphs: [`零售毛利 ${yi(total.gp)}，毛利率 ${pct(gm)}（毛利 ÷ 不含税 RSV）。`, `计价金卖了 ${pct(share(gold.sales, total.sales))} 的钱，贡献 ${pct(share(gold.gp, total.gp))} 的毛利；镶嵌及其他卖 ${pct(share(inlay.sales, total.sales))}、贡献 ${pct(share(inlay.gp, total.gp))}。`] }),
   ];
 
+  // ---------- 同类店对比、离群店（peers.ts） ----------
+  const peerOf = new Map<string, PeerStore>();
+  for (const p of panel) {
+    const a = attrOf.get(p.store); if (!a) continue;
+    const s = peerOf.get(p.store) ?? { id: p.store, name: a.name, image: a.image, shopType: a.shopType, region: a.region, bigRegion: a.bigRegion, days: 0, sales: 0, gp: 0, revEx: 0, orders: 0, items: 0, gold: 0, baseGold: 0, heavyGold: 0, goldGrams: 0, goldQty: 0, promoDays: 0 };
+    s.days++; s.sales += p.sales; s.gp += p.gp; s.revEx += p.revEx; s.orders += p.orders; s.items += p.items; s.gold += p.goldSales; s.baseGold += p.baseGold; s.heavyGold += p.heavyGold; s.goldGrams += p.goldGrams; s.goldQty += p.goldQty; if (p.k50 || p.k30 || p.gt) s.promoDays++;
+    peerOf.set(p.store, s);
+  }
+  const peerAll = [...peerOf.values()].filter((s) => s.orders > 0);
+  // 对比只用开满 20 天的店；离群用全部有成交的店，营业天数少的单独归为数据不完整。
+  const groupsFull = peerGroups(peerAll.filter((s) => s.days >= 20)); const groupsAll = peerGroups(peerAll);
+  const div = (a: number, b: number) => b > 0 ? a / b : NaN;
+  const yuan = (v: number) => `${n0(v)} 元`;
+  const money = (v: number) => v >= 1e4 ? wan(v) : yuan(v);
+  const M: Record<string, PeerMetric> = {
+    goldShare: { label: "计价金占比", of: (x) => div(x.gold, x.sales) * 100, kind: "pp", fmt: pct },
+    gm: { label: "毛利率", of: (x) => div(x.gp, x.revEx) * 100, kind: "pp", fmt: pct },
+    baseShare: { label: "一般開單占计价金比例", of: (x) => div(x.baseGold, x.gold) * 100, kind: "pp", fmt: pct },
+    heavyShare: { label: "20 克以上大件占计价金比例", of: (x) => div(x.heavyGold, x.gold) * 100, kind: "pp", fmt: pct },
+    perGram: { label: "计价金每克实收", of: (x) => div(x.gold, x.goldGrams), kind: "log", fmt: (v) => `${n0(v)} 元/克` },
+    gramsPerItem: { label: "计价金件均克重", of: (x) => div(x.goldGrams, x.goldQty), kind: "log", fmt: (v) => `${n1(v)} 克` },
+    promoDays: { label: "有活动成交的天数占比", of: (x) => div(x.promoDays, x.days) * 100, kind: "pp", fmt: pct },
+    sales: { label: "月销售额", of: (x) => x.sales, kind: "log", fmt: money },
+    dailySales: { label: "日均销售额", of: (x) => div(x.sales, x.days), kind: "log", fmt: money },
+    dailyOrders: { label: "日均订单数", of: (x) => div(x.orders, x.days), kind: "log", fmt: (v) => `${n1(v)} 单` },
+    aov: { label: "客单价", of: (x) => div(x.sales, x.orders), kind: "log", fmt: yuan },
+  };
+  const peers = {
+    mix: comparePeers(groupsFull, M.goldShare, M.gm, -1),
+    shift: comparePeers(groupsFull, M.baseShare, M.dailySales, -1),
+    threshold: comparePeers(groupsFull, M.heavyShare, M.aov, 1),
+    depth: comparePeers(groupsFull, M.perGram, M.gm, 1),
+    promoAov: comparePeers(groupsFull, M.gramsPerItem, M.aov, 1),
+    promoOrders: comparePeers(groupsFull, M.promoDays, M.dailyOrders, 1),
+  };
+  // 离群店：销售额拆成营业天数 × 日均单数 × 客单价；客单价拆成单均件数 × 件均单价；毛利率看计价金占比。
+  const salesOut = findOutliers(groupsAll, { metric: M.sales, explain: mainPart([
+    { label: "营业天数", of: (x) => x.days, fmt: (v) => `${n0(v)} 天`, incomplete: true },
+    { label: "日均订单数", of: M.dailyOrders.of, fmt: M.dailyOrders.fmt },
+    { label: "客单价", of: M.aov.of, fmt: yuan },
+  ]), incomplete: (x) => x.days < 10 });
+  const aovOut = findOutliers(groupsFull, { metric: M.aov, explain: mainPart([
+    { label: "单均件数", of: (x) => div(x.items, x.orders), fmt: (v) => `${n1(v)} 件` },
+    { label: "件均单价", of: (x) => div(x.sales, x.items), fmt: yuan },
+  ]) });
+  const gmOut = findOutliers(groupsFull, { metric: M.gm, explain: (x, group, high) => {
+    const m = median(group.map(M.goldShare.of).filter(Number.isFinite)) ?? 0; const v = M.goldShare.of(x);
+    // 毛利率偏高对应计价金卖得少，偏低对应卖得多；差不到 10pp 就说看不出原因，不硬套。
+    // 计价金几乎为 0 的多是不卖足金的子品牌店（名字里看得出来），直接说「不卖计价金」。
+    if (high && v < 1 && m >= 10) return { label: `不卖计价金：同类计价金占比 ${pct(m)}` };
+    return (high ? m - v : v - m) >= 10 ? { label: `计价金占比${high ? "低" : "高"}：${pct(v)}（同类 ${pct(m)}）` } : { label: "货品结构和同类差不多，数据里看不出原因（可能是进货价或折扣口径）" };
+  } });
+  const withPeers = (e: InsightEdge, x: ReturnType<typeof comparePeers>): InsightEdge => {
+    if (!x) return e;
+    // 关系成立时把落后的店放进推荐；关系不成立或方向相反时进异常提醒。
+    const anomalies = x.verdict === "reverse" ? [...e.anomalies, `同类店里看，方向和这条线相反：${x.text}`] : e.anomalies;
+    return { ...e, peers: x, anomalies };
+  };
+
   // ---------- 连线 ----------
   // 有分数的线：档位由分数换算。恒等式、缺数据没有分数。
   // more：异常（数据里能看到的特殊案例和共同点）、推荐（表现最好的取值和搭配）。推荐给不出时写原因。
@@ -341,7 +401,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     const restId = identity ? { ...rest, recommendation: null, noRecommendation: "这是恒等式拆解，没有可选的取值；分数说明结果的差异主要来自哪一项。" } : rest;
     return { from, to, strength: identity ? "id" : byScore(score), score, ...(effect ? { effect: { text: effect.text, measure: effect.measure } } : {}), ...restId };
   };
-  const edges: InsightEdge[] = [
+  const raw: InsightEdge[] = [
     E("image", "store", sc.image, `形象级别单独解释门店月销售额差异的 ${pct(u(uSales, "形象级别"))}，8 个门店属性里最大。店销售额中位数：${imageRows.filter((r) => r.n >= 20).map((r) => `${r.k.split("/")[0]} ${wan(r.m)}`).join("，")}。`, { anomalies: [
       ...(imageOut.top ? [`每一档里都有特别好的店：店销售额超过本档中位数 3 倍的有 ${n0(imageOut.count)} 家，其中「${short(imageOut.top.k)}」最多（${n0(imageOut.top.n)} 家）。`] : []),
       ...(imageRows.length >= 2 ? [`最高档「${short(imageRows[0].k)}」只有 ${n0(imageRows[0].n)} 家店，样本比其他档少，中位数波动会大一些。`] : []) ],
@@ -388,6 +448,15 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     E("aov", "sales", { ...sc.aovSales, identity: true }, `恒等式：销售额 = 订单数 × 客单价。客单价占门店间差异的 ${pct(storeSplit.aov)}、逐日波动的 ${pct(daySplit.aov)}。`),
     E("gm", "gp", { ...sc.gmGp, identity: true }, `恒等式：毛利 = 不含税销售额 × 毛利率。门店之间毛利的差异，${pct(gpSplit.aov)} 来自毛利率，${pct(gpSplit.orders)} 来自销售额。`),
   ];
+
+  const extra: Partial<Record<string, { peers?: ReturnType<typeof comparePeers>; outliers?: string[] }>> = {
+    "mix>gm": { peers: peers.mix, outliers: gmOut }, "shift>promo": { peers: peers.shift }, "threshold>promo": { peers: peers.threshold },
+    "depth>promo": { peers: peers.depth }, "promo>aov": { peers: peers.promoAov }, "promo>orders": { peers: peers.promoOrders },
+    "orders>sales": { outliers: salesOut }, "store>aov": { outliers: aovOut },
+  };
+  const edges = raw.map((e) => { const x = extra[`${e.from}>${e.to}`]; if (!x) return e;
+    const withOut = x.outliers?.length ? { ...e, anomalies: [...x.outliers, ...e.anomalies] } : e;
+    return withPeers(withOut, x.peers ?? null); });
 
   const kpis: InsightKpi[] = [
     { id: "sales", label: "销售额", value: n1(total.sales / 1e8), unit: "亿", detail: `${n1(total.orders / 1e4)} 万单 · 客单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元` },
