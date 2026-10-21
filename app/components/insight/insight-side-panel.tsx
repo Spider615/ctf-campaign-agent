@@ -11,7 +11,7 @@ const byStrength = (a: InsightEdge, b: InsightEdge) => ORDER[a.strength] - ORDER
 
 // 档位小标：有分数显示分数，没有显示档位名。
 function Lk({ edge }: { edge: InsightEdge }) {
-  const tone = edge.strength === "strong" ? "bg-[#eaf0ff] text-[#1d4ed8]" : edge.strength === "med" ? "bg-[#f1f5fb] text-[#6d4fc2]" : edge.strength === "missing" ? "bg-[#fdf1d8] text-[#a16207]" : "bg-[#f1f5f9] text-[#64748b]";
+  const tone = edge.strength === "strong" ? "bg-[#eaf0ff] text-[#1d4ed8]" : edge.strength === "med" ? "bg-[#f1f5fb] text-[#3b5bdb]" : edge.strength === "missing" ? "bg-[#fdf1d8] text-[#a16207]" : "bg-[#f1f5f9] text-[#64748b]";
   return <span className={`mx-1 inline-block rounded-md px-1.5 align-[1px] text-[10.5px] font-semibold leading-4 tabular-nums ${tone}`}>{edge.score ? scoreText(edge) : INSIGHT_STRENGTH_LABEL[edge.strength]}</span>;
 }
 
@@ -85,21 +85,21 @@ function SourceBox({ node }: { node: InsightNode }) {
       <ChevronRight aria-hidden="true" className="ml-auto size-3.5 shrink-0 text-[#94a3b8] transition-transform group-open:rotate-90" />
     </summary>
     <div className="mt-2 space-y-1">
-      {s.columns.length ? row("用到字段", s.columns.map((c) => <code key={c} className="mb-0.5 mr-1 inline-block rounded border border-[#e4eaf2] bg-white px-1 font-sans text-[11.5px]">{c}</code>)) : null}
+      {s.columns.length ? row("用到字段", s.columns.map((c) => <code key={c} className="mb-0.5 mr-1 inline-block rounded border border-[#e2e8f0] bg-white px-1 font-sans text-[11.5px]">{c}</code>)) : null}
       {row("怎么来", s.how)}
-      {s.judgement ? row("AI 的部分", <span className="text-[#6d4fc2]">{s.judgement}</span>) : null}
+      {s.judgement ? row("AI 的部分", <span className="text-[#6d28d9]">{s.judgement}</span>) : null}
     </div>
   </details>;
 }
 
 function Chain({ graph, path, onSelect }: { graph: InsightGraph; path: InsightEdge[]; onSelect: (s: InsightSelection) => void }) {
-  const name = (id: InsightNodeId) => <button type="button" onClick={() => onSelect({ kind: "node", id })} className="rounded px-0.5 text-[#0f172a] underline decoration-[#c3cddb] decoration-dashed underline-offset-4 hover:text-[#1d4ed8] hover:decoration-[#2f6bff]">{findNode(graph, id)?.label ?? id}</button>;
+  const name = (id: InsightNodeId) => <button type="button" onClick={() => onSelect({ kind: "node", id })} className="rounded px-0.5 text-[#0f172a] underline decoration-[#cbd5e1] decoration-dashed underline-offset-4 hover:text-[#1d4ed8] hover:decoration-[#2f6bff]">{findNode(graph, id)?.label ?? id}</button>;
   return <div className="text-[12.5px] leading-[1.95] text-[#94a3b8]">{name(path[0].from)}{path.map((e) => <span key={edgeKey(e)}><Lk edge={e} />→ {name(e.to)}</span>)}</div>;
 }
 
 function Relation({ graph, edge, onSelect }: { graph: InsightGraph; edge: InsightEdge; onSelect: (s: InsightSelection) => void }) {
-  return <button type="button" onClick={() => onSelect({ kind: "edge", from: edge.from, to: edge.to })} className="group block w-full rounded-xl border border-[#e4eaf2] bg-white px-3 py-2 text-left transition hover:border-[#7aa2ff] hover:shadow-[0_4px_12px_-6px_rgba(47,107,255,0.4)] focus-visible:border-[#2f6bff] focus-visible:outline-none">
-    <span className="flex items-center gap-1 text-[12.5px] font-semibold text-[#0f172a]">{findNode(graph, edge.from)?.label}<span className="font-normal text-[#94a3b8]">→</span>{findNode(graph, edge.to)?.label}<Lk edge={edge} /><ChevronRight aria-hidden="true" className="ml-auto size-3.5 text-[#c3cddb] group-hover:text-[#2f6bff]" /></span>
+  return <button type="button" onClick={() => onSelect({ kind: "edge", from: edge.from, to: edge.to })} className="group block w-full rounded-xl border border-[#e4eaf2] bg-white px-3 py-2 text-left transition hover:border-[#9db8ff] hover:shadow-[0_4px_12px_-6px_rgba(47,107,255,0.4)] focus-visible:border-[#2f6bff] focus-visible:outline-none">
+    <span className="flex items-center gap-1 text-[12.5px] font-semibold text-[#0f172a]">{findNode(graph, edge.from)?.label}<span className="font-normal text-[#94a3b8]">→</span>{findNode(graph, edge.to)?.label}<Lk edge={edge} /><ChevronRight aria-hidden="true" className="ml-auto size-3.5 text-[#cbd5e1] group-hover:text-[#2f6bff]" /></span>
     <span className="mt-0.5 line-clamp-2 block text-[12px] leading-relaxed text-[#64748b]">{edge.basis}</span>
   </button>;
 }
@@ -122,21 +122,22 @@ function Header({ kicker, children, onClear }: { kicker: string; children: React
   </header>;
 }
 
-export function InsightSidePanel({ graph, selection, onSelect, onAsk, story = 0, onStory }: { graph: InsightGraph; selection: InsightSelection | null; onSelect: (s: InsightSelection | null) => void; onAsk: () => void; story?: number; onStory?: (i: number) => void }) {
+export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph: InsightGraph; selection: InsightSelection | null; onSelect: (s: InsightSelection | null) => void; onAsk: () => void }) {
   const ask = <button type="button" onClick={onAsk} className="mt-3 inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-[#d6e2ff] bg-[#f5f8ff] px-3 text-[13px] font-medium text-[#1d4ed8] transition hover:bg-[#eaf0ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><MessageCircle aria-hidden="true" className="size-4" />去智能问答查更细的数据</button>;
   const clear = () => onSelect(null);
 
   if (!selection) {
+    const top = [...graph.edges].filter((e) => e.score).sort((a, b) => b.score!.value - a.score!.value).slice(0, 5);
     return <div className="space-y-3">
       <header><p className="flex items-center gap-1 text-[11.5px] font-medium text-[#94a3b8]"><Sparkles aria-hidden="true" className="size-3.5 text-[#2f6bff]" />这张图的结论</p><h2 className="mt-0.5 text-[17px] font-semibold tracking-[-0.01em] text-[#0f172a]">销售额、毛利、销量受哪些因素影响</h2></header>
-      {/* 三条结论就是图上的三步讲解：点一条，图上点亮对应的链路。 */}
-      <ol className="space-y-1.5">{graph.stories.map((s, i) => { const on = i === story;
-        return <li key={s.title}><button type="button" aria-pressed={on} onClick={() => onStory?.(i)} onMouseEnter={() => onStory?.(i)}
-          className={`flex w-full gap-3 rounded-[6px] border-l-2 py-2.5 pl-3 pr-2 text-left transition ${on ? "border-[#2f6bff] bg-[#f5f8ff]" : "border-transparent hover:bg-[#f8fafc]"}`}>
-          <span className="w-5 shrink-0 pt-px text-[13px] tabular-nums text-[#2f6bff]">{String(i + 1).padStart(2, "0")}</span>
-          <span className="min-w-0"><span className="block text-[14.5px] tracking-[0.04em] text-[#0f172a]">{s.title}</span><span className="mt-0.5 block text-[12.5px] leading-relaxed text-[#475569]">{s.text}</span></span>
-        </button></li>; })}</ol>
-      <p className="text-[11.5px] leading-relaxed text-[#94a3b8]">点图上的节点或连线，看依据、异常和推荐。</p>
+      <ol className="space-y-2">{graph.summary.map((line, i) => <li key={line} className="flex gap-2.5 rounded-xl border border-[#e4eaf2] bg-white p-3 text-[13px] leading-relaxed text-[#334155]"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-[#eaf0ff] text-[11px] font-semibold text-[#1d4ed8]">{i + 1}</span>{line}</li>)}</ol>
+      <section><h3 className="mb-1.5 text-[12px] font-medium text-[#64748b]">解释度最高的关系</h3>
+        <div className="space-y-1">{top.map((e) => <button key={edgeKey(e)} type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-[12.5px] hover:bg-[#f5f8ff]">
+          <span className="min-w-0 flex-1 truncate text-[#334155]">{findNode(graph, e.from)?.label} → {findNode(graph, e.to)?.label}</span>
+          <span className="h-1.5 w-20 overflow-hidden rounded-full bg-[#eef2f7]"><span className="block h-full rounded-full" style={{ width: `${e.score!.value}%`, background: STRENGTH_STYLE[e.strength].stroke }} /></span>
+          <span className="w-8 text-right font-semibold tabular-nums text-[#0f172a]">{scoreText(e)}</span>
+        </button>)}</div>
+      </section>
     </div>;
   }
 
@@ -145,7 +146,7 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk, story = 0,
     return <div>
       <Header kicker="来源" onClear={clear}>{label.name}</Header>
       <p className="mb-3 text-[13px] text-[#334155]">{label.desc}。</p>
-      <div className="space-y-1.5">{graph.nodes.filter((n) => n.source.kind === selection.source).map((n) => <button key={n.id} type="button" onClick={() => onSelect({ kind: "node", id: n.id })} className="block w-full rounded-xl border border-[#e4eaf2] bg-white px-3 py-2 text-left hover:border-[#7aa2ff]">
+      <div className="space-y-1.5">{graph.nodes.filter((n) => n.source.kind === selection.source).map((n) => <button key={n.id} type="button" onClick={() => onSelect({ kind: "node", id: n.id })} className="block w-full rounded-xl border border-[#e4eaf2] bg-white px-3 py-2 text-left hover:border-[#9db8ff]">
         <span className="block text-[13px] font-semibold text-[#0f172a]">{n.label}</span><span className="mt-0.5 block text-[12px] text-[#64748b]">{n.source.judgement ?? n.source.how}</span>
       </button>)}</div>
     </div>;

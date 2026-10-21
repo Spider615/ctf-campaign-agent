@@ -51,8 +51,6 @@ export type InsightTable = { head: string[]; rows: string[][] };
 export type InsightNode = {
   id: InsightNodeId; column: InsightColumn; section?: InsightSection; kind: InsightNodeKind;
   label: string; subtitle: string; strength?: InsightStrength; score?: InsightScore; effect?: InsightEffect;
-  // 拆解列和指标列直接写数值（如「87.3 亿」「9,682 元」），图上常态只显示这个。
-  value?: string;
   source: InsightSource; paragraphs: string[]; table?: InsightTable; note?: string;
 };
 // 每条线三部分（2026-10-19 会议定的）：依据 basis（数据验证的关联）、异常 anomalies（特殊案例和数据里能看到的共同点）、
@@ -70,13 +68,11 @@ export type InsightPeers = {
   laggards: string[];
 };
 
-// 图上一步一步讲的结论：一句话 + 点亮的链路（从因素到指标）。summary 和它一一对应。
-export type InsightStory = { title: string; text: string; path: InsightNodeId[] };
 export type InsightKpi = { id: "sales" | "gp" | "qty"; label: string; value: string; unit: string; detail: string };
 export type InsightGraph = {
   schema: "insight-drivers/v2"; datasetVersion: string; builtAt: string;
   scope: { period: string; rows: number; stores: number; note: string };
-  kpis: InsightKpi[]; nodes: InsightNode[]; edges: InsightEdge[]; summary: string[]; stories: InsightStory[]; methods: Array<{ title: string; text: string }>;
+  kpis: InsightKpi[]; nodes: InsightNode[]; edges: InsightEdge[]; summary: string[]; methods: Array<{ title: string; text: string }>;
 };
 
 export const INSIGHT_STRENGTH_LABEL: Record<InsightStrength, string> = { strong: "强", med: "中", weak: "弱", id: "拆解", missing: "缺数据" };
