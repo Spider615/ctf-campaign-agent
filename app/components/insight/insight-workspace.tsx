@@ -69,7 +69,7 @@ export function InsightWorkspace({ selection, onSelect, onAskQa }: {
           <span className="rounded-full bg-[#f1f5f9] px-2 py-0.5 text-[11px] text-[#64748b]">{graph.scope.period} · {graph.scope.stores.toLocaleString("zh-CN")} 家店</span>
         </div>
         <InsightLegend graph={graph} selection={selection} onSelect={choose} />
-        <InsightGraphView graph={graph} selection={selection} marked={marked} onSelect={choose} fit />
+        <InsightGraphView graph={graph} selection={selection} marked={marked} onSelect={choose} />
       </section>
 
       <aside aria-label="洞察详情" className={`${card} flex min-w-0 flex-col overflow-hidden min-[1180px]:min-h-0`}>
