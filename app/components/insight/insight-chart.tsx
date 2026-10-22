@@ -17,7 +17,7 @@ function Bars({ chart }: { chart: Extract<InsightChart, { kind: "bars" }> }) {
   const zero = (0 - lo) / span * 100;
   return <ul className="space-y-1.5">{chart.bars.map((b) => {
     const left = b.value >= 0 ? zero : zero - (-b.value / span * 100); const width = Math.max(1.5, Math.abs(b.value) / span * 100);
-    return <li key={b.label} className="grid grid-cols-[minmax(64px,30%)_1fr_auto] items-center gap-2 text-[12px]">
+    return <li key={b.label} className="grid grid-cols-[minmax(72px,34%)_1fr_auto] items-center gap-2 text-[12px]">
       <span className="truncate text-[#475569]" title={b.label}>{b.label}</span>
       <span className="relative h-2.5 rounded-full bg-[#eef2f7]">
         {lo < 0 ? <span aria-hidden="true" className="absolute -inset-y-0.5 w-px bg-[#94a3b8]" style={{ left: `${zero}%` }} /> : null}

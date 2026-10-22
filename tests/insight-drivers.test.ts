@@ -60,7 +60,7 @@ test("图谱：合成数据里设定的关系能被认出来", () => {
   assert.equal(edge("image", "store").strength, "strong");
   assert.equal(edge("qixi", "day").strength, "strong");
   assert.equal(edge("weekday", "day").strength, "strong");
-  assert.match(edge("depth", "promo").basis, /克减 30 是 24\.0 元，克减 50 是 54\.0 元/);
+  assert.match(edge("depth", "promo").basis, /克减 50 54\.0 元，克减 30 24\.0 元/);
   assert.match(g.nodes.find((n) => n.id === "shift")!.paragraphs[0], /^8\/22 全国克减铺开后/);
   assert.match(g.nodes.find((n) => n.id === "member")!.paragraphs[0], /97\.7%/);
 });
@@ -121,8 +121,9 @@ test("依据里的图：每个有数据的节点和每条有分数的线都带�
   assert.equal(day.kind, "columns");
   if (day.kind === "columns") { assert.equal(day.points.length, 31); assert.deepEqual(day.band && [day.band.from, day.band.to], ["8/22", "8/31"]); assert.equal(day.points.find((p) => p.mark)?.label, "8/29"); }
   // 货品结构 → 毛利率：散点的拟合线往下走。
+  // 货品结构 → 毛利率：按计价金占比分档，档位越高毛利率越低。
   const mix = g.edges.find((e) => e.from === "mix" && e.to === "gm")!.chart!;
-  assert.ok(mix.kind === "scatter" && mix.fit.slope < 0);
+  assert.ok(mix.kind === "bars" && mix.bars.length >= 3 && mix.bars[0].value > mix.bars.at(-1)!.value, JSON.stringify(mix));
 });
 
 test("指标的图：两个乘数两条线，都是平常工作日的几倍", () => {
@@ -137,5 +138,5 @@ test("指标的图：两个乘数两条线，都是平常工作日的几倍", ()
     const i = c.labels.indexOf("8/4"); for (const s of c.series) assert.ok(Math.abs(s.values[i] - 1) < 0.5, `${id} ${s.label} ${s.values[i]}`);
     assert.deepEqual(c.marks?.map((m) => m.at), ["8/29"]);
   }
-  assert.deepEqual((g.nodes.find((n) => n.id === "qty")!.chart as { series: Array<{ label: string }> }).series.map((s) => s.label), ["订单数", "单均件数"]);
+  assert.deepEqual((g.nodes.find((n) => n.id === "qty")!.chart as { series: Array<{ label: string }> }).series.map((s) => s.label), ["订单数", "每单件数"]);
 });

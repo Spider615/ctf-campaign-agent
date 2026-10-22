@@ -56,11 +56,11 @@ export function comparePeers(groups: readonly PeerGroup[], param: PeerMetric, ou
   const size = outcome.kind === "log" ? Math.abs(Math.exp(d) - 1) * 100 : Math.abs(d);
   const notable = outcome.kind === "log" ? size >= 10 : size >= 2;
   const verdict = notable && agree / rows.length >= 0.7 ? (Math.sign(d) === sign ? "works" : "reverse") : "flat";
-  const gap = outcome.kind === "log" ? `${n1(size)}%` : `${n1(size)}pp`;
+  const gap = outcome.kind === "log" ? `${n1(size)}%` : `${n1(size)} 个百分点`;
   const scope = `同类店里比（商圈形象、铺型、区域相同，${rows.length} 组 ${n0(stores)} 家店）`;
   const text = verdict === "flat"
-    ? `${scope}：${param.label}高低两头的店，${outcome.label}只差 ${gap}，${agree}/${rows.length} 组方向一致，关系不明显。`
-    : `${scope}：${param.label}最高的四分之一，${outcome.label}比最低的四分之一${d > 0 ? "高" : "低"} ${gap}；${agree}/${rows.length} 组方向一致${verdict === "reverse" ? "，和图上这条线说的方向相反" : ""}。`;
+    ? `${scope}：${param.label}高的店和低的店，${outcome.label}只差 ${gap}，${agree}/${rows.length} 组方向一致，看不出明显关系。`
+    : `${scope}：${param.label}最高的 1/4 店，${outcome.label}比最低的 1/4 店${d > 0 ? "高" : "低"} ${gap}；${agree}/${rows.length} 组方向一致${verdict === "reverse" ? "，和图上这条线说的方向相反" : ""}。`;
   // 实例：店最多的一组，两头的参数和结果中位数。
   const ex = [...rows].sort((a, b) => b.valid.length - a.valid.length)[0];
   const example = { group: ex.g.label, n: ex.valid.length, k: ex.k, param: param.label, outcome: outcome.label,
@@ -107,9 +107,9 @@ export function findOutliers(groups: readonly PeerGroup[], spec: OutlierSpec, ex
   const real = hits.filter((h) => !h.cause.incomplete).sort((a, b) => Math.abs(b.z) - Math.abs(a.z));
   const kinds = new Map<string, number>(); for (const h of real) { const k = h.cause.label.split("：")[0]; kinds.set(k, (kinds.get(k) ?? 0) + 1); }
   const vs = (h: typeof hits[number]) => metric.kind === "log"
-    ? `${metric.fmt(metric.of(h.s))}，${metric.of(h.s) >= h.med ? `是同类中位数的 ${n1(metric.of(h.s) / h.med)} 倍` : `只有同类中位数的 ${n1(metric.of(h.s) / h.med * 100)}%`}`
-    : `${metric.fmt(metric.of(h.s))}，比同类中位数 ${metric.fmt(h.med)} ${metric.of(h.s) >= h.med ? "高" : "低"} ${n1(Math.abs(metric.of(h.s) - h.med))}pp`;
-  const lines = [`同类店里${metric.label}偏离太多的（离同类中位数超过 ${OUTLIER_Z} 个 MAD）有 ${n0(hits.length)} 家：偏高 ${n0(high)} 家、偏低 ${n0(hits.length - high)} 家。${kinds.size ? `拆开看，${[...kinds].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n0(n)} 家`).join("，")}。` : ""}`];
+    ? `${metric.fmt(metric.of(h.s))}，${metric.of(h.s) >= h.med ? `是同类一般水平的 ${n1(metric.of(h.s) / h.med)} 倍` : `只有同类一般水平的 ${n1(metric.of(h.s) / h.med * 100)}%`}`
+    : `${metric.fmt(metric.of(h.s))}，比同类一般水平 ${metric.fmt(h.med)} ${metric.of(h.s) >= h.med ? "高" : "低"} ${n1(Math.abs(metric.of(h.s) - h.med))} 个百分点`;
+  const lines = [`同类店里${metric.label}和一般水平差得特别多的有 ${n0(hits.length)} 家：偏高 ${n0(high)} 家、偏低 ${n0(hits.length - high)} 家。${kinds.size ? `拆开看，${[...kinds].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n0(n)} 家`).join("，")}。` : ""}`];
   for (const h of real.slice(0, examples)) lines.push(`${storeName(h.s)}（${h.g.label}，同类 ${n0(h.n)} 家）${metric.label} ${vs(h)}；主要是${h.cause.label}。`);
   if (incomplete.length) lines.push(`另有 ${n0(incomplete.length)} 家主要是营业天数少（比如 ${storeName(incomplete[0].s)} 只有 ${n0(incomplete[0].s.days)} 天有成交），属于数据不完整，先从对比里排除。`);
   return lines;

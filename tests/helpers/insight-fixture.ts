@@ -20,7 +20,7 @@ export function fakeResults() {
     for (const [i, s] of stores.entries()) {
       const scale = [5, 2, 1][i % 3] * (qixi ? 6 : tue ? 2.5 : promo ? 1.8 : 1) * (1 + 0.3 * noise(i * 100 + Number(d)));
       const orders = Math.max(1, Math.round(20 * scale)); const sales = orders * (9000 + 3000 * (i % 3 === 0 ? 1 : 0));
-      const goldShare = 0.6 + (promo || tue ? 0.15 : 0) + 0.05 * noise(i + Number(d));
+      const goldShare = 0.45 + 0.45 * ((i * 7) % 10) / 9 + (promo || tue ? 0.05 : 0) + 0.02 * noise(i + Number(d));
       const revEx = sales / 1.13; const gp = revEx * (0.4 - 0.25 * goldShare);
       const k50 = promo && i % 2 === 1; const gt = tue;
       const goldAmt = sales * goldShare; const goldQty = Math.round(orders * 1.1); const gramsPerItem = 7 + (k50 ? 6 : 0) + (gt ? 4 : 0) + noise(i * 7 + Number(d));

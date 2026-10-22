@@ -15,7 +15,7 @@ test("问答上下文写清在看哪个节点或哪条线；来源筛选不带�
   const g = fakeGraph();
   assert.equal(focusOf(g, { kind: "source", source: "field" }), null);
   const edge = focusOf(g, { kind: "edge", from: "promo", to: "mix" })!;
-  assert.match(focusContext(edge), /连线「活动和力度 → 货品结构」（图上依据：同一家店、同一天/);
+  assert.match(focusContext(edge), /连线「活动和力度 → 货品结构」（图上依据：同一家店，有活动成交的那天/);
   assert.match(focusContext(focusOf(g, { kind: "node", id: "region" })!), /选中了节点「大区 \/ 区域」.*没有明确改变时沿用/);
   assert.equal(selectionLabel(g, null), "整张图");
 });

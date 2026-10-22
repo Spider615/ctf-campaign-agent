@@ -27,7 +27,7 @@ test("同类店对比：三种结论都按数据给，落后的店只在关系�
   const r = comparePeers(peerGroups(works), share, gm, 1)!; assert.equal(r.verdict, "reverse"); assert.deepEqual(r.laggards, []);
   // 毛利率和计价金占比无关：不明显。
   const flat = Array.from({ length: 40 }, (_, i) => store(i, { gold: 1e6 + i * 5e4, gp: 6e5 + (i % 2) * 1e3 }));
-  const f = comparePeers(peerGroups(flat), share, gm, -1)!; assert.equal(f.verdict, "flat"); assert.match(f.text, /关系不明显/);
+  const f = comparePeers(peerGroups(flat), share, gm, -1)!; assert.equal(f.verdict, "flat"); assert.match(f.text, /看不出明显关系/);
   assert.equal(comparePeers([], share, gm, -1), null);
 });
 
