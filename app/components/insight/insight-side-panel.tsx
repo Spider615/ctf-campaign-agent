@@ -1,7 +1,6 @@
 "use client";
 
 import { AlertTriangle, ChevronRight, Database, Lightbulb, MessageCircle, Sparkles, X } from "lucide-react";
-import { useState } from "react";
 import { edgeKey, findEdge, findNode, routes, routesThrough, type InsightSelection } from "../../lib/insight/paths";
 import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightCardStores, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightPeers, type InsightTable } from "../../lib/insight/types";
 import { InsightChartView } from "./insight-chart";
@@ -140,14 +139,11 @@ function BusinessCard({ card }: { card: InsightCard }) {
   </div>;
 }
 
-// 折叠的次要内容：链路、相连的线。默认收起，详情栏一屏能看完三段主内容。
-function More({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return <section className="border-t border-[#eef2f7] pt-2">
-    <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="flex min-h-8 w-full items-center gap-1 text-[12px] font-medium text-[#64748b] hover:text-[#0f172a]">
-      <ChevronRight aria-hidden="true" className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`} />{title}<span className="text-[#94a3b8]">（{count}）</span>
-    </button>
-    {open ? <div className="mt-1 space-y-1.5 pb-1">{children}</div> : null}
+// 直接展开的一组内容，只有一行小标题，不折叠。
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section className="space-y-1.5 border-t border-[#eef2f7] pt-2.5">
+    <h3 className="text-[12px] font-medium text-[#64748b]">{title}</h3>
+    {children}
   </section>;
 }
 
@@ -199,18 +195,17 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
         <button type="button" onClick={() => onSelect({ kind: "node", id: edge.to })} className="hover:text-[#1d4ed8]">{findNode(graph, edge.to)?.label}</button>
       </Header>
       <BusinessCard card={edge.card} />
+      {/* 依据、异常、推荐：紧跟在「可以怎么做」下面，直接展开。 */}
+      <Part tone="basis"><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
+      <Part tone="anomaly" empty="这条线上没有看到特别的案例。">{edge.anomalies.length ? edge.anomalies.map((a) => <p key={a}>{a}</p>) : undefined}</Part>
+      <Part tone="advice" empty={edge.noRecommendation}>{edge.recommendation ? <p>{edge.recommendation}</p> : undefined}
+        {edge.peers?.laggards.length ? <div className="space-y-1 pt-1">{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</div> : null}</Part>
       {ask}
-      {/* 给分析师看：分数、统计口径、同类店对比、离群店清单、完整链路。业务默认不展开。 */}
-      <More title="给分析师看" count={1 + (edge.peers ? 1 : 0) + (edge.anomalies.length ? 1 : 0) + all.length}>
-        <ScoreBar x={edge} />
-        <p className="text-[11.5px] text-[#94a3b8]">{INSIGHT_EDGE_SOURCE[edge.strength]}</p>
-        <Part tone="basis"><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
-        {edge.anomalies.length ? <Part tone="anomaly">{edge.anomalies.map((a) => <p key={a}>{a}</p>)}</Part> : null}
-        {edge.peers?.laggards.length ? <Part tone="advice">{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</Part> : null}
-        <p className="pt-1 text-[12px] font-medium text-[#64748b]">经过这条线的完整链路</p>
+      <Group title="经过这条线的完整链路">
         {all.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}
         <p className="text-[11.5px] text-[#94a3b8]">链路上每一段都是单独测的关联，不能把各段相乘当成效果。</p>
-      </More>
+      </Group>
+      <Group title="解释度"><ScoreBar x={edge} /><p className="text-[11.5px] text-[#94a3b8]">{INSIGHT_EDGE_SOURCE[edge.strength]}</p></Group>
     </div>;
   }
 
@@ -225,24 +220,19 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
   return <div className="space-y-2.5">
     <Header kicker={INSIGHT_KIND_LABEL[node.kind]} onClear={clear}>{node.label}</Header>
     <BusinessCard card={node.card} />
+    {/* 依据、异常、推荐：紧跟在「可以怎么做」下面，直接展开。异常和推荐汇总相连的线，点标签看那条线。 */}
+    <Part tone="basis">
+      {node.paragraphs.map((p) => <p key={p}>{p}</p>)}
+      {node.table ? <div className="pt-1"><Table table={node.table} /></div> : null}
+      {node.note ? <p className="text-[12px] text-[#64748b]">{node.note}</p> : null}
+    </Part>
+    <Part tone="anomaly" empty="相连的线上没有看到特别的案例。">{anomalies.length ? anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>) : undefined}</Part>
+    <Part tone="advice" empty={node.kind === "metric" ? "这是结果指标，推荐看它上游的线。" : "相连的线上没有可推荐的取值。"}>{advice.length ? advice.map((e) => <p key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#047857] hover:bg-white">{relName(e)}</button>{e.recommendation}</p>) : undefined}</Part>
     {ask}
-    {down.length || up.length || ins.length || outs.length ? <div className="space-y-0.5">
-      {down.length ? <More title="怎么影响到指标" count={down.length}>{down.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</More> : null}
-      {up.length ? <More title="受哪些因素影响" count={up.length}>{up.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</More> : null}
-      {ins.length ? <More title="上游" count={ins.length}>{ins.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</More> : null}
-      {outs.length ? <More title="下游" count={outs.length}>{outs.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</More> : null}
-    </div> : null}
-    {/* 给分析师看：分数、数据来源、原来的依据和表、相连线的异常。 */}
-    <More title="给分析师看" count={1 + anomalies.length + advice.length}>
-      <ScoreBar x={node} />
-      <SourceBox node={node} />
-      <Part tone="basis">
-        {node.paragraphs.map((p) => <p key={p}>{p}</p>)}
-        {node.table ? <div className="pt-1"><Table table={node.table} /></div> : null}
-        {node.note ? <p className="text-[12px] text-[#64748b]">{node.note}</p> : null}
-      </Part>
-      {anomalies.length ? <Part tone="anomaly">{anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>)}</Part> : null}
-      {advice.length ? <Part tone="advice">{advice.map((e) => <p key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#047857] hover:bg-white">{relName(e)}</button>{e.recommendation}</p>)}</Part> : null}
-    </More>
+    {down.length ? <Group title="怎么影响到指标">{down.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</Group> : null}
+    {up.length ? <Group title="受哪些因素影响">{up.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</Group> : null}
+    {ins.length ? <Group title="上游">{ins.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</Group> : null}
+    {outs.length ? <Group title="下游">{outs.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</Group> : null}
+    <Group title="数据来源和解释度"><SourceBox node={node} /><ScoreBar x={node} /></Group>
   </div>;
 }
