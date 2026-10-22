@@ -16,6 +16,7 @@ import type { Ics1811Draft } from "../app/lib/campaign/ics1811/types.ts";
 import type { AgentTraceEvent, CampaignToolName } from "../app/lib/tool-trace.ts";
 import { createAgentRunner, type AgentQuery } from "./run-turn.ts";
 import { loadSkillCatalog, SkillCatalogError, validateSkillSources } from "./skills.ts";
+import { modelConfigFromEnv } from "./model-gateway.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const PLUGIN_DIR = fileURLToPath(new URL("./plugin/", import.meta.url));
@@ -141,9 +142,9 @@ function assertNoMutatingTools(result: AgentResult): void {
 
 async function main(): Promise<void> {
   if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
-  const apiKey = process.env.DEEPSEEK_API_KEY?.trim() ?? "";
-  if (!apiKey) {
-    throw new Error("缺少 DEEPSEEK_API_KEY：请先在仓库根目录的 .dev.vars 中填写，再运行真实 Skill smoke。");
+  const gateway = await modelConfigFromEnv();
+  if (!gateway.apiKey) {
+    throw new Error("缺少 JUZI_MODELS_KEY：请先在仓库根目录的 .dev.vars 中填写，再运行真实 Skill smoke。");
   }
 
   const catalog = loadSkillCatalog(PLUGIN_DIR);
@@ -160,9 +161,9 @@ async function main(): Promise<void> {
   const temporaryRoot = mkdtempSync(resolve(tmpdir(), "ics1811-skill-smoke-"));
   try {
     const config = {
-      model: process.env.AGENT_MODEL || "deepseek-flash",
-      modelBaseUrl: process.env.AGENT_MODEL_BASE_URL || "https://api.deepseek.com/anthropic",
-      apiKey,
+      model: gateway.model,
+      modelBaseUrl: gateway.modelBaseUrl,
+      apiKey: gateway.apiKey,
       runtimeDir: resolve(temporaryRoot, "runtime"),
       pluginDir: PLUGIN_DIR,
     };

@@ -25,7 +25,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 运营用自然语言提出活动想法，Agent 先把需求整理成 `campaign/v1` 活动 Brief，再根据事实动态选择品牌传播、成交优惠、会员触达、内容传播和门店准备等执行轨。ICS-1811 只是成交优惠活动才会创建的可选子流程；一场 Campaign 当前最多包含一张 1811 子单。
 
-对话由 Claude Agent SDK 驱动，模型通过 DeepSeek 的 Anthropic 兼容接口运行。Harness 负责按回合读取 Skill、选择工具和组织回复；事实证据、动态路由、1811 字段换算、缺项、校验、传播守卫、工作台状态和落库都由确定性 TypeScript 代码负责。
+对话由 Claude Agent SDK 驱动，模型通过公司统一模型网关（OpenAI 兼容接口，默认 claude-5.5-sonnet）运行，Agent 服务内置一层到 Anthropic 协议的转换。Harness 负责按回合读取 Skill、选择工具和组织回复；事实证据、动态路由、1811 字段换算、缺项、校验、传播守卫、工作台状态和落库都由确定性 TypeScript 代码负责。
 
 ## Demo 能力
 
@@ -66,7 +66,7 @@ SDK 内置工具只开放 `Skill`，活动读写由本地 MCP server 的 11 个�
 npm run install:ci
 npm run install:agent
 cp .dev.vars.example .dev.vars
-# 在 .dev.vars 中填写 DEEPSEEK_API_KEY
+# 在 .dev.vars 中填写 JUZI_MODELS_KEY
 npm run dev:all
 ```
 
@@ -87,7 +87,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 ## 部署
 
-容器部署（butler）用仓库根目录的 `Dockerfile`：一个容器里同时跑页面（wrangler 本地模式，含 D1）和 Agent 服务，入口是 `scripts/start-container.mjs`。页面对外监听 `PORT`（默认 8787），Agent 只听容器内回环地址；启动时自动应用 D1 迁移。只需要配置 `DEEPSEEK_API_KEY`，其余变量见 `.env.example`；`/data` 要设成持久目录，否则重新部署会丢会话。
+容器部署（butler）用仓库根目录的 `Dockerfile`：一个容器里同时跑页面（wrangler 本地模式，含 D1）和 Agent 服务，入口是 `scripts/start-container.mjs`。页面对外监听 `PORT`（默认 8787），Agent 只听容器内回环地址；启动时自动应用 D1 迁移。只需要配置 `JUZI_MODELS_KEY`，其余变量见 `.env.example`；`/data` 要设成持久目录，否则重新部署会丢会话。
 
 也可以把 Agent 服务单独跑在有 Node.js 和可写磁盘的环境，页面放在 Workers 上。只有这种分开部署才需要：Workers 配置 `AGENT_SERVICE_URL`，两边配置相同的 `AGENT_SERVICE_TOKEN`。
 

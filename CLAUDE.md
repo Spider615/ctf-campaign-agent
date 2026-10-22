@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run install:ci               # 根目录依赖
 npm run install:agent            # agent/ 的独立依赖（Claude Agent SDK、zod v4）
-cp .dev.vars.example .dev.vars   # 填 DEEPSEEK_API_KEY；页面和 Agent 服务读同一个文件
+cp .dev.vars.example .dev.vars   # 填 JUZI_MODELS_KEY；页面和 Agent 服务读同一个文件
 npm run dev:all                  # 同时起 Agent 服务（8788）和页面（5173），一个退出另一个也停
 npm run dev                      # 只起页面（vinext + Cloudflare Workers + 本地 D1）
 npm run dev:agent                # 只起 Agent 服务；AGENT_DEBUG=1 打印每次工具调用的参数和结果
@@ -42,7 +42,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 改表结构：改 `db/schema.ts` → `npm run db:generate` → 用上面的命令应用新 SQL → 同步改 `app/lib/server/session-store.ts`。运行时查询是手写 SQL，drizzle 只用来生成迁移。现在 `draft_version.brief_json` 存事实层草稿，`ics_orders_json` 存填写值快照。
 
-容器部署（butler）用根目录 `Dockerfile`，单容器跑页面（wrangler 本地模式 + 本地 D1，数据在 `D1_PERSIST_DIR`，默认 `/data/d1`）和 Agent 服务，入口 `scripts/start-container.mjs` 负责迁移、进程联动，并把 Agent 固定在容器内回环地址，只需配 `DEEPSEEK_API_KEY`（契约见 `.env.example`）。周大福历史数据不进本仓库（GitHub 远端是公开的）：SQL 导出放在内网 GitLab 私有仓库 `hackathon/ctf-campaign-data`（按 40MB 分片 + `SHA256SUMS`），配了只读 deploy token `CTF_DATA_REPO_TOKEN` 时，`scripts/container-mysql.mjs` 在容器里起一个只听回环的 MySQL（数据在 `CTF_MYSQL_DATA_DIR`，默认 `/data/mysql`），第一次启动拉取、校验、导入，建只读账号并替 Agent 填好 `CTF_MYSQL_*`；没配就不起库。更新数据：重新 `mysqldump --databases ctf_sales_202508 | gzip`、切片推到数据仓库，再删掉持久卷里的 `.ctf-imported` 标记。分开部署时 Agent 服务单独跑在有 Node.js 和可写磁盘的环境；只有这时 Workers 才配 `AGENT_SERVICE_URL`，两边配同一个 `AGENT_SERVICE_TOKEN`。Agent 部署产物必须包含：
+容器部署（butler）用根目录 `Dockerfile`，单容器跑页面（wrangler 本地模式 + 本地 D1，数据在 `D1_PERSIST_DIR`，默认 `/data/d1`）和 Agent 服务，入口 `scripts/start-container.mjs` 负责迁移、进程联动，并把 Agent 固定在容器内回环地址，只需配 `JUZI_MODELS_KEY`（契约见 `.env.example`）。周大福历史数据不进本仓库（GitHub 远端是公开的）：SQL 导出放在内网 GitLab 私有仓库 `hackathon/ctf-campaign-data`（按 40MB 分片 + `SHA256SUMS`），配了只读 deploy token `CTF_DATA_REPO_TOKEN` 时，`scripts/container-mysql.mjs` 在容器里起一个只听回环的 MySQL（数据在 `CTF_MYSQL_DATA_DIR`，默认 `/data/mysql`），第一次启动拉取、校验、导入，建只读账号并替 Agent 填好 `CTF_MYSQL_*`；没配就不起库。更新数据：重新 `mysqldump --databases ctf_sales_202508 | gzip`、切片推到数据仓库，再删掉持久卷里的 `.ctf-imported` 标记。分开部署时 Agent 服务单独跑在有 Node.js 和可写磁盘的环境；只有这时 Workers 才配 `AGENT_SERVICE_URL`，两边配同一个 `AGENT_SERVICE_TOKEN`。Agent 部署产物必须包含：
 
 ```text
 agent/plugin/.claude-plugin/plugin.json
@@ -61,7 +61,7 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 两个进程共用一份领域逻辑：
 
 - **页面和数据（Workers）**：`app/api/sessions/**` → `app/lib/server/turns.ts`（`createSession` / `runTurn`）→ `SessionStore`（`session-store.ts`，D1 实现和测试用的内存实现）。版本、消息、落库都在这一侧，一个回合一次 `db.batch`。`app/lib/server/runtime.ts` 是唯一接 `cloudflare:workers` 的地方，负责组装 `TurnDeps`。
-- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。服务不存数据：收当前草稿，回改好的草稿。
+- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走公司统一模型网关（OpenAI 兼容接口，`AGENT_MODEL`，默认 `claude-5.5-sonnet`）：SDK 只会 Anthropic 协议，`agent/model-gateway.ts` 在本机回环起一个转换层（协议转换是 `openai-bridge.ts` 的纯函数），网关拒收的 `thinking` 等字段不转发，404/503 时按 `/models/status` 换同厂商可用模型重试一次。服务不存数据：收当前草稿，回改好的草稿。
 - 两边的协议是 `app/lib/agent/protocol.ts`（`AgentRequest` / `AgentResult`）。Workers 侧请求超时 150s，要大于 Agent 侧单轮超时 120s。
 - 工具事件协议在 `app/lib/tool-trace.ts`，Agent 流协议在 `app/lib/agent/stream.ts`，浏览器解码在 `app/lib/client/stream.ts`。轨迹摘要不能包含隐藏思维、系统提示词、完整入参、密钥或内部堆栈。
 

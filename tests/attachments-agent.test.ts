@@ -97,7 +97,7 @@ test("附件对话结合历史经营数据时持续要求不被最近消息或�
   assert.equal(inherited, true);
 });
 
-test("主分析用 Pro 时，图片独立复核仍使用识图模型并收到真实图像", async (t) => {
+test("主分析和识图分开配模型时，图片独立复核使用识图模型并收到真实图像", async (t) => {
   const { config, store } = await setup(t);
   const png = spawnSync(attachmentPython(), ["-c", "from PIL import Image,ImageDraw;import io,sys;b=io.BytesIO();im=Image.new('RGB',(320,180),'white');ImageDraw.Draw(im).text((20,30),'CTF 300',fill='black');im.save(b,'PNG');sys.stdout.buffer.write(b.getvalue())"]);
   assert.equal(png.status, 0, png.stderr.toString());
@@ -107,7 +107,7 @@ test("主分析用 Pro 时，图片独立复核仍使用识图模型并收到真
   const query: AgentQuery = async function* ({ options }) {
     const reviewing = Boolean(options?.mcpServers?.attachment_review); const client = await connect(options, reviewing ? "attachment_review" : "attachments");
     try {
-      assert.equal(options?.model, reviewing ? "deepseek-flash" : "deepseek-v4-pro");
+      assert.equal(options?.model, reviewing ? "vision-model" : "main-model");
       if (reviewing) {
         const read = await client.callTool({ name: "read_attachment_review", arguments: { blockIndex: 0 } });
         reviewedImage = (read.content as Array<{ type: string }>).some((block) => block.type === "image"); assert.equal(reviewedImage, true);
@@ -119,7 +119,7 @@ test("主分析用 Pro 时，图片独立复核仍使用识图模型并收到真
       yield success;
     } finally { await client.close(); }
   };
-  const answer = await createConversationRunner({ ...config, model: "deepseek-v4-pro" }, { query, vision: async ({ data, mime }) => { visionCalls++; assert.equal(mime, "image/jpeg"); assert.ok(data.length > 100); return "图片中写着 CTF 300。"; } })(scope, { conversationId: scope.conversationId, question: "这张图写了什么", history: [], attachmentIds: [image.id] });
+  const answer = await createConversationRunner({ ...config, model: "main-model", visionModel: "vision-model" }, { query, vision: async ({ data, mime }) => { visionCalls++; assert.equal(mime, "image/jpeg"); assert.ok(data.length > 100); return "图片中写着 CTF 300。"; } })(scope, { conversationId: scope.conversationId, question: "这张图写了什么", history: [], attachmentIds: [image.id] });
   assert.equal(visionCalls, 1); assert.equal(reviewedImage, true); assert.equal(answer.sources[0].kind, "image");
 });
 

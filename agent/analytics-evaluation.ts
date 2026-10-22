@@ -10,17 +10,19 @@ import { runAnalysis } from "../app/lib/analytics/engine.ts";
 import { planAnswerV4Text } from "../app/lib/analytics/plan/answer.ts";
 import { PLAN_ANSWER_V4_SCHEMA } from "../app/lib/analytics/analysis-v2-types.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
+import { modelConfigFromEnv } from "./model-gateway.ts";
 
 const envPath = fileURLToPath(new URL("../.dev.vars", import.meta.url));
 if (existsSync(envPath)) process.loadEnvFile(envPath);
-if (!process.env.DEEPSEEK_API_KEY) throw new Error("真实模型评估需要已配置的模型密钥");
+const gateway = await modelConfigFromEnv();
+if (!gateway.apiKey) throw new Error("真实模型评估需要已配置的模型密钥");
 const selected = process.argv.find((arg) => arg.startsWith("--case="))?.slice(7);
 const cases = selected ? analyticsBenchmarks.filter((item) => item.id === selected) : analyticsBenchmarks;
 if (!cases.length) throw new Error("没有这个合成评估用例");
 const output = privateAnalysisDirectory(process.env.ANALYTICS_EVAL_DIR || join(tmpdir(), `ctf-analysis-evaluation-${Date.now()}`));
 mkdirSync(output, { recursive: true, mode: 0o700 });
 const results: unknown[] = [];
-const model = process.env.AGENT_MODEL || "deepseek-flash";
+const model = gateway.model;
 const versionFiles = ["agent/analytics-evaluation.ts", "tests/fixtures/general-analytics.ts", "agent/analysis-plan-run-turn.ts", "agent/analytics-system-prompt.ts", "agent/analytics-model.ts", "app/lib/analytics/analysis-v2-types.ts", "app/lib/analytics/analysis-v2-operations.ts", "app/lib/analytics/analysis-v2-snapshot.ts", "app/lib/analytics/analysis-v2-evidence.ts", "app/lib/analytics/plan/validate.ts", "app/lib/analytics/plan/execute.ts", "app/lib/analytics/plan/bind.ts", "app/lib/analytics/plan/answer.ts", "app/lib/analytics/plan/prompt.ts", "app/lib/analytics/plan/scenario.ts"];
 const readVersions = () => Object.fromEntries(versionFiles.map((path) => [path, createHash("sha256").update(readFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)))).digest("hex")]));
 const controller = new AbortController();
@@ -62,7 +64,7 @@ for (const item of cases) {
       };
     } });
   };
-  const runner = createPlanAnalyticsRunner({ model: process.env.AGENT_MODEL || "deepseek-flash", modelBaseUrl: process.env.AGENT_MODEL_BASE_URL || "https://api.deepseek.com/anthropic", apiKey: process.env.DEEPSEEK_API_KEY!, pluginDir: fileURLToPath(new URL("./analytics-plugin", import.meta.url)), runtimeDir: join(output, "runtime"), auditDirectory: join(output, "audit") }, { query: observedQuery, ...(item.context?.length ? { provider: createSnapshotAnalysisProvider(item.dataset) } : {}) });
+  const runner = createPlanAnalyticsRunner({ model, modelBaseUrl: gateway.modelBaseUrl, apiKey: gateway.apiKey, pluginDir: fileURLToPath(new URL("./analytics-plugin", import.meta.url)), runtimeDir: join(output, "runtime"), auditDirectory: join(output, "audit") }, { query: observedQuery, ...(item.context?.length ? { provider: createSnapshotAnalysisProvider(item.dataset) } : {}) });
   try {
     // 数据版本授权来自报告或注入的同版本只读合成适配器；期望不传入模型。
     // 带持续条件的用例走实际对话 context/history 协议，不拼回本轮问题冒充上下文。

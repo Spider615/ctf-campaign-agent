@@ -41,7 +41,7 @@ npm run install:ci               # 根目录依赖
 npm run install:agent            # agent/ 的独立依赖（Claude Agent SDK、zod v4）
 npm run install:attachments      # 私有 Python 解析环境；Linux 另需 cc 构建 Office 管道适配组件
 npm run check:attachments        # 检查解析依赖、转换器与真实受限 CSV，不调用模型
-cp .dev.vars.example .dev.vars   # 填 DEEPSEEK_API_KEY；页面和 Agent 服务读同一个文件
+cp .dev.vars.example .dev.vars   # 填 JUZI_MODELS_KEY；页面和 Agent 服务读同一个文件
 npm run dev:all                  # 同时起 Agent 服务（8788）和页面（5173），一个退出另一个也停
 npm run dev                      # 只起页面（vinext + Cloudflare Workers + 本地 D1）
 npm run dev:agent                # 只起 Agent 服务；AGENT_DEBUG=1 打印每次工具调用的参数和结果
@@ -68,7 +68,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 改表结构：改 `db/schema.ts` → `npm run db:generate` → 用上面的命令应用新 SQL → 同步改 `app/lib/server/session-store.ts`。运行时查询是手写 SQL，drizzle 只用来生成迁移。`draft_version.brief_json` 现在保存 `campaign/v1` 父文档；`ics_orders_json` 继续保存可选单一 1811 填写值快照，不需要为父层另加表。
 
-容器部署（butler）用根目录 `Dockerfile`，单容器运行页面（wrangler 本地模式 + 本地 D1，数据在 `D1_PERSIST_DIR`，默认 `/data/d1`）和 Agent 服务，入口 `scripts/start-container.mjs` 负责迁移、进程联动，并把 Agent 固定在容器内回环地址，只需配置 `DEEPSEEK_API_KEY`（契约见 `.env.example`）。分开部署时 Agent 服务单独运行在有 Node.js 和可写磁盘的环境；只有这时 Workers 才配 `AGENT_SERVICE_URL`，两边配相同的 `AGENT_SERVICE_TOKEN`。Agent 部署产物必须包含：
+容器部署（butler）用根目录 `Dockerfile`，单容器运行页面（wrangler 本地模式 + 本地 D1，数据在 `D1_PERSIST_DIR`，默认 `/data/d1`）和 Agent 服务，入口 `scripts/start-container.mjs` 负责迁移、进程联动，并把 Agent 固定在容器内回环地址，只需配置 `JUZI_MODELS_KEY`（契约见 `.env.example`）。分开部署时 Agent 服务单独运行在有 Node.js 和可写磁盘的环境；只有这时 Workers 才配 `AGENT_SERVICE_URL`，两边配相同的 `AGENT_SERVICE_TOKEN`。Agent 部署产物必须包含：
 
 ```text
 agent/plugin/.claude-plugin/plugin.json
@@ -87,7 +87,7 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 两个进程共用同一份 Campaign 和 1811 领域逻辑：
 
 - **页面和数据（Workers）**：`app/api/sessions/**` → `app/lib/server/turns.ts`（`createSession` / `runTurn`）→ `SessionStore`。会话、消息、版本和落库都在这一侧，一个回合一次 `db.batch`。`app/lib/server/runtime.ts` 是唯一接 `cloudflare:workers` 的地方。
-- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走 DeepSeek 的 Anthropic 兼容接口（`AGENT_MODEL`，默认 `deepseek-flash`）。Campaign 会话数据仍由 Workers 保存；Node 另负责仓库外的私有附件与解析缓存。
+- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走公司统一模型网关（OpenAI 兼容接口，`AGENT_MODEL`，默认 `claude-5.5-sonnet`）：SDK 只会 Anthropic 协议，`agent/model-gateway.ts` 在本机回环起一个转换层（协议转换是 `openai-bridge.ts` 的纯函数），网关拒收的 `thinking` 等字段不转发，404/503 时按 `/models/status` 换同厂商可用模型重试一次。Campaign 会话数据仍由 Workers 保存；Node 另负责仓库外的私有附件与解析缓存。
 - **协议**：`app/lib/agent/protocol.ts` 定义 `AgentRequest` / `AgentResult`，分别携带整体 `campaignStage` 和可空的 `ics1811Phase`。Workers 和 Agent 都不设置应用层墙钟总时限，取消从浏览器经 Workers 传递到 Agent SDK；`maxTurns = 12` 仍是逻辑循环上限。
 
 执行 Agent 通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开放 `Skill`；活动读写由本地 MCP server 的 11 个确定性工具完成。`settingSources: []` 隔离个人和项目 Claude 配置，执行运行时只允许校验通过的 `ics1811` 插件 Skill。执行类模型回合必须先加载 `campaign-orchestrator`；交易优惠或 1811 语境叠加 `campaign-sop`，其他专项 Skill 按意图加载。
