@@ -141,6 +141,7 @@ function BusinessCard({ card }: { card: InsightCard }) {
   return <div className="space-y-2.5">
     <Say text={card.say} />
     {card.chart ? <div className="pt-1"><InsightChartView chart={card.chart} plain /></div> : null}
+    {card.sim ? <div className="rounded-xl border border-[#e4eaf2] bg-white p-3"><p className="mb-2 text-[12.5px] font-semibold text-[#0f172a]">{card.sim.title}</p><InsightChartView chart={card.sim} plain /></div> : null}
     {/* 点名的门店直接列在图下面；怎么知道的、要注意、可以怎么做不再单独显示，由下面的依据、异常、推荐承担。 */}
     {card.stores ? <div className="rounded-xl bg-[#fffbf2] px-3 py-2.5 text-[12.5px] text-[#334155]"><p className="font-medium text-[#b45309]">{card.stores.title}</p><StoreRows stores={card.stores} /></div> : null}
   </div>;

@@ -538,6 +538,71 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     return { ...e, peers: x, anomalies };
   };
 
+  // ---------- 指标：两个乘数各高多少，结果跟着高多少 ----------
+  // 同类店（商圈、铺型、区域相同）放在一起，每家店的两个乘数和结果都除以本组中间那家，得到「比同类高多少」。
+  // 横轴：这一项比同类高多少（分 6 档）；纵轴：这一档店的结果是同类的几倍（取中间那家）。两条线分别按两个乘数分档。
+  // 门店之间的对比不是实验，只能说「高 X% 的店，结果一般高 Y%」，不能说「提 X% 就会涨 Y%」。
+  type Lift = { label: string; of: (s: PeerStore) => number; text: (v: number) => string };
+  const LIFT_BANDS: Array<{ label: string; lo: number; hi: number; mid: string }> = [
+    // 横轴标签要短：侧栏窄，6 个档位挤在一起。完整说法放在 mid，悬停时显示。
+    { label: "−20%↓", lo: 0, hi: 0.8, mid: "低 20% 以上" }, { label: "−5~20%", lo: 0.8, hi: 0.95, mid: "低 5%–20%" },
+    { label: "持平", lo: 0.95, hi: 1.05, mid: "差不多" }, { label: "+5~20%", lo: 1.05, hi: 1.2, mid: "高 5%–20%" },
+    { label: "+20~50%", lo: 1.2, hi: 1.5, mid: "高 20%–50%" }, { label: "+50%↑", lo: 1.5, hi: Infinity, mid: "高 50% 以上" },
+  ];
+  const liftChart = (title: string, result: Lift, a: Lift, b: Lift, note: string): InsightChart => {
+    // 每家店：两个乘数和结果，各自除以本组中间那家。
+    const rel = groupsFull.flatMap((g) => {
+      const m = (f: (s: PeerStore) => number) => median(g.stores.map(f).filter((v) => Number.isFinite(v) && v > 0)) ?? 0;
+      const ma = m(a.of), mb = m(b.of), mr = m(result.of); if (!(ma > 0 && mb > 0 && mr > 0)) return [];
+      return g.stores.flatMap((s) => { const va = a.of(s), vb = b.of(s), vr = result.of(s); return va > 0 && vb > 0 && vr > 0 ? [{ a: va / ma, b: vb / mb, r: vr / mr }] : []; });
+    });
+    const line = (f: Lift, pick: (x: typeof rel[number]) => number, k: number) => {
+      // 一档不到 30 家店就不画（null），免得几家特殊的店把线拉歪。
+      const cells = LIFT_BANDS.map((band) => { const g = rel.filter((x) => pick(x) >= band.lo && pick(x) < band.hi); return { n: g.length, v: g.length >= 30 ? median(g.map((x) => x.r)) ?? NaN : NaN }; });
+      return { label: f.label, tone: k ? "accent" as const : "main" as const, values: cells.map((c) => Number.isFinite(c.v) ? r2(c.v) : null),
+        hover: cells.map((c, i) => Number.isFinite(c.v) ? `${f.label}${LIFT_BANDS[i].mid}的店，${result.label}是同类的 ${n1(c.v)} 倍（${n0(c.n)} 家）` : "店太少") };
+    };
+    return { kind: "lines", title, labels: LIFT_BANDS.map((x) => x.label), series: [line(a, (x) => x.a, 0), line(b, (x) => x.b, 1)], base: "和同类店一样", note };
+  };
+  // 拖动模拟：一家一般门店（开满 20 天的店里各项取中间那家），结果 = 两个乘数相乘。
+  // ref：同类店里，前 1/4 那家比中间那家高多少，各组取中间值。滑块范围 −50% 到 +50%。
+  const peerFull = groupsFull.flatMap((g) => g.stores);
+  const room = (f: (s: PeerStore) => number) => median(groupsFull.map((g) => {
+    const v = g.stores.map(f).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b); if (v.length < 8) return NaN;
+    const mid = v[Math.floor((v.length - 1) / 2)]; const q3 = v[Math.floor((v.length - 1) * 0.75)]; return mid > 0 ? (q3 / mid - 1) * 100 : NaN;
+  }).filter(Number.isFinite)) ?? 0;
+  const typical = (f: (s: PeerStore) => number) => median(peerFull.map(f).filter((x) => Number.isFinite(x) && x > 0)) ?? 0;
+  type Knob = { label: string; of: (s: PeerStore) => number; scale: number; unit: string; digits: number };
+  const whatIf = (title: string, result: { label: string; unit: string; digits: number; scale: number }, a: Knob, b: Knob): InsightChart => {
+    const ra = typical(a.of), rb = typical(b.of); const va = ra * a.scale, vb = rb * b.scale;
+    const { scale, ...shown } = result;
+    return { kind: "whatif", title, min: -50, max: 50,
+      result: { ...shown, base: Math.round(ra * rb * scale * 100) / 100 },
+      factors: [a, b].map((k, i) => ({ label: k.label, base: Math.round((i ? vb : va) * 100) / 100, unit: k.unit, digits: k.digits, ref: Math.round(room(k.of)) })),
+      note: `以一家一般门店为例（各项取全国开满 20 天的店的中间值）。${result.label} = ${a.label} × ${b.label}：一个不动、另一个提高多少，${result.label}就跟着变多少。三角是同类店（商圈、铺型、区域相同）前 1/4 的店比一般店高多少。` };
+  };
+  const ordersK: Knob = { label: "每天订单数", of: (s) => div(s.orders, s.days), scale: 1, unit: " 单", digits: 1 };
+  const salesWhatIf = whatIf("拖一拖：订单数不变，客单价提高，销售额会怎样", { label: "销售额", unit: " 万", digits: 2, scale: 1e-4 },
+    ordersK, { label: "客单价", of: (s) => div(s.sales, s.orders), scale: 1e-4, unit: " 万", digits: 2 });
+  const qtyWhatIf = whatIf("拖一拖：订单数、每单件数各提高多少，销量会怎样", { label: "销量", unit: " 件", digits: 1, scale: 1 },
+    ordersK, { label: "每单件数", of: (s) => div(s.items, s.orders), scale: 1, unit: " 件", digits: 2 });
+  const gpWhatIf = whatIf("拖一拖：销售额、毛利率各提高多少，毛利会怎样", { label: "毛利", unit: " 万", digits: 2, scale: 1e-4 },
+    { label: "每天销售额（不含税）", of: (s) => div(s.revEx, s.days), scale: 1e-4, unit: " 万", digits: 2 }, { label: "毛利率", of: (s) => div(s.gp, s.revEx), scale: 100, unit: "%", digits: 1 });
+  const L = {
+    sales: { label: "销售额", of: (s: PeerStore) => div(s.sales, s.days), text: wan },
+    orders: { label: "订单数", of: (s: PeerStore) => div(s.orders, s.days), text: (v: number) => `${n1(v)} 单` },
+    aov: { label: "客单价", of: (s: PeerStore) => div(s.sales, s.orders), text: yuan },
+    qty: { label: "销量", of: (s: PeerStore) => div(s.items, s.days), text: (v: number) => `${n1(v)} 件` },
+    ipo: { label: "每单件数", of: (s: PeerStore) => div(s.items, s.orders), text: (v: number) => `${v.toFixed(2)} 件` },
+    gp: { label: "毛利", of: (s: PeerStore) => div(s.gp, s.days), text: wan },
+    rev: { label: "销售额", of: (s: PeerStore) => div(s.revEx, s.days), text: wan },
+    gm: { label: "毛利率", of: (s: PeerStore) => div(s.gp, s.revEx), text: (v: number) => pct(v * 100) },
+  };
+  const liftNote = (x: string) => `横轴：这一项比同类店（商圈、铺型、区域都相同）高多少；纵轴：这样的店，${x}是同类的几倍。门店之间的对比，不等于把这一项提上去就一定涨这么多。`;
+  const salesLift = liftChart("客单价、订单数各高多少，销售额跟着高多少", L.sales, L.orders, L.aov, liftNote("销售额"));
+  const qtyLift = liftChart("订单数、每单件数各高多少，销量跟着高多少", L.qty, L.orders, L.ipo, liftNote("销量"));
+  const gpLift = liftChart("销售额、毛利率各高多少，毛利跟着高多少", L.gp, L.rev, L.gm, liftNote("毛利"));
+
   // ---------- 业务卡片 ----------
   // 给总部业务看：一句话结论（【】里的数字标蓝）→ 一张对比图 → 怎么知道的 → 要注意 → 可以怎么做（AI 建议）。
   // evidence 是支撑建议的数据事实，问答时只能照这些回答，不能把建议本身当成数据。
@@ -548,7 +613,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     return { kind: "compare", title, items: items.map((x, i) => ({ ...x, tone: x.tone ?? (i === pick ? "hot" : "normal") })), ...(note ? { note } : {}) };
   };
   type Card = InsightNode["card"];
-  const C = (say: string, how: string, watch: string[], todo: string | null, evidence: string[], more: { chart?: InsightChart; stores?: Card["stores"]; todoNote?: string } = {}): Card =>
+  const C = (say: string, how: string, watch: string[], todo: string | null, evidence: string[], more: { chart?: InsightChart; sim?: InsightChart; stores?: Card["stores"]; todoNote?: string } = {}): Card =>
     ({ say, how, watch, todo, evidence, ...more, ...(todo ? {} : { todoNote: more.todoNote ?? "数据给不出具体的做法。" }) });
   const imgTop = imageRows[0]; const imgLow = imageRows.at(-1);
   const imgSocial = imageRows.find((r) => r.k.startsWith("社区")) ?? imgLow;
@@ -722,19 +787,19 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       "销量 = 订单数 × 每单件数。每单件数基本不变，所以看订单数就够了。",
       [], "想多卖件数，重点是多来单，而不是让顾客一单多买几件。",
       [`8 月 ${n0(total.items / 1e4)} 万件、${n1(total.orders / 1e4)} 万单，平均每单 ${(total.orders > 0 ? total.items / total.orders : 0).toFixed(2)} 件。`, `每单件数整个月都在 ${ipoLo.toFixed(2)}–${ipoHi.toFixed(2)} 件。`],
-      { chart: qtyByOrders }),
+      { chart: qtyLift, sim: qtyWhatIf }),
     sales: C(`8 月卖了【${yi(total.sales)}】，起落主要跟着订单数`,
       `销售额 = 订单数 × 客单价。${n1(total.orders / 1e4)} 万单，平均一单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。`,
       ["还没和 Power BI 核对，绝对数先只作参考。"],
       "提销售额先抓单量：好商圈的店、做活动和过节的日子。",
       [`8 月 ${yi(total.sales)}、${n1(total.orders / 1e4)} 万单。`, `客单价每天在 ${n0(aovLo)}–${n0(aovHi)} 元之间。`],
-      { chart: salesByOrders }),
+      { chart: salesLift, sim: salesWhatIf }),
     gp: C(`8 月毛利【${yi(total.gp)}】，毛利率 ${pct(gm)}，基本跟着销售额走`,
       "毛利 = 销售额（不含税）× 毛利率。毛利率每天变化不大。",
       ["做活动、过节的日子毛利率略低，因为那几天卖的计价金更多。"],
       "保毛利的关键是货品结构：活动里多配一口价和镶嵌货。",
       [`毛利率每天在 ${pct(gmLo)}–${pct(gmHi)} 之间。`, `计价金毛利率 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}，镶嵌及其他 ${pct(ptGm(inlay))}。`],
-      { chart: gpByRev }),
+      { chart: gpLift, sim: gpWhatIf }),
   };
   const lagMix = lagStores(peers.mix, "计价金卖得多、毛利率特别低的店", "%", (v) => v);
   const edgeCards: Record<string, Card> = {

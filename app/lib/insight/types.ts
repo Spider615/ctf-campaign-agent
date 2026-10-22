@@ -62,14 +62,20 @@ export type InsightChart = { title: string; note?: string; legend?: InsightChart
       points: Array<{ label: string; values: number[]; mark?: string }>; band?: { from: string; to: string; label: string } }
   // lines：几条线都换算成「是第一个点的几倍」放在同一根纵轴上（不用双纵轴）；横轴可以是日期，也可以是门店分档。hover 是每条线每个点的原值文字。
   // base：「1×」指什么（例如「3 单以下那一档」），写在图下；不给时按平常工作日。
-  | { kind: "lines"; labels: string[]; series: Array<{ label: string; tone: InsightChartTone; values: number[]; hover: string[] }>; band?: { from: string; to: string; label: string }; marks?: Array<{ at: string; label: string }>; base?: string }
+  // values 里的 null：这一档店太少，不画点，折线在这里断开。
+  | { kind: "lines"; labels: string[]; series: Array<{ label: string; tone: InsightChartTone; values: Array<number | null>; hover: string[] }>; band?: { from: string; to: string; label: string }; marks?: Array<{ at: string; label: string }>; base?: string }
+  // whatif：拖动模拟。result = 两个 factor 相乘（恒等式），页面按滑块算新值；数字都已换成展示单位。
+  // ref：同类店（商圈、铺型、区域相同）前 1/4 的店比中间那家高多少（%），滑块上标出来，表示「做到同类好店的水平」大概是多少。
+  | { kind: "whatif"; result: { label: string; base: number; unit: string; digits: number };
+      factors: Array<{ label: string; base: number; unit: string; digits: number; ref: number }>; min: number; max: number }
   | { kind: "scatter"; x: { label: string; unit: string }; y: { label: string; unit: string }; points: Array<[number, number]>; fit: { slope: number; intercept: number } }
 );
 // 给总部业务看的卡片：一句话结论 → 一张对比图 → 怎么知道的 → 要注意 → 可以怎么做。
 // say 里用【】包住要标蓝的数字。todo 是 AI 建议，evidence 是支撑这条建议的数据事实（问答时照这些回答）；给不出建议时 todo 为 null、todoNote 写原因。
 // stores：要注意里点名的门店，每家和同类一般水平比。
 export type InsightCardStores = { title: string; unit: string; rows: Array<{ name: string; value: number }>; peer: number };
-export type InsightCard = { say: string; chart?: InsightChart; how: string; watch: string[]; stores?: InsightCardStores; todo: string | null; todoNote?: string; evidence: string[] };
+// sim：卡片里的第二张图（拖动模拟），放在对比图下面。
+export type InsightCard = { say: string; chart?: InsightChart; sim?: InsightChart; how: string; watch: string[]; stores?: InsightCardStores; todo: string | null; todoNote?: string; evidence: string[] };
 export type InsightNode = {
   id: InsightNodeId; column: InsightColumn; section?: InsightSection; kind: InsightNodeKind;
   label: string; subtitle: string; strength?: InsightStrength; score?: InsightScore; effect?: InsightEffect;

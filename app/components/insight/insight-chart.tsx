@@ -124,11 +124,59 @@ function Compare({ chart }: { chart: Extract<InsightChart, { kind: "compare" }> 
   </div>;
 }
 
+// 拖动模拟：结果 = 两个乘数相乘。拖滑块改一个乘数（另一个不动），结果按公式算出来；这是算术，不是预测。
+// 滑块上的小刻度是同类好店（前 1/4）比一般店高多少，帮业务判断拖到多少是现实的。
+function WhatIf({ chart }: { chart: Extract<InsightChart, { kind: "whatif" }> }) {
+  const [pcts, setPcts] = useState<number[]>(() => chart.factors.map(() => 0));
+  const fmt2 = (v: number, d: number) => v.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const sign = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${fmt2(Math.abs(v), Math.abs(v) < 10 && v % 1 !== 0 ? 1 : 0)}%`;
+  const ratio = pcts.reduce((a, p) => a * (1 + p / 100), 1);
+  const after = chart.result.base * ratio; const change = (ratio - 1) * 100;
+  const span = chart.max - chart.min; const at = (v: number) => `${(v - chart.min) / span * 100}%`;
+  const id = useId();
+  return <div className="space-y-3">
+    <div className="rounded-xl bg-[#f5f8ff] px-3 py-2.5" aria-live="polite">
+      <p className="text-[11.5px] text-[#64748b]">一家店一天的{chart.result.label}</p>
+      <p className="mt-0.5 flex items-baseline gap-2 tabular-nums">
+        <b className="text-[22px] font-semibold leading-none tracking-tight text-[#0f172a]">{fmt2(after, chart.result.digits)}<small className="ml-0.5 text-[12px] font-medium text-[#64748b]">{chart.result.unit}</small></b>
+        <span className={`text-[13px] font-semibold ${change > 0.05 ? "text-[#047857]" : change < -0.05 ? "text-[#b91c1c]" : "text-[#94a3b8]"}`}>{Math.abs(change) < 0.05 ? "不变" : sign(change)}</span>
+        <span className="ml-auto text-[11.5px] text-[#94a3b8]">现在 {fmt2(chart.result.base, chart.result.digits)}{chart.result.unit}</span>
+      </p>
+    </div>
+    {chart.factors.map((f, i) => {
+      const v = pcts[i]; const now = f.base * (1 + v / 100);
+      return <div key={f.label}>
+        <div className="flex items-baseline justify-between text-[12.5px]">
+          <label htmlFor={`${id}-${i}`} className="font-medium text-[#0f172a]">{f.label}</label>
+          <span className="tabular-nums text-[#334155]">{fmt2(now, f.digits)}{f.unit}<span className={`ml-1.5 ${v ? "font-semibold text-[#2f6bff]" : "text-[#94a3b8]"}`}>{v ? sign(v) : "不变"}</span></span>
+        </div>
+        <div className="relative mt-1">
+          <input id={`${id}-${i}`} type="range" min={chart.min} max={chart.max} step={1} value={v}
+            onChange={(e) => setPcts((p) => p.map((x, k) => k === i ? Number(e.target.value) : x))}
+            aria-valuetext={`${f.label}${v ? sign(v) : "不变"}，${fmt2(now, f.digits)}${f.unit}`}
+            className="h-6 w-full cursor-pointer accent-[#2f6bff]" />
+          {f.ref > 0 && f.ref <= chart.max ? <span aria-hidden="true" className="pointer-events-none absolute -bottom-3 -translate-x-1/2 whitespace-nowrap text-[10px] text-[#b45309]" style={{ left: at(f.ref) }}>▲ 同类好店 +{fmt2(f.ref, 0)}%</span> : null}
+        </div>
+        <div className="mt-3.5 flex justify-between text-[10.5px] tabular-nums text-[#94a3b8]"><span>{chart.min}%</span><span>0</span><span>+{chart.max}%</span></div>
+      </div>;
+    })}
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button type="button" onClick={() => setPcts(chart.factors.map(() => 0))} disabled={pcts.every((p) => p === 0)}
+        className="min-h-8 whitespace-nowrap rounded-lg border border-[#e4eaf2] px-2.5 text-[12px] text-[#334155] hover:bg-[#f8fafc] disabled:opacity-40">恢复</button>
+      {chart.factors.map((f, i) => f.ref > 0 && f.ref <= chart.max ? <button key={f.label} type="button" onClick={() => setPcts(chart.factors.map((_, k) => k === i ? Math.round(f.ref) : 0))}
+        className="min-h-8 whitespace-nowrap rounded-lg border border-[#f1e4c8] bg-[#fffbf2] px-2.5 text-[12px] text-[#92400e] hover:bg-[#fff4dd]">{f.label.replace(/^每天|（不含税）$/g, "")}到好店水平</button> : null)}
+    </div>
+  </div>;
+}
+
 // 折线：几条线都是「第一个点的几倍」，同一根纵轴（不用双纵轴）。横轴可以是逐日，也可以是门店分档；悬停一个点显示各线原值。
 function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
   const [hover, setHover] = useState<number | null>(null);
   const W = 300; const H = 170; const l = 26; const r = 44; const t = 22; const b = 18; const pw = W - l - r; const ph = H - t - b;
-  const n = chart.labels.length; const max = Math.max(1, ...chart.series.flatMap((s) => s.values));
+  const n = chart.labels.length; const max = Math.max(1, ...chart.series.flatMap((s) => s.values.filter((v): v is number => v !== null)));
+  // 空档（null）处折线断开；线尾标签放在最后一个有值的点。
+  const pathOf = (vals: Array<number | null>) => { let d = ""; let pen = false; vals.forEach((v, i) => { if (v === null) { pen = false; return; } d += `${pen ? "L" : "M"}${x(i)},${y(v)}`; pen = true; }); return d; };
+  const lastOf = (vals: Array<number | null>) => { for (let i = vals.length - 1; i >= 0; i--) if (vals[i] !== null) return { i, v: vals[i] as number }; return null; };
   const step = [0.5, 1, 2, 5].find((s) => max / s <= 5) ?? 10; const top = Math.ceil(max / step) * step;
   const pad = n <= 8 ? 16 : 0;
   const x = (i: number) => l + pad + (n > 1 ? i / (n - 1) : 0.5) * (pw - pad * 2); const y = (v: number) => t + ph - v / top * ph;
@@ -152,22 +200,22 @@ function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
         <line x1={l} x2={W - r} y1={y(v)} y2={y(v)} stroke={v === 1 ? "#cbd5e1" : "#eef2f7"} strokeDasharray={v === 1 ? "3 3" : undefined} />
         <text x={l - 4} y={y(v) + 3} fontSize="9" textAnchor="end" fill="#94a3b8">{v === 0 ? "0" : `${fmt(v, step < 1 ? 1 : 0)}×`}</text>
       </g>)}
-      {chart.series.map((s) => <path key={s.label} d={s.values.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join("")} fill="none" stroke={TONE[s.tone]} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />)}
-      {/* 线尾直接写名字，不用对照图例 */}
-      {chart.series.map((s, k) => { const v = s.values[n - 1]; const other = chart.series[1 - k]?.values[n - 1];
-        const dy = other !== undefined && Math.abs(y(v) - y(other)) < 10 ? (v >= other ? -6 : 6) : 0;
-        return <text key={`l${s.label}`} x={W - r + 4} y={y(v) + dy + 3} fontSize="9" textAnchor="start" fill={TONE[s.tone]} fontWeight="600">{s.label}</text>; })}
-      {(chart.marks ?? []).map((m) => { const i = idx(m.at); if (i < 0) return null; const v = Math.max(...chart.series.map((s) => s.values[i]));
+      {chart.series.map((s) => <path key={s.label} d={pathOf(s.values)} fill="none" stroke={TONE[s.tone]} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />)}
+      {/* 线尾直接写名字，不用对照图例；两条线的尾巴挨得近就上下错开。 */}
+      {chart.series.map((s, k) => { const end = lastOf(s.values); if (!end) return null; const o = lastOf(chart.series[1 - k]?.values ?? []);
+        const dy = o && Math.abs(y(end.v) - y(o.v)) < 10 ? (end.v >= o.v ? -6 : 6) : 0;
+        return <text key={`l${s.label}`} x={end.i === n - 1 ? W - r + 4 : x(end.i) + 6} y={y(end.v) + dy + 3} fontSize="9" textAnchor="start" fill={TONE[s.tone]} fontWeight="600">{s.label}</text>; })}
+      {(chart.marks ?? []).map((m) => { const i = idx(m.at); if (i < 0) return null; const v = Math.max(...chart.series.map((s) => s.values[i] ?? 0));
         return <text key={m.at} x={x(i) - 4} y={Math.max(9, y(v) - 4)} fontSize="9" textAnchor="end" fill="#b45309" fontWeight="600">{m.label} {fmt(v, 1)}×</text>; })}
-      {few ? chart.series.map((s) => s.values.map((v, i) => <circle key={`${s.label}${i}`} cx={x(i)} cy={y(v)} r="2.6" fill={TONE[s.tone]} stroke="#fff" strokeWidth="1.2" />)) : null}
+      {few ? chart.series.map((s) => s.values.map((v, i) => v === null ? null : <circle key={`${s.label}${i}`} cx={x(i)} cy={y(v)} r="2.6" fill={TONE[s.tone]} stroke="#fff" strokeWidth="1.2" />)) : null}
       {chart.labels.map((label, i) => shown.has(i) ? <text key={label} x={x(i)} y={H - 5} fontSize="9" textAnchor={few ? "middle" : i === 0 ? "start" : i === n - 1 ? "end" : "middle"} fill="#94a3b8">{label}</text> : null)}
       {hover !== null ? <g>
         <line x1={x(hover)} x2={x(hover)} y1={t} y2={t + ph} stroke="#94a3b8" />
-        {chart.series.map((s) => <circle key={s.label} cx={x(hover)} cy={y(s.values[hover])} r="3" fill={TONE[s.tone]} stroke="#fff" strokeWidth="1.5" />)}
+        {chart.series.map((s) => { const v = s.values[hover]; return v === null ? null : <circle key={s.label} cx={x(hover)} cy={y(v)} r="3" fill={TONE[s.tone]} stroke="#fff" strokeWidth="1.5" />; })}
       </g> : null}
     </svg>
     <p className="min-h-4 text-[11.5px] tabular-nums text-[#334155]" aria-live="polite">{hover !== null
-      ? <><b className="font-semibold">{chart.labels[hover]}</b>{chart.series.map((s) => <span key={s.label} className="ml-2"><span aria-hidden="true" className="mr-1 inline-block h-0.5 w-2.5 align-middle" style={{ background: TONE[s.tone] }} />{s.label} {s.hover[hover]}（{fmt(s.values[hover], 1)}×）</span>)}</>
+      ? <><b className="font-semibold">{chart.labels[hover]}</b>{chart.series.map((s) => <span key={s.label} className="ml-2"><span aria-hidden="true" className="mr-1 inline-block h-0.5 w-2.5 align-middle" style={{ background: TONE[s.tone] }} />{s.label} {s.hover[hover]}{s.values[hover] === null ? "" : `（${fmt(s.values[hover] as number, 1)}×）`}</span>)}</>
       : <span className="text-[#94a3b8]">1× = {chart.base ?? "平常工作日的日均"}；把鼠标移到图上看{few ? "每一档" : "每天"}的数</span>}</p>
   </div>;
 }
@@ -175,9 +223,9 @@ function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
 export function InsightChartView({ chart, plain = false }: { chart: InsightChart; plain?: boolean }) {
   return <figure className={plain ? "m-0" : "mt-1 rounded-lg border border-[#dbe5ff] bg-white/85 p-2.5"}>
     {plain ? null : <figcaption className="mb-2 text-[12px] font-semibold text-[#1e3a8a]">{chart.title}</figcaption>}
-    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : chart.kind === "compare" ? <Compare chart={chart} /> : <Scatter chart={chart} />}
+    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : chart.kind === "compare" ? <Compare chart={chart} /> : chart.kind === "whatif" ? <WhatIf chart={chart} /> : <Scatter chart={chart} />}
     {chart.legend && chart.kind !== "split" ? <Legend items={chart.legend} /> : null}
-    {plain ? <figcaption className="mt-1.5 text-[11.5px] leading-relaxed text-[#94a3b8]">{chart.title}{chart.kind === "compare" && chart.note ? `；${chart.note}` : ""}</figcaption> : null}
+    {plain && chart.kind !== "whatif" ? <figcaption className="mt-1.5 text-[11.5px] leading-relaxed text-[#94a3b8]">{chart.title}{chart.kind === "compare" && chart.note ? `；${chart.note}` : ""}</figcaption> : null}
     {chart.note && !(plain && chart.kind === "compare") ? <p className="mt-2 text-[11.5px] leading-relaxed text-[#64748b]">{chart.note}</p> : null}
   </figure>;
 }

@@ -109,7 +109,7 @@ test("每条线都有依据、异常、推荐三段；没有推荐时写原因",
 test("依据里的图：每个有数据的节点和每条有分数的线都带图，图上的数是有限值", () => {
   const g = fakeGraph();
   const values = (c: NonNullable<typeof g.nodes[number]["chart"]>): number[] => c.kind === "bars" ? c.bars.map((b) => b.value) : c.kind === "split" ? c.parts.map((p) => p.value)
-    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values) : c.kind === "compare" ? c.items.map((x) => x.value) : [...c.points.flat(), c.fit.slope, c.fit.intercept];
+    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values.filter((v): v is number => v !== null)) : c.kind === "compare" ? c.items.map((x) => x.value) : c.kind === "whatif" ? [c.result.base, ...c.factors.map((f) => f.base)] : [...c.points.flat(), c.fit.slope, c.fit.intercept];
   for (const n of g.nodes) if (n.source.kind !== "suggested" && n.id !== "areaage") assert.ok(n.chart, n.id);
   for (const e of g.edges) if (e.score && e.from !== "areaage") assert.ok(e.chart, edgeKey(e));
   for (const c of [...g.nodes.map((n) => n.chart), ...g.edges.map((e) => e.chart)]) if (c) {
@@ -134,7 +134,7 @@ test("指标的图：两条折线，横轴是门店分档不是时间；结果�
     assert.ok(c.labels.length >= 3 && c.labels.length <= 5, `${id} 档位数 ${c.labels.length}`);
     assert.ok(c.labels.every((x) => !/^\d+\/\d+$/.test(x)), `${id} 横轴不能是日期`);
     assert.equal(c.series.length, 2);
-    for (const s of c.series) { assert.equal(s.values.length, c.labels.length); assert.equal(s.hover.length, c.labels.length); assert.equal(s.values[0], 1); }
+    for (const s of c.series) { assert.equal(s.values.length, c.labels.length); assert.equal(s.hover.length, c.labels.length); }
     // 结果那条线最后一档比第一档高。
     assert.ok(c.series[0].values.at(-1)! > 1, `${id} ${JSON.stringify(c.series[0].values)}`);
     assert.match(c.base ?? "", /那一档$/);
@@ -167,4 +167,25 @@ test("业务卡片：每个节点和每条线都有，结论和建议里没有�
   // 门店名带到「要注意」里时，每家都和同类一般水平比。
   const mix = g.edges.find((e) => e.from === "mix" && e.to === "gm")!.card;
   if (mix.stores) for (const r of mix.stores.rows) assert.ok(r.value < mix.stores.peer, r.name);
+});
+
+test("指标卡片：两个乘数各高多少、结果跟着高多少；拖动模拟的结果等于两个乘数相乘", () => {
+  const g = fakeGraph();
+  for (const [id, a, b] of [["sales", "订单数", "客单价"], ["qty", "订单数", "每单件数"], ["gp", "销售额", "毛利率"]] as const) {
+    const card = g.nodes.find((n) => n.id === id)!.card;
+    const c = card.chart!; assert.equal(c.kind, "lines", id);
+    if (c.kind === "lines") {
+      assert.deepEqual(c.series.map((x) => x.label), [a, b]);
+      assert.equal(c.labels.length, 6); assert.equal(c.labels[2], "持平");
+      // 和同类持平的那一档，结果也在 1 倍附近。
+      for (const line of c.series) if (line.values[2] !== null) assert.ok(Math.abs(line.values[2] - 1) < 0.3, `${id} ${line.label} ${line.values[2]}`);
+    }
+    const sim = card.sim!; assert.equal(sim.kind, "whatif", id);
+    if (sim.kind === "whatif") {
+      assert.equal(sim.factors.length, 2); assert.equal(sim.min, -50); assert.equal(sim.max, 50);
+      const product = sim.factors[0].base * sim.factors[1].base / (id === "gp" ? 100 : 1);
+      assert.ok(Math.abs(product - sim.result.base) / sim.result.base < 0.02, `${id} ${product} vs ${sim.result.base}`);
+      for (const f of sim.factors) assert.ok(f.ref >= 0 && Number.isFinite(f.ref), `${id} ${f.label} ref ${f.ref}`);
+    }
+  }
 });
