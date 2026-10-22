@@ -59,6 +59,13 @@ test("首次读取初始化 cookie，写入需要访问标识且拒绝跨源", a
   assert.match(access.cookie!, /HttpOnly/);
   assert.match(access.cookie!, /SameSite=Lax/);
   assert.throws(() => analyticsAccess(new Request("http://localhost/api", { method: "POST", headers: { origin: "https://other.example", cookie: `ctf_analytics_owner=${access.owner}` } })), /同源/);
+  // 反向代理后面：应用看到 http://，浏览器发 https:// 的 Origin，同一主机要放行，换主机或端口仍拒绝。
+  const site = "https://ctf.example.com"; const cookie = `ctf_analytics_owner=${access.owner}`;
+  assert.equal(analyticsAccess(new Request("http://ctf.example.com/api", { method: "POST", headers: { origin: site, cookie, "x-forwarded-proto": "https" } })).owner, access.owner);
+  assert.equal(analyticsAccess(new Request("http://ctf.example.com/api", { method: "POST", headers: { origin: site, cookie } })).owner, access.owner);
+  assert.throws(() => analyticsAccess(new Request("http://ctf.example.com/api", { method: "POST", headers: { origin: "https://evil.example.com", cookie, "x-forwarded-proto": "https" } })), /同源/);
+  assert.throws(() => analyticsAccess(new Request("http://ctf.example.com/api", { method: "POST", headers: { origin: "https://ctf.example.com:8443", cookie } })), /同源/);
+  assert.match(analyticsAccess(new Request("http://ctf.example.com/api", { headers: { "x-forwarded-proto": "https" } }), true).cookie!, /Secure/);
   await assert.rejects(readAnalyticsJson(new Request("http://localhost/api", { method: "POST", body: "x", headers: { "content-type": "application/json" } })), /JSON/);
   await assert.rejects(readAnalyticsJson(new Request("http://localhost/api", { method: "POST", body: "x".repeat(2 * 1024 * 1024 + 1), headers: { "content-type": "application/json" } })), /过大/);
 });
