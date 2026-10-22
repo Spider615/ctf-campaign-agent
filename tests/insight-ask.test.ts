@@ -26,6 +26,16 @@ test("依据材料：选中线时带上两端节点、来源和经过它的链�
   assert.match(askContext(graph, null), /## 所有连线/);
 });
 
+test("依据材料：AI 建议和支撑它的数据分开写，问到建议时有数据可查", () => {
+  const node = askContext(graph, { kind: "node", id: "day" });
+  assert.match(node, /页面上的结论：做活动、过节的日子/);
+  assert.match(node, /可以怎么做（AI 建议，不是数据）：/);
+  assert.match(node, /支撑这条建议的数据：\n- /);
+  // 没有建议的卡片写原因，不出现「支撑这条建议的数据」。
+  const member = askContext(graph, { kind: "node", id: "member" });
+  assert.match(member, /可以怎么做：没有建议（需要先采集/);
+});
+
 test("数字核对：依据里没有的数字整句删掉，四舍五入和百分数可以", () => {
   const sources = ["每克让利 35.93083，强度 0.41"];
   const out = checkAnswerNumbers("每克让利约 35.9 元。强度 41。会多卖 20% 的货。", sources);

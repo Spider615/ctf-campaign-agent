@@ -67,12 +67,13 @@ export function comparePeers(groups: readonly PeerGroup[], param: PeerMetric, ou
     hi: { param: param.fmt(median(ex.hi.map(param.of))!), outcome: outcome.fmt(ex.mh), value: ex.mh },
     lo: { param: param.fmt(median(ex.lo.map(param.of))!), outcome: outcome.fmt(ex.ml), value: ex.ml } };
   // 落后的店：只在关系成立时给。参数落在不利的那四分之一、结果又低于同类中位数，按结果差多少排。
-  const laggards = verdict !== "works" ? [] : rows.flatMap((r) => {
+  const lag = verdict !== "works" ? [] : rows.flatMap((r) => {
     const om = median(r.valid.map(outcome.of))!; const pm = median(r.valid.map(param.of))!;
     return (sign > 0 ? r.lo : r.hi).filter((s) => outcome.of(s) < om).map((s) => ({ s, r, om, pm, gap: outcome.kind === "log" ? outcome.of(s) / om : outcome.of(s) - om }));
-  }).sort((a, b) => a.gap - b.gap).slice(0, 5)
-    .map(({ s, r, om, pm }) => `${storeName(s)}（${r.g.label}）：${param.label} ${param.fmt(param.of(s))}（同类 ${param.fmt(pm)}），${outcome.label} ${outcome.fmt(outcome.of(s))}（同类 ${outcome.fmt(om)}）`);
-  return { text, verdict, groups: rows.length, agree, stores, example, laggards };
+  }).sort((a, b) => a.gap - b.gap).slice(0, 5);
+  const laggards = lag.map(({ s, r, om, pm }) => `${storeName(s)}（${r.g.label}）：${param.label} ${param.fmt(param.of(s))}（同类 ${param.fmt(pm)}），${outcome.label} ${outcome.fmt(outcome.of(s))}（同类 ${outcome.fmt(om)}）`);
+  const lagRows = lag.map(({ s, om }) => ({ name: s.name && s.name !== s.id ? s.name : `门店 ${s.id}`, value: outcome.of(s), peer: om }));
+  return { text, verdict, groups: rows.length, agree, stores, example, laggards, lagRows };
 }
 
 // 离群店的成因：把指标拆成几个乘数（log）或看一个对照量，说清主要偏在哪一项。

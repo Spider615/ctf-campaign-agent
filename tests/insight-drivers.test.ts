@@ -109,7 +109,7 @@ test("每条线都有依据、异常、推荐三段；没有推荐时写原因",
 test("依据里的图：每个有数据的节点和每条有分数的线都带图，图上的数是有限值", () => {
   const g = fakeGraph();
   const values = (c: NonNullable<typeof g.nodes[number]["chart"]>): number[] => c.kind === "bars" ? c.bars.map((b) => b.value) : c.kind === "split" ? c.parts.map((p) => p.value)
-    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values) : [...c.points.flat(), c.fit.slope, c.fit.intercept];
+    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values) : c.kind === "compare" ? c.items.map((x) => x.value) : [...c.points.flat(), c.fit.slope, c.fit.intercept];
   for (const n of g.nodes) if (n.source.kind !== "suggested" && n.id !== "areaage") assert.ok(n.chart, n.id);
   for (const e of g.edges) if (e.score && e.from !== "areaage") assert.ok(e.chart, edgeKey(e));
   for (const c of [...g.nodes.map((n) => n.chart), ...g.edges.map((e) => e.chart)]) if (c) {
@@ -120,7 +120,6 @@ test("依据里的图：每个有数据的节点和每条有分数的线都带�
   const day = g.nodes.find((n) => n.id === "day")!.chart!;
   assert.equal(day.kind, "columns");
   if (day.kind === "columns") { assert.equal(day.points.length, 31); assert.deepEqual(day.band && [day.band.from, day.band.to], ["8/22", "8/31"]); assert.equal(day.points.find((p) => p.mark)?.label, "8/29"); }
-  // 货品结构 → 毛利率：散点的拟合线往下走。
   // 货品结构 → 毛利率：按计价金占比分档，档位越高毛利率越低。
   const mix = g.edges.find((e) => e.from === "mix" && e.to === "gm")!.chart!;
   assert.ok(mix.kind === "bars" && mix.bars.length >= 3 && mix.bars[0].value > mix.bars.at(-1)!.value, JSON.stringify(mix));
@@ -139,4 +138,29 @@ test("指标的图：两个乘数两条线，都是平常工作日的几倍", ()
     assert.deepEqual(c.marks?.map((m) => m.at), ["8/29"]);
   }
   assert.deepEqual((g.nodes.find((n) => n.id === "qty")!.chart as { series: Array<{ label: string }> }).series.map((s) => s.label), ["订单数", "每单件数"]);
+});
+
+// 给总部业务看的卡片：一句话结论、怎么知道的、要注意、可以怎么做。
+// 「对数」只拦统计说法（对数销售额、取对数），「和 Power BI 对数」是核对数字，不算。
+const JARGON = /独有|解释度|R²|MAD|四分之一|对数(?:销售|刻度|方差|差异)|取对数|恒等式|固定效应|方差|样本|中位数|\dpp|偏 R/;
+test("业务卡片：每个节点和每条线都有，结论和建议里没有统计说法", () => {
+  const g = fakeGraph();
+  const cards = [...g.nodes.map((n) => [n.id, n.card] as const), ...g.edges.map((e) => [edgeKey(e), e.card] as const)];
+  for (const [id, c] of cards) {
+    assert.ok(c && c.say && c.how, `${id} 没有卡片`);
+    const text = [c.say, c.how, ...c.watch, c.todo ?? c.todoNote ?? "", c.chart?.title ?? ""].join(" ");
+    assert.doesNotMatch(text, JARGON, id);
+    assert.doesNotMatch(text, /NaN|undefined|Infinity/, id);
+    // 有建议就必须带支撑它的数据；没有建议要写原因。
+    if (c.todo) assert.ok(c.evidence.length > 0, `${id} 的建议没有数据`); else assert.ok(c.todoNote, `${id} 没建议也没原因`);
+  }
+  const say = (id: string) => g.nodes.find((n) => n.id === id)!.card.say;
+  assert.match(say("image"), /【[\d,]+ 万】/);
+  assert.match(say("day"), /倍】/);
+  // 对比图：灰色对照只有一档，最突出的一档用主色。
+  const day = g.nodes.find((n) => n.id === "day")!.card.chart!;
+  assert.ok(day.kind === "compare" && day.items.filter((x) => x.tone === "base").length === 1 && day.items.some((x) => x.tone === "hot"));
+  // 门店名带到「要注意」里时，每家都和同类一般水平比。
+  const mix = g.edges.find((e) => e.from === "mix" && e.to === "gm")!.card;
+  if (mix.stores) for (const r of mix.stores.rows) assert.ok(r.value < mix.stores.peer, r.name);
 });

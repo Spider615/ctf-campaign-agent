@@ -16,6 +16,9 @@ test("问答上下文写清在看哪个节点或哪条线；来源筛选不带�
   assert.equal(focusOf(g, { kind: "source", source: "field" }), null);
   const edge = focusOf(g, { kind: "edge", from: "promo", to: "mix" })!;
   assert.match(focusContext(edge), /连线「活动和力度 → 货品结构」（图上依据：同一家店，有活动成交的那天/);
+  // 页面上的结论和 AI 建议也带过去，问到建议时先查数据。
+  assert.match(focusContext(edge), /页面上的结论是「有活动成交的那天，卖的计价金更多/);
+  assert.match(focusContext(edge), /这是建议不是数据：用户问到这条建议时，要先查数据/);
   assert.match(focusContext(focusOf(g, { kind: "node", id: "region" })!), /选中了节点「大区 \/ 区域」.*没有明确改变时沿用/);
   assert.equal(selectionLabel(g, null), "整张图");
 });

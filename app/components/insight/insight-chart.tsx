@@ -107,6 +107,23 @@ function Scatter({ chart }: { chart: Extract<InsightChart, { kind: "scatter" }> 
   </svg>;
 }
 
+// 对比柱：不画坐标轴，柱顶直接写数，柱下写名字；灰柱是对照，蓝柱是最突出的一档。业务一眼看大小。
+function Compare({ chart }: { chart: Extract<InsightChart, { kind: "compare" }> }) {
+  const max = Math.max(...chart.items.map((x) => x.value), 0.0001);
+  const fill = { base: "#cbd5e1", hot: "#2f6bff", normal: "#c7d6ff" } as const;
+  return <div role="img" aria-label={`${chart.title}：${chart.items.map((x) => `${x.label}${x.sub ? `（${x.sub}）` : ""} ${x.text}`).join("，")}`}>
+    <div className="flex h-[132px] items-end gap-2 border-b border-[#e4eaf2] px-0.5" aria-hidden="true">
+      {chart.items.map((x, i) => <div key={i} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end">
+        <b className={`mb-1 whitespace-nowrap text-[12.5px] font-semibold tabular-nums ${x.tone === "hot" ? "text-[#2f6bff]" : "text-[#0f172a]"}`}>{x.text}</b>
+        <span className="block w-full max-w-[40px] rounded-t-[5px]" style={{ height: `${Math.max(3, x.value / max * 100)}px`, background: fill[x.tone] }} />
+      </div>)}
+    </div>
+    <div className="flex gap-2 px-0.5 pt-1.5" aria-hidden="true">
+      {chart.items.map((x, i) => <span key={i} className="min-w-0 flex-1 text-center text-[11px] leading-[1.35] text-[#334155]">{x.label}{x.sub ? <small className="block text-[10.5px] text-[#94a3b8]">{x.sub}</small> : null}</span>)}
+    </div>
+  </div>;
+}
+
 // 逐日折线：几条线都是「平常工作日的几倍」，同一根纵轴（不用双纵轴）。悬停一天显示各线原值。
 function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -151,11 +168,12 @@ function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
   </div>;
 }
 
-export function InsightChartView({ chart }: { chart: InsightChart }) {
-  return <figure className="mt-1 rounded-lg border border-[#dbe5ff] bg-white/85 p-2.5">
-    <figcaption className="mb-2 text-[12px] font-semibold text-[#1e3a8a]">{chart.title}</figcaption>
-    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : <Scatter chart={chart} />}
+export function InsightChartView({ chart, plain = false }: { chart: InsightChart; plain?: boolean }) {
+  return <figure className={plain ? "m-0" : "mt-1 rounded-lg border border-[#dbe5ff] bg-white/85 p-2.5"}>
+    {plain ? null : <figcaption className="mb-2 text-[12px] font-semibold text-[#1e3a8a]">{chart.title}</figcaption>}
+    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : chart.kind === "compare" ? <Compare chart={chart} /> : <Scatter chart={chart} />}
     {chart.legend && chart.kind !== "split" ? <Legend items={chart.legend} /> : null}
-    {chart.note ? <p className="mt-2 text-[11.5px] leading-relaxed text-[#64748b]">{chart.note}</p> : null}
+    {plain ? <figcaption className="mt-1.5 text-[11.5px] leading-relaxed text-[#94a3b8]">{chart.title}{chart.kind === "compare" && chart.note ? `；${chart.note}` : ""}</figcaption> : null}
+    {chart.note && !(plain && chart.kind === "compare") ? <p className="mt-2 text-[11.5px] leading-relaxed text-[#64748b]">{chart.note}</p> : null}
   </figure>;
 }

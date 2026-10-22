@@ -54,6 +54,8 @@ export type InsightTable = { head: string[]; rows: string[][] };
 export type InsightChartTone = "main" | "accent" | "muted" | "soft";
 export type InsightChartLegend = Array<{ tone: InsightChartTone; label: string }>;
 export type InsightChart = { title: string; note?: string; legend?: InsightChartLegend } & (
+  // compare：业务卡片用的竖柱对比，柱顶写数、柱下写名字；base 是对照（灰），hot 是最突出的一档。
+  | { kind: "compare"; items: Array<{ label: string; sub?: string; value: number; text: string; tone: "base" | "hot" | "normal" }> }
   | { kind: "bars"; bars: Array<{ label: string; value: number; text: string; tone?: InsightChartTone }> }
   | { kind: "split"; parts: Array<{ label: string; value: number; tone: InsightChartTone }> }
   | { kind: "columns"; unit: string; digits: number; stacked: boolean; series: Array<{ label: string; tone: InsightChartTone }>;
@@ -62,24 +64,30 @@ export type InsightChart = { title: string; note?: string; legend?: InsightChart
   | { kind: "lines"; labels: string[]; series: Array<{ label: string; tone: InsightChartTone; values: number[]; hover: string[] }>; band?: { from: string; to: string; label: string }; marks?: Array<{ at: string; label: string }> }
   | { kind: "scatter"; x: { label: string; unit: string }; y: { label: string; unit: string }; points: Array<[number, number]>; fit: { slope: number; intercept: number } }
 );
+// 给总部业务看的卡片：一句话结论 → 一张对比图 → 怎么知道的 → 要注意 → 可以怎么做。
+// say 里用【】包住要标蓝的数字。todo 是 AI 建议，evidence 是支撑这条建议的数据事实（问答时照这些回答）；给不出建议时 todo 为 null、todoNote 写原因。
+// stores：要注意里点名的门店，每家和同类一般水平比。
+export type InsightCardStores = { title: string; unit: string; rows: Array<{ name: string; value: number }>; peer: number };
+export type InsightCard = { say: string; chart?: InsightChart; how: string; watch: string[]; stores?: InsightCardStores; todo: string | null; todoNote?: string; evidence: string[] };
 export type InsightNode = {
   id: InsightNodeId; column: InsightColumn; section?: InsightSection; kind: InsightNodeKind;
   label: string; subtitle: string; strength?: InsightStrength; score?: InsightScore; effect?: InsightEffect;
-  source: InsightSource; paragraphs: string[]; chart?: InsightChart; table?: InsightTable; note?: string;
+  source: InsightSource; card: InsightCard; paragraphs: string[]; chart?: InsightChart; table?: InsightTable; note?: string;
 };
 // 每条线三部分（2026-10-19 会议定的）：依据 basis（数据验证的关联）、异常 anomalies（特殊案例和数据里能看到的共同点）、
 // 推荐 recommendation（表现最好的取值和搭配；恒等式、缺数据或关系太弱时为 null，noRecommendation 写原因）。
 // peers：同类店对比（peers.ts）。只有能落到门店层面的线才有；放在依据里，落后的店放在推荐里。
 export type InsightEdge = {
   from: InsightNodeId; to: InsightNodeId; strength: InsightStrength; score?: InsightScore; effect?: InsightEffect;
-  basis: string; chart?: InsightChart; anomalies: string[]; recommendation: string | null; noRecommendation?: string; peers?: InsightPeers;
+  card: InsightCard; basis: string; chart?: InsightChart; anomalies: string[]; recommendation: string | null; noRecommendation?: string; peers?: InsightPeers;
 };
 // verdict：works 参数有利的那头结果更好；flat 两头差不多或各组方向不一；reverse 和图上的方向相反。
 export type InsightPeerSide = { param: string; outcome: string; value: number };
+// lagRows：落后店的结构化数据（店名、结果值、同类一般水平），给业务卡片画条。
 export type InsightPeers = {
   text: string; verdict: "works" | "flat" | "reverse"; groups: number; agree: number; stores: number;
   example: { group: string; n: number; k: number; param: string; outcome: string; hi: InsightPeerSide; lo: InsightPeerSide };
-  laggards: string[];
+  laggards: string[]; lagRows: Array<{ name: string; value: number; peer: number }>;
 };
 
 export type InsightKpi = { id: "sales" | "gp" | "qty"; label: string; value: string; unit: string; detail: string };

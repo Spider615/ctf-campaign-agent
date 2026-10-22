@@ -3,7 +3,7 @@
 import { AlertTriangle, ChevronRight, Database, Lightbulb, MessageCircle, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import { edgeKey, findEdge, findNode, routes, routesThrough, type InsightSelection } from "../../lib/insight/paths";
-import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightPeers, type InsightTable } from "../../lib/insight/types";
+import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightCardStores, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightPeers, type InsightTable } from "../../lib/insight/types";
 import { InsightChartView } from "./insight-chart";
 import { SOURCE_TAG, STRENGTH_STYLE, scoreText } from "./insight-graph-view";
 
@@ -101,8 +101,43 @@ function Chain({ graph, path, onSelect }: { graph: InsightGraph; path: InsightEd
 function Relation({ graph, edge, onSelect }: { graph: InsightGraph; edge: InsightEdge; onSelect: (s: InsightSelection) => void }) {
   return <button type="button" onClick={() => onSelect({ kind: "edge", from: edge.from, to: edge.to })} className="group block w-full rounded-xl border border-[#e4eaf2] bg-white px-3 py-2 text-left transition hover:border-[#9db8ff] hover:shadow-[0_4px_12px_-6px_rgba(47,107,255,0.4)] focus-visible:border-[#2f6bff] focus-visible:outline-none">
     <span className="flex items-center gap-1 text-[12.5px] font-semibold text-[#0f172a]">{findNode(graph, edge.from)?.label}<span className="font-normal text-[#94a3b8]">→</span>{findNode(graph, edge.to)?.label}<Lk edge={edge} /><ChevronRight aria-hidden="true" className="ml-auto size-3.5 text-[#cbd5e1] group-hover:text-[#2f6bff]" /></span>
-    <span className="mt-0.5 line-clamp-2 block text-[12px] leading-relaxed text-[#64748b]">{edge.basis}</span>
+    <span className="mt-0.5 line-clamp-2 block text-[12px] leading-relaxed text-[#64748b]">{edge.card.say.replace(/[【】]/g, "")}</span>
   </button>;
+}
+
+// 业务卡片：一句话结论 → 对比图 → 怎么知道的 → 要注意 → 可以怎么做（AI 建议）。【】里的字标蓝。
+function Say({ text }: { text: string }) {
+  return <p className="text-[16.5px] font-semibold leading-[1.5] tracking-[-0.01em] text-[#0f172a]">{text.split(/(【[^】]*】)/).map((part, i) => part.startsWith("【") ? <span key={i} className="text-[#2f6bff]">{part.slice(1, -1)}</span> : part)}</p>;
+}
+function StoreRows({ stores }: { stores: InsightCardStores }) {
+  const top = Math.max(stores.peer, ...stores.rows.map((r) => r.value)) || 1;
+  const row = (name: string, value: number, low: boolean) => <div key={name} className="grid grid-cols-[minmax(0,48%)_1fr_auto] items-center gap-2 text-[12px]">
+    <span className="truncate text-[#334155]" title={name}>{name}</span>
+    <span className="h-2.5 overflow-hidden rounded bg-[#f1e6d2]/60"><span className="block h-full rounded" style={{ width: `${Math.max(3, value / top * 100)}%`, background: low ? "#f59e0b" : "#c7d6ff" }} /></span>
+    <b className="text-right font-semibold tabular-nums text-[#0f172a]">{value}{stores.unit}</b>
+  </div>;
+  return <div className="mt-1.5 space-y-1.5">{stores.rows.map((r) => row(r.name, r.value, true))}{row("同类店一般水平", stores.peer, false)}</div>;
+}
+const SECTION = {
+  how: { title: "怎么知道的", box: "bg-[#f5f8ff]", ink: "text-[#1d4ed8]" },
+  watch: { title: "要注意", box: "bg-[#fffbf2]", ink: "text-[#b45309]" },
+  todo: { title: "可以怎么做", box: "bg-[#f2fbf7]", ink: "text-[#047857]" },
+} as const;
+function Sec({ kind, children, tag }: { kind: keyof typeof SECTION; children: React.ReactNode; tag?: string }) {
+  const t = SECTION[kind];
+  return <section aria-label={t.title} className={`rounded-xl ${t.box} px-3 py-2.5 text-[13px] leading-relaxed text-[#334155]`}>
+    <h3 className={`mb-0.5 flex items-center gap-1.5 text-[12.5px] font-semibold ${t.ink}`}>{t.title}{tag ? <span className="rounded border border-[#e6defc] bg-[#faf8ff] px-1 text-[10px] font-medium leading-4 text-[#6d28d9]">{tag}</span> : null}</h3>
+    {children}
+  </section>;
+}
+function BusinessCard({ card }: { card: InsightCard }) {
+  return <div className="space-y-2.5">
+    <Say text={card.say} />
+    {card.chart ? <div className="pt-1"><InsightChartView chart={card.chart} plain /></div> : null}
+    <Sec kind="how"><p>{card.how}</p></Sec>
+    {card.watch.length || card.stores ? <Sec kind="watch">{card.watch.map((w) => <p key={w}>{w}</p>)}{card.stores ? <StoreRows stores={card.stores} /> : null}</Sec> : null}
+    <Sec kind="todo" tag={card.todo ? "AI 建议" : undefined}>{card.todo ? <p>{card.todo}</p> : <p className="text-[#64748b]">{card.todoNote}</p>}</Sec>
+  </div>;
 }
 
 // 折叠的次要内容：链路、相连的线。默认收起，详情栏一屏能看完三段主内容。
@@ -158,21 +193,24 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
     const edge = findEdge(graph, selection.from, selection.to); if (!edge) return null;
     const all = routesThrough(graph, edge);
     return <div className="space-y-2.5">
-      <Header kicker={`影响关系 · ${INSIGHT_EDGE_SOURCE[edge.strength].split("；")[0]}`} onClear={clear}>
+      <Header kicker="影响关系" onClear={clear}>
         <button type="button" onClick={() => onSelect({ kind: "node", id: edge.from })} className="hover:text-[#1d4ed8]">{findNode(graph, edge.from)?.label}</button>
         <span className="mx-1.5 font-normal text-[#94a3b8]">→</span>
         <button type="button" onClick={() => onSelect({ kind: "node", id: edge.to })} className="hover:text-[#1d4ed8]">{findNode(graph, edge.to)?.label}</button>
       </Header>
-      <ScoreBar x={edge} />
-      <Part tone="basis"><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
-      <Part tone="anomaly" empty="这条线上没有看到特别的案例。">{edge.anomalies.length ? edge.anomalies.map((a) => <p key={a}>{a}</p>) : undefined}</Part>
-      <Part tone="advice" empty={edge.noRecommendation}>{edge.recommendation ? <p>{edge.recommendation}</p> : undefined}
-        {edge.peers?.laggards.length ? <More title="同类店里可以推一把的店" count={edge.peers.laggards.length}>{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</More> : null}</Part>
-      <More title="经过这条线的完整链路" count={all.length}>
+      <BusinessCard card={edge.card} />
+      {ask}
+      {/* 给分析师看：分数、统计口径、同类店对比、离群店清单、完整链路。业务默认不展开。 */}
+      <More title="给分析师看" count={1 + (edge.peers ? 1 : 0) + (edge.anomalies.length ? 1 : 0) + all.length}>
+        <ScoreBar x={edge} />
+        <p className="text-[11.5px] text-[#94a3b8]">{INSIGHT_EDGE_SOURCE[edge.strength]}</p>
+        <Part tone="basis"><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
+        {edge.anomalies.length ? <Part tone="anomaly">{edge.anomalies.map((a) => <p key={a}>{a}</p>)}</Part> : null}
+        {edge.peers?.laggards.length ? <Part tone="advice">{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</Part> : null}
+        <p className="pt-1 text-[12px] font-medium text-[#64748b]">经过这条线的完整链路</p>
         {all.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}
         <p className="text-[11.5px] text-[#94a3b8]">链路上每一段都是单独测的关联，不能把各段相乘当成效果。</p>
       </More>
-      {ask}
     </div>;
   }
 
@@ -185,22 +223,26 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
   const advice = linked.filter((e) => e.recommendation);
   const relName = (e: InsightEdge) => e.from === node.id ? findNode(graph, e.to)?.label : findNode(graph, e.from)?.label;
   return <div className="space-y-2.5">
-    <Header kicker={node.column === 0 && node.strength ? `${INSIGHT_KIND_LABEL[node.kind]} · ${INSIGHT_STRENGTH_LABEL[node.strength]}` : INSIGHT_KIND_LABEL[node.kind]} onClear={clear}>{node.label}</Header>
-    <ScoreBar x={node} />
-    <SourceBox node={node} />
-    <Part tone="basis">
-      {node.paragraphs.map((p) => <p key={p}>{p}</p>)}
-      {node.chart ? <InsightChartView chart={node.chart} /> : null}
-      {/* 横条图画的就是两三列小表里的数，有图就不再重复；列多的表还有图上没有的数，照样列。 */}
-      {node.table && !(node.chart?.kind === "bars" && node.table.head.length <= 3) ? <div className="pt-1"><Table table={node.table} /></div> : null}
-      {node.note ? <p className="text-[12px] text-[#64748b]">{node.note}</p> : null}
-    </Part>
-    <Part tone="anomaly" empty="相连的线上没有看到特别的案例。">{anomalies.length ? anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>) : undefined}</Part>
-    <Part tone="advice" empty={node.kind === "metric" ? "这是结果指标，推荐看它上游的线。" : "相连的线上没有可推荐的取值。"}>{advice.length ? advice.map((e) => <p key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#047857] hover:bg-white">{relName(e)}</button>{e.recommendation}</p>) : undefined}</Part>
-    {down.length ? <More title="怎么传到指标" count={down.length}>{down.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</More> : null}
-    {up.length ? <More title="从哪些因素传过来" count={up.length}>{up.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</More> : null}
-    {ins.length ? <More title="受这些影响" count={ins.length}>{ins.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</More> : null}
-    {outs.length ? <More title="影响到" count={outs.length}>{outs.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</More> : null}
+    <Header kicker={INSIGHT_KIND_LABEL[node.kind]} onClear={clear}>{node.label}</Header>
+    <BusinessCard card={node.card} />
     {ask}
+    {down.length || up.length || ins.length || outs.length ? <div className="space-y-0.5">
+      {down.length ? <More title="怎么影响到指标" count={down.length}>{down.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</More> : null}
+      {up.length ? <More title="受哪些因素影响" count={up.length}>{up.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</More> : null}
+      {ins.length ? <More title="上游" count={ins.length}>{ins.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</More> : null}
+      {outs.length ? <More title="下游" count={outs.length}>{outs.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</More> : null}
+    </div> : null}
+    {/* 给分析师看：分数、数据来源、原来的依据和表、相连线的异常。 */}
+    <More title="给分析师看" count={1 + anomalies.length + advice.length}>
+      <ScoreBar x={node} />
+      <SourceBox node={node} />
+      <Part tone="basis">
+        {node.paragraphs.map((p) => <p key={p}>{p}</p>)}
+        {node.table ? <div className="pt-1"><Table table={node.table} /></div> : null}
+        {node.note ? <p className="text-[12px] text-[#64748b]">{node.note}</p> : null}
+      </Part>
+      {anomalies.length ? <Part tone="anomaly">{anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>)}</Part> : null}
+      {advice.length ? <Part tone="advice">{advice.map((e) => <p key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#047857] hover:bg-white">{relName(e)}</button>{e.recommendation}</p>)}</Part> : null}
+    </More>
   </div>;
 }

@@ -100,7 +100,8 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     const g = new Map<string, number[]>(); for (const s of full) { const k = key(s); g.set(k, [...(g.get(k) ?? []), value(s)]); }
     return [...g].map(([k, v]) => ({ k, n: v.length, m: median(v) ?? 0 }));
   };
-  const imageRows = medianBy((s) => s.attr.image, (s) => s.sales).sort((a, b) => b.m - a.m);
+  // 「未定义」不是一档商圈，不参与比较。
+  const imageRows = medianBy((s) => s.attr.image, (s) => s.sales).filter((r) => r.k && r.k !== "未定义").sort((a, b) => b.m - a.m);
   const expSales = medianBy((s) => s.attr.experience, (s) => s.sales); const expAov = medianBy((s) => s.attr.experience, (s) => s.sales / s.orders);
   const expRows = expSales.filter((r) => r.n >= 9).sort((a, b) => b.m - a.m).map((r) => ({ ...r, aov: expAov.find((x) => x.k === r.k)!.m }));
   const natureGm = medianBy((s) => s.attr.nature, (s) => s.gp / s.revEx * 100).sort((a, b) => a.m - b.m);
@@ -284,7 +285,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     `1× 是平常工作日的水平。销售额${peak ? `在${festName}是平常的 ${peakOf(revF)} 倍` : "随日子起落"}；毛利率在 ${pct(gmLo)}–${pct(gmHi)} 之间，做活动、过节的日子略低。`);
 
   // 指标拆解：订单数、客单价、毛利率各自被什么拉动。
-  const imageOrders = medianBy((s) => s.attr.image, perDay).filter((r) => r.n >= 20).sort((a, b) => b.m - a.m);
+  const imageOrders = medianBy((s) => s.attr.image, perDay).filter((r) => r.n >= 20 && r.k !== "未定义").sort((a, b) => b.m - a.m);
   const ordersChart = barsOf("商圈越好的店，每天单越多", imageOrders.map((r) => ({ label: short(r.k), value: r1(r.m), text: `${n1(r.m)} 单` })), "max",
     `门店日均订单数的一般水平。全国一天的单量也随日子变：平常工作日 ${n1(ordinary.length ? mean(ordinary.map((d) => d.orders)) / 1e4 : 0)} 万单${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单` : ""}。`);
   const aovByOffer = named([["克减 50", k50.gramsPerItem], ["金色星期二", gtG.gramsPerItem], ["克减 30", k30.gramsPerItem], ["一般開單", baseG.gramsPerItem]], (v) => `${n1(v)} 克`);
@@ -370,9 +371,9 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   };
 
   // ---------- 节点 ----------
-  const N = (node: InsightNode) => node;
+  const N = (node: Omit<InsightNode, "card">) => node;
   const imageS = byScore(sc.image); const expS = byScore(sc.shoptype);
-  const nodes: InsightNode[] = [
+  const nodes: Array<Omit<InsightNode, "card">> = [
     N({ id: "image", column: 0, section: "门店", kind: "leaf", label: "商圈形象级别", subtitle: `独有贡献 ${pct(u(uSales, "形象级别"))}`, strength: imageS, score: sc.image,
       source: { kind: "field", columns: ["形象级别描述"], how: "门店属性原值，按门店汇总" },
       paragraphs: [`商圈越好的店卖得越多：${imageRows.filter((r) => r.n >= 20).slice(0, 1).map((r) => `${short(r.k)}的店一个月卖 ${wan(r.m)}`).join("")}${imageRows.length >= 2 ? `，${short(imageRows.at(-1)!.k)}只有 ${wan(imageRows.at(-1)!.m)}` : ""}。在门店的各项属性里，它的影响最大。`],
@@ -510,11 +511,241 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     if (high && v < 1 && m >= 10) return { label: `不卖计价金：同类计价金占比 ${pct(m)}` };
     return (high ? m - v : v - m) >= 10 ? { label: `计价金占比${high ? "低" : "高"}：${pct(v)}（同类 ${pct(m)}）` } : { label: "货品结构和同类差不多，数据里看不出原因（可能是进货价或折扣口径）" };
   } });
-  const withPeers = (e: InsightEdge, x: ReturnType<typeof comparePeers>): InsightEdge => {
+  const withPeers = <T extends Omit<InsightEdge, "card">>(e: T, x: ReturnType<typeof comparePeers>): T => {
     if (!x) return e;
     // 关系成立时把落后的店放进推荐；关系不成立或方向相反时进异常提醒。
     const anomalies = x.verdict === "reverse" ? [...e.anomalies, `同类店里看，方向和这条线相反：${x.text}`] : e.anomalies;
     return { ...e, peers: x, anomalies };
+  };
+
+  // ---------- 业务卡片 ----------
+  // 给总部业务看：一句话结论（【】里的数字标蓝）→ 一张对比图 → 怎么知道的 → 要注意 → 可以怎么做（AI 建议）。
+  // evidence 是支撑建议的数据事实，问答时只能照这些回答，不能把建议本身当成数据。
+  type Item = { label: string; sub?: string; value: number; text: string; tone?: "base" | "hot" | "normal" };
+  // 对比柱：最高的一档标 hot；base 指定对照那一档（灰）。
+  const compare = (title: string, items: Item[], note?: string, hot: "max" | "min" | number = "max"): InsightChart => {
+    const vals = items.map((x) => x.value); const pick = hot === "max" ? vals.indexOf(Math.max(...vals)) : hot === "min" ? vals.indexOf(Math.min(...vals)) : hot;
+    return { kind: "compare", title, items: items.map((x, i) => ({ ...x, tone: x.tone ?? (i === pick ? "hot" : "normal") })), ...(note ? { note } : {}) };
+  };
+  type Card = InsightNode["card"];
+  const C = (say: string, how: string, watch: string[], todo: string | null, evidence: string[], more: { chart?: InsightChart; stores?: Card["stores"]; todoNote?: string } = {}): Card =>
+    ({ say, how, watch, todo, evidence, ...more, ...(todo ? {} : { todoNote: more.todoNote ?? "数据给不出具体的做法。" }) });
+  const imgTop = imageRows[0]; const imgLow = imageRows.at(-1);
+  const imgSocial = imageRows.find((r) => r.k.startsWith("社区")) ?? imgLow;
+  const imageItems = imageRows.filter((r) => r.n >= 20).map((r): Item => ({ label: short(r.k), sub: `${n0(r.n)} 家`, value: r1(r.m / 1e4), text: `${n0(r.m / 1e4)} 万`, ...(r === imgSocial ? { tone: "base" as const } : {}) }));
+  const imageCompare = compare("一家店一个月卖多少（万元）", imageItems, "每档取中间那家店");
+  const ordAvgOrders = ordinary.length ? mean(ordinary.map((d) => d.orders)) : 0;
+  const k50Ratio = baseG.gramsPerItem > 0 ? k50.gramsPerItem / baseG.gramsPerItem : 0;
+  const dayGroups = (() => {
+    const avg = (f: (d: DailyRow) => boolean) => { const x = daily.filter(f); return x.length ? mean(x.map((d) => d.sales)) : 0; };
+    const before = (d: DailyRow) => d.day < rollout; const notPeak = (d: DailyRow) => d.day !== peak?.day;
+    return [
+      { label: "平常", value: ordinaryAvg, tone: "base" as const },
+      { label: "周末", value: avg((d) => before(d) && (d.dow === 0 || d.dow === 6)) },
+      { label: "周二", sub: "金色", value: avg((d) => before(d) && d.dow === 2) },
+      { label: "克减后", sub: "平日", value: avg((d) => !before(d) && d.dow >= 1 && d.dow <= 5 && notPeak(d)) },
+      { label: "克减后", sub: "周末", value: avg((d) => !before(d) && (d.dow === 0 || d.dow === 6)) },
+      ...(peak ? [{ label: festName, sub: day(peak.day), value: peak.sales }] : []),
+    ].filter((g) => g.value > 0).map((g): Item => ({ ...g, value: r2(g.value / 1e8), text: n1(g.value / 1e8) }));
+  })();
+  const dayCompare = compare("全国一天卖多少（亿元）", dayGroups, "同类日子取平均；平常 = 8/22 前不过节的周一、三、四");
+  // 「做活动、过节」的日子：金色星期二、克减后、节日当天；周末不算。
+  const dayBase = dayGroups[0]?.value ?? 1;
+  const promoDays = dayGroups.filter((g) => g.sub === "金色" || g.label === "克减后" || g.label === festName).map((g) => g.value);
+  const dayMax = Math.max(...promoDays, dayBase); const dayMin2 = promoDays.length ? Math.min(...promoDays) : dayBase;
+  const promoMax = Math.max(...promoSales); const promoTop = PROMO[promoSales.indexOf(promoMax)];
+  const promoCompare = compare("同一家店：没活动的日子算 1 倍", [{ label: "没活动", value: 1, text: "1 倍", tone: "base" } as Item, ...PROMO.map((name, i): Item => ({ label: name, value: r1(promoSales[i]), text: `${n1(promoSales[i])} 倍` })).sort((a, b) => a.value - b.value)]);
+  const mixItems = mixBands.map((r, i): Item => ({ label: r.label, sub: `${n0(r.n)} 家`, value: r1(r.m), text: pct(r.m), ...(i === mixBands.length - 1 ? { tone: "base" as const } : {}) }));
+  const mixCompare = compare("门店毛利率，按计价金占这家店销售额多少分档", mixItems);
+  // 店名在侧栏里要一眼认出：去掉品牌前缀（周大福荟馆、JEWELRIA 这类）和「珠宝店」后缀，留下城市和地标。
+  const shortStore = (name: string) => name.replace(/^(周大福)?(荟馆|传承|奢华店)?\s*(JEWELRIA|MONOLOGUE|SOINLOVE|ENZO|HEARTS ON FIRE)?\s*/i, "").replace(/(珠宝)?店$/, "") || name;
+  const lagStores = (x: ReturnType<typeof comparePeers>, title: string, unit: string, fmtv: (v: number) => number): Card["stores"] | undefined =>
+    x?.lagRows.length ? { title, unit, rows: x.lagRows.slice(0, 3).map((r) => ({ name: shortStore(r.name), value: r1(fmtv(r.value)) })), peer: r1(fmtv(median(x.lagRows.slice(0, 3).map((r) => r.peer)) ?? 0)) } : undefined;
+  const ptItems = (of: (p: PtypeRow) => number, text: (v: number) => string) => [gold, fixed, inlay].map((p): Item => ({ label: p.ptype, value: r1(of(p)), text: text(of(p)), ...(p === gold ? { tone: "base" as const } : {}) }));
+  const ptGmCompare = compare("各类货的毛利率", ptItems(ptGm, pct));
+  const tradeItems: Item[] = [
+    { label: "金色星期二", value: r1(share(trGt.tradeIn, trGt.orders)), text: pct(share(trGt.tradeIn, trGt.orders)) },
+    { label: "一般開單", value: r1(share(trBase.tradeIn, trBase.orders)), text: pct(share(trBase.tradeIn, trBase.orders)), tone: "base" },
+    { label: "克减类", value: r1(promoTradeInShare), text: pct(promoTradeInShare) },
+  ];
+  const depthItems: Item[] = [["克减 30", g30], ["克减 50", g50], ["金色星期二", gGt]].map(([label, v]) => ({ label: label as string, value: r1(v as number), text: `${n1(v as number)} 元` }));
+  const gramItems: Item[] = [["一般開單", baseG.gramsPerItem], ["克减 30", k30.gramsPerItem], ["金色星期二", gtG.gramsPerItem], ["克减 50", k50.gramsPerItem]].map(([label, v], i) => ({ label: label as string, value: r1(v as number), text: `${n1(v as number)} 克`, ...(i === 0 ? { tone: "base" as const } : {}) }));
+  const heavyItems: Item[] = [["一般開單", baseG.ge20], ["克减 30", k30.ge20], ["克减 50", k50.ge20]].map(([label, v], i) => ({ label: label as string, value: r1(v as number), text: pct(v as number), ...(i === 0 ? { tone: "base" as const } : {}) }));
+  const regionItems = regionRows.map((r): Item => ({ label: r.k, sub: `${n0(r.n)} 家`, value: r1(r.m / 1e4), text: `${n0(r.m / 1e4)} 万` }));
+  const natureItems = natureGm.map((r): Item => ({ label: r.k.replace("(", "（").replace(")", "）"), sub: `${n0(r.n)} 家`, value: r1(r.m), text: pct(r.m) }));
+  const expShown = (bigExp.length >= 2 ? bigExp : expRows).slice(0, 4);
+  const expAovItems = expShown.map((r): Item => ({ label: r.k.replace("周大福", ""), sub: `${n0(r.n)} 家`, value: r1(r.aov), text: `${n0(r.aov)} 元` }));
+  const expSalesItems = expShown.map((r): Item => ({ label: r.k.replace("周大福", ""), sub: `${n0(r.n)} 家`, value: r1(r.m / 1e4), text: `${n0(r.m / 1e4)} 万` }));
+  const areaItems = areaRows.map((r): Item => ({ label: r.k.replace("平方米", "㎡"), sub: `${n0(r.n)} 家`, value: r1(r.m / 1e4), text: `${n0(r.m / 1e4)} 万` }));
+  const dowItems = [...DOW.slice(1), DOW[0]].flatMap((name) => dowRows.filter((r) => r.name === name)).map((r): Item => ({ label: r.name, value: r2(r.avg / 1e8), text: n1(r.avg / 1e8) }));
+  const dowLow = Math.min(...dowItems.map((x) => x.value));
+  const shiftItems: Item[] = [
+    { label: "一般開單", sub: `${day(rollout)} 前`, value: r1(shift.baseBefore / 1e4), text: `${n0(shift.baseBefore / 1e4)} 万`, tone: "base" },
+    { label: "一般開單", sub: `${day(rollout)} 后`, value: r1(shift.baseAfter / 1e4), text: `${n0(shift.baseAfter / 1e4)} 万`, tone: "base" },
+    { label: "活动", sub: `${day(rollout)} 前`, value: r1(shift.promoBefore / 1e4), text: `${n0(shift.promoBefore / 1e4)} 万` },
+    { label: "活动", sub: `${day(rollout)} 后`, value: r1(shift.promoAfter / 1e4), text: `${n0(shift.promoAfter / 1e4)} 万`, tone: "hot" },
+  ];
+  const promoGmItems: Item[] = PROMO.map((name, i) => ({ label: name, value: r1(Math.abs(promoGm[i])), text: `低 ${n1(Math.abs(promoGm[i]))} 个点` }));
+  const promoGoldItems: Item[] = PROMO.map((name, i) => ({ label: name, value: r1(promoGold[i]), text: `多 ${n1(promoGold[i])} 个点` }));
+  const gtNew = trGt.sales - trGt.recycle;
+  const peakTimes = peak && ordinaryAvg > 0 ? peak.sales / ordinaryAvg : 0;
+  const orderTimes = peak && ordAvgOrders > 0 ? peak.orders / ordAvgOrders : 0;
+
+  const nodeCards: Record<InsightNodeId, Card> = {
+    image: C(`${imgTop ? short(imgTop.k) : ""}的店一个月卖【${imgTop ? n0(imgTop.m / 1e4) : 0} 万】，是社区店的 ${imgTop && imgSocial ? n1(imgTop.m / Math.max(1, imgSocial.m)) : 0} 倍`,
+      `${n0(full.length)} 家开满 20 天的店按商圈分档比。在门店的各项条件（商圈、店型、面积、店龄、大区……）里，商圈带来的差别最大。`,
+      [...(imgTop && imgTop.n < 150 ? [`${short(imgTop.k)}只有 ${n0(imgTop.n)} 家店，比其他档少很多，数字没那么稳。`] : []), ...(imageOut.top ? [`每一档里都有特别好的店：${short(imageOut.top.k)}里就有 ${n0(imageOut.top.n)} 家卖到本档一般水平的 3 倍以上。`] : [])],
+      "比较活动效果、给门店定目标时，先按商圈分开比；同一档里卖得特别好的店，可以去看它们做对了什么。",
+      [`各档商圈门店一个月卖多少：${imageRows.filter((r) => r.n >= 20).map((r) => `${short(r.k)} ${wan(r.m)}（${n0(r.n)} 家）`).join("，")}。`, ...(imageOut.top ? [`一个月卖到本档一般水平 3 倍以上的店共 ${n0(imageOut.count)} 家。`] : [])],
+      { chart: imageCompare }),
+    shoptype: C(`高端店型的客单价更高，一单最多到【${expShown.length ? n0(Math.max(...expShown.map((r) => r.aov))) : 0} 元】`,
+      "各店型的店分开比，看一单平均多少钱、一个月卖多少。只列 30 家店以上的店型。",
+      expRows.length && expRows[0].n < 30 ? [`卖得最多的「${expRows[0].k}」只有 ${n0(expRows[0].n)} 家，是少数旗舰店，不代表同类都能做到。`] : [],
+      "推高单价的货（镶嵌、大克重），优先放在高端店型的店里推。",
+      [`各店型客单价：${expShown.map((r) => `${r.k} ${n0(r.aov)} 元（${n0(r.n)} 家）`).join("，")}。`],
+      { chart: compare("一单平均多少钱（元）", expAovItems) }),
+    areaage: C("面积、店龄、城市级别带来的差别都不大",
+      "单独看这几项和销售额有关系，但商圈和店型一样的店放在一起比，差别就很小了。",
+      areaRows.length >= 2 ? [`面积最大的一档不一定卖得最多：卖得最多的是「${areaRows[0].k}」的店。`] : [],
+      null, [], { chart: areaItems.length >= 2 ? compare("一家店一个月卖多少（万元），按面积分", areaItems) : undefined, todoNote: "这几项影响很小，按它们挑门店意义不大。" }),
+    region: C(`各大区的店卖得差不多，最多差【${regionRows.length >= 2 ? n0((regionRows[0].m / Math.max(1, regionRows.at(-1)!.m) - 1) * 100) : 0}%】`,
+      "每个大区取中间那家店，看一个月卖多少。",
+      ["大区之间看起来的差别，多半是各区好商圈、高端店型的店多少不同，不是大区本身的原因。"],
+      "比较大区好坏之前，先把商圈和店型一样的店放在一起比。",
+      [`各大区门店一个月卖多少：${regionRows.map((r) => `${r.k} ${wan(r.m)}（${n0(r.n)} 家）`).join("，")}。`],
+      { chart: compare("一家店一个月卖多少（万元）", regionItems) }),
+    nature: C("自营还是加盟，卖多少几乎一样；毛利率自营店略低",
+      "按分店性质分开，看门店毛利率的一般水平。",
+      ["毛利率差不到 2 个百分点，原因可能是加盟店进货价口径不同，要问财务。"],
+      null, [], { chart: compare("门店毛利率", natureItems), todoNote: "差别很小，原因要先和财务确认。" }),
+    qixi: C(`${festName}当天全国卖了【${peak ? yi(peak.sales) : "0"}】，是平常的 ${n1(peakTimes)} 倍`,
+      `平常 = ${day(rollout)} 前不过节的周一、三、四，平均一天 ${yi(ordinaryAvg)}。`,
+      ["节日和克减全国铺开在同一周，节日自己拉了多少、活动拉了多少，分不开。"],
+      `明年${festName}把克减和节日错开一周做，就能看出节日自己拉了多少。`,
+      [`${festName}当天 ${peak ? yi(peak.sales) : ""}，平常工作日一天 ${yi(ordinaryAvg)}。`, `克减从 ${day(rollout)} 起全国铺开，和${festName}在同一周。`],
+      { chart: dayCompare }),
+    weekday: C(`周二一天卖【${yi(tueAvg)}】，比周一三四多一倍多：金色星期二`,
+      `看 ${day(rollout)} 前不过节的日子，各星期几全国平均一天卖多少。`,
+      [`周二多出来的主要是计价金（周二 ${yi(tueGold)}，平常 ${yi(ordGold)}），而且几乎每单都带旧金来换。`],
+      "看金色星期二的效果，要看收进了多少新钱（扣掉旧金抵的部分），不能只看卖了多少。",
+      [`${day(rollout)} 前周二平均一天 ${yi(tueAvg)}，周一三四 ${yi(ordinaryAvg)}，周末 ${yi(weekendAvg)}。`, `金色星期二卖了 ${yi(trGt.sales)}，其中 ${yi(trGt.recycle)} 是旧金抵的。`],
+      { chart: compare("全国一天卖多少（亿元），不含节日", dowItems.map((x) => x.value === dowLow ? { ...x, tone: "base" as const } : x)) }),
+    depth: C(`克减 50 每克实际让【${n1(g50)} 元】，克减 30 让 ${n1(g30)} 元`,
+      "和同一天的一般開單比，活动每克少收了多少钱。",
+      [`克减 30 实际只让了 ${n1(g30)} 元，不到名义的 30 元，可能有克数门槛或叠加规则，要用规则表核对。`, "金色星期二的优惠在旧金抵价上，所以每克几乎不让。"],
+      `定力度时要和它带来的大件一起看：克减 50 顾客平均每件买 ${n1(k50.gramsPerItem)} 克，一般開單 ${n1(baseG.gramsPerItem)} 克。`,
+      [`每克实际少收：克减 50 ${n1(g50)} 元，克减 30 ${n1(g30)} 元，金色星期二 ${n1(gGt)} 元。`, `计价金每件平均克重：克减 50 ${n1(k50.gramsPerItem)} 克，一般開單 ${n1(baseG.gramsPerItem)} 克。`],
+      { chart: compare("每克实际少收多少钱", depthItems) }),
+    threshold: C(`克减 50 的顾客集中买 20 克以上：【${pct(k50.ge20)}】的计价金是 20 克以上的货`,
+      "数每个克重卖了多少件，比较克减 50 和一般開單。",
+      [`从 19 克到 20 克，克减 50 的件数从 ${n0(t19.k50)} 跳到 ${n0(t20.k50)}，一般開單却从 ${n0(t19.base)} 降到 ${n0(t20.base)}：像是有 20 克的门槛，规则表还没确认。`],
+      "如果门槛确实是 20 克，可以重点备 20–22 克的货，让顾客刚好跨过门槛。",
+      [`20 克以上的货占计价金销售额：克减 50 ${pct(k50.ge20)}，克减 30 ${pct(k30.ge20)}，一般開單 ${pct(baseG.ge20)}。`, `19 克到 20 克：克减 50 ${n0(t19.k50)} → ${n0(t20.k50)} 件，一般開單 ${n0(t19.base)} → ${n0(t20.base)} 件。`],
+      { chart: compare("20 克以上的货占计价金多少", heavyItems) }),
+    tradein: C(`金色星期二几乎每单都带旧金换，卖的 ${yi(trGt.sales)} 里【${yi(trGt.recycle)}】是旧金抵的`,
+      "按单看有没有回收旧金，以及旧金抵了多少钱。",
+      [`金色星期二真正收进的新钱是 ${yi(gtNew)}。克减类基本不带旧金（${pct(promoTradeInShare)}）。`],
+      "评估金色星期二时，用「卖了多少 − 旧金抵了多少」看收进的新钱。",
+      [`金色星期二 ${n0(trGt.orders)} 单里 ${n0(trGt.tradeIn)} 单带旧金；卖了 ${yi(trGt.sales)}，旧金抵 ${yi(trGt.recycle)}。`, `一般開單 ${n0(trBase.orders)} 单里 ${n0(trBase.tradeIn)} 单带旧金。`],
+      { chart: compare("带旧金来换的订单占多少", tradeItems) }),
+    shift: C(`克减带来的大多是新增生意：一般開單只少了【${n1(Math.abs(shiftPct))}%】`,
+      `比 ${day(rollout)} 克减全国铺开前后，周一、三、四全国一天的计价金销售额。`,
+      ["铺开后离节日更近，新增里也有节日的功劳，所以挪过来的比例可能更大一些。"],
+      "克减可以继续用来拉新增；节日前后做时，要和平常日子分开评估。",
+      [`一般開單计价金每天 ${wan(shift.baseBefore)} → ${wan(shift.baseAfter)}；活动计价金 ${wan(shift.promoBefore)} → ${wan(shift.promoAfter)}。`],
+      { chart: compare("周一三四全国一天的计价金（万元）", shiftItems, undefined, 3) }),
+    gold: C("数据里没有每日金价", "计价金每克收的钱里，混着金价、工费和让利。", ["同一个月里比没问题；跨月、跨年比活动力度，需要先有每日金价。"], null, [], { todoNote: "需要先采集每日金价。" }),
+    member: C(`分不出新老会员：【${pct(data.memberShare)}】的销售都标成了会员`, "明细里只有「是不是会员」。", ["想知道活动对新会员、老会员效果是否不同，需要会员 ID 和首购日期。"], null, [], { todoNote: "需要先采集会员 ID 和首购日期。" }),
+    store: C(`门店之间差得多：${imgTop ? short(imgTop.k) : ""}的店一个月卖【${imgTop ? n0(imgTop.m / 1e4) : 0} 万】，社区店 ${imgSocial ? n0(imgSocial.m / 1e4) : 0} 万`,
+      "把每家店每天卖多少，分成「这家店本身的水平」和「这一天的水平」两部分，门店本身的部分更大。",
+      ["门店条件里，商圈影响最大，其次是店型；面积、店龄、大区、自营还是加盟的影响都很小。"],
+      "给门店定目标、比活动效果时，先按商圈和店型分组比。",
+      [`各档商圈门店一个月卖多少：${imageRows.filter((r) => r.n >= 20).map((r) => `${short(r.k)} ${wan(r.m)}`).join("，")}。`],
+      { chart: imageCompare }),
+    day: C(`做活动、过节的日子，一天能卖到平常的【${n1(dayMin2 / Math.max(0.01, dayBase))} 到 ${n1(dayMax / Math.max(0.01, dayBase))} 倍】`,
+      `把 8 月每天按「有没有活动、是不是节日」分开，算每类日子全国一天卖多少。`,
+      [`${day(rollout)} 克减全国铺开和${festName}在同一周，这几天卖得多，活动和节日各占多少分不开。`],
+      `明年${festName}把克减和节日错开一周做，就能看出活动自己拉了多少。`,
+      dayGroups.map((g) => `${g.label}${g.sub ? `（${g.sub}）` : ""}全国一天 ${g.text} 亿。`),
+      { chart: dayCompare }),
+    promo: C(`同一家店，有${promoTop}成交的那天，卖得是平时的【${n1(promoMax)} 倍】`,
+      "每家店只和自己比：有这个活动成交的日子，和它没有的日子比，并扣掉那天全国普遍的涨落。",
+      ["门店会挑生意好的日子做活动，又和节日同周，倍数会比活动本身的效果偏高。", `活动那天卖的计价金更多，毛利率会低 ${n1(Math.min(...promoGm.map(Math.abs)))}–${n1(Math.max(...promoGm.map(Math.abs)))} 个百分点。`],
+      `想拉单量，${promoTop}效果最明显；活动里多配一口价和镶嵌货，可以少压一点毛利。`,
+      [...PROMO.map((name, i) => `有${name}成交的那天，同一家店卖得是平时的 ${n1(promoSales[i])} 倍，毛利率低 ${n1(Math.abs(promoGm[i]))} 个百分点。`), `一口价黄金毛利率 ${pct(ptGm(fixed))}，镶嵌 ${pct(ptGm(inlay))}，计价金 ${pct(ptGm(gold))}。`],
+      { chart: promoCompare }),
+    mix: C(`计价金卖得越多的店，毛利率越低：从【${mixBands.length ? pct(mixBands[0].m) : ""}】降到 ${mixBands.length ? pct(mixBands.at(-1)!.m) : ""}`,
+      `计价金本身毛利率只有 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}、镶嵌 ${pct(ptGm(inlay))}。所以一家店卖的计价金越多，整体毛利率就越低。`,
+      [`计价金卖了 ${pct(share(gold.sales, total.sales))} 的钱，只贡献 ${pct(share(gold.gp, total.gp))} 的毛利。`],
+      "想保毛利，提高一口价和镶嵌货的占比。",
+      [...mixBands.map((r) => `计价金占 ${r.label}的店（${n0(r.n)} 家），毛利率 ${pct(r.m)}。`), `各类货毛利率：计价金 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}，镶嵌及其他 ${pct(ptGm(inlay))}。`],
+      { chart: mixCompare }),
+    orders: C(`卖得多的店和日子，主要是【单多】，不是每单贵`,
+      `销售额 = 订单数 × 客单价。店和店、天和天卖得不一样，主要差在订单数上。8 月全国 ${n1(total.orders / 1e4)} 万单。`,
+      ["数据里没有客流和成交率，订单数再往下拆不了。"],
+      "提销售额先想办法多来单：好商圈的店和做活动、过节的日子，单量明显更多。",
+      [`各档商圈门店一天多少单：${imageOrders.map((r) => `${short(r.k)} ${n1(r.m)} 单`).join("，")}。`, `全国平常工作日约 ${n1(ordAvgOrders / 1e4)} 万单${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单（${n1(orderTimes)} 倍）` : ""}。`],
+      { chart: compare("一家店一天多少单", imageOrders.map((r): Item => ({ label: short(r.k), sub: `${n0(r.n)} 家`, value: r1(r.m), text: `${n1(r.m)} 单`, ...(r.k.startsWith("社区") ? { tone: "base" as const } : {}) }))) }),
+    aov: C(`力度大的活动，顾客每件买得更重：克减 50 是一般開單的【${n1(k50Ratio)} 倍】`,
+      `8 月平均一单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。看每类活动计价金平均每件多少克。`,
+      ["高端店型的客单价也更高，但这类店不多。"],
+      "想提客单价，力度大的活动配大克重的货一起推。",
+      [`计价金每件平均克重：${gramItems.map((x) => `${x.label} ${x.text}`).join("，")}。`],
+      { chart: compare("计价金平均每件多少克", gramItems) }),
+    gm: C(`一口价、镶嵌的毛利率是计价金的【2 倍】左右`,
+      `毛利 = 销售额（不含税）× 毛利率。8 月整体毛利率 ${pct(gm)}，主要看卖了什么货。`,
+      [`计价金卖了 ${pct(share(gold.sales, total.sales))} 的钱，只贡献 ${pct(share(gold.gp, total.gp))} 的毛利。`],
+      "保毛利的关键是货品结构：一口价和镶嵌卖得越多，毛利率越高。",
+      [`各类货毛利率：计价金 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}，镶嵌及其他 ${pct(ptGm(inlay))}。`],
+      { chart: ptGmCompare }),
+    qty: C(`8 月卖了【${n0(total.items / 1e4)} 万件】，销量跟着订单数走`,
+      "销量 = 订单数 × 每单件数。每单件数基本不变，所以看订单数就够了。",
+      [], "想多卖件数，重点是多来单，而不是让顾客一单多买几件。",
+      [`8 月 ${n0(total.items / 1e4)} 万件、${n1(total.orders / 1e4)} 万单，平均每单 ${(total.orders > 0 ? total.items / total.orders : 0).toFixed(2)} 件。`, `每单件数整个月都在 ${ipoLo.toFixed(2)}–${ipoHi.toFixed(2)} 件。`],
+      { chart: qtyLines }),
+    sales: C(`8 月卖了【${yi(total.sales)}】，起落主要跟着订单数`,
+      `销售额 = 订单数 × 客单价。${n1(total.orders / 1e4)} 万单，平均一单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。`,
+      ["还没和 Power BI 核对，绝对数先只作参考。"],
+      "提销售额先抓单量：好商圈的店、做活动和过节的日子。",
+      [`8 月 ${yi(total.sales)}、${n1(total.orders / 1e4)} 万单。`, `客单价每天在 ${n0(aovLo)}–${n0(aovHi)} 元之间。`],
+      { chart: salesLines }),
+    gp: C(`8 月毛利【${yi(total.gp)}】，毛利率 ${pct(gm)}，基本跟着销售额走`,
+      "毛利 = 销售额（不含税）× 毛利率。毛利率每天变化不大。",
+      ["做活动、过节的日子毛利率略低，因为那几天卖的计价金更多。"],
+      "保毛利的关键是货品结构：活动里多配一口价和镶嵌货。",
+      [`毛利率每天在 ${pct(gmLo)}–${pct(gmHi)} 之间。`, `计价金毛利率 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}，镶嵌及其他 ${pct(ptGm(inlay))}。`],
+      { chart: gpLines }),
+  };
+  const lagMix = lagStores(peers.mix, "计价金卖得多、毛利率特别低的店", "%", (v) => v);
+  const edgeCards: Record<string, Card> = {
+    "image>store": { ...nodeCards.image },
+    "shoptype>store": C(`高端店型卖得更多：${expShown.length ? expShown[0].k.replace("周大福", "") : ""}一个月【${expShown.length ? n0(expShown[0].m / 1e4) : 0} 万】`,
+      "各店型的店分开比一个月卖多少，只列 30 家店以上的店型。", ["店型的影响比商圈小；高端店型多开在好商圈里，两者有重叠。"],
+      null, [], { chart: compare("一家店一个月卖多少（万元）", expSalesItems), todoNote: "店型不是能马上改的，先按店型分组比较即可。" }),
+    "areaage>store": nodeCards.areaage, "region>store": nodeCards.region, "nature>store": nodeCards.nature,
+    "qixi>day": nodeCards.qixi, "weekday>day": nodeCards.weekday, "depth>promo": nodeCards.depth, "threshold>promo": nodeCards.threshold, "tradein>promo": nodeCards.tradein, "shift>promo": nodeCards.shift,
+    "gold>promo": nodeCards.gold, "member>orders": nodeCards.member,
+    "store>orders": C(`好商圈的店每天单多：${imageOrders.length ? short(imageOrders[0].k) : ""}一天【${imageOrders.length ? n1(imageOrders[0].m) : 0} 单】`,
+      "各档商圈取中间那家店，看一天多少单。", ["同一档里差别也不小，社区店里也有一天 20 单以上的店。"],
+      "同一档商圈里单量特别多的店，可以去看它们做对了什么。", nodeCards.orders.evidence.slice(0, 1), { chart: nodeCards.orders.chart }),
+    "store>aov": nodeCards.shoptype,
+    "day>orders": C(`做活动、过节的日子，单量明显更多：${festName}一天【${peak ? n1(peak.orders / 1e4) : 0} 万单】`,
+      `平常工作日全国约 ${n1(ordAvgOrders / 1e4)} 万单。`, [`${festName}和克减在同一周，分不开。`],
+      "排活动时看哪天能多来人，比看哪天客单高更重要。", nodeCards.orders.evidence.slice(1), { chart: dayCompare }),
+    "promo>orders": nodeCards.promo,
+    "promo>aov": nodeCards.aov,
+    "promo>gm": C(`有活动成交的那天，毛利率低【${n1(Math.min(...promoGm.map(Math.abs)))}–${n1(Math.max(...promoGm.map(Math.abs)))} 个百分点】`,
+      "同一家店，有这个活动成交的日子和没有的日子比毛利率。", ["压毛利率主要是因为那天卖的计价金更多，不是让利本身。"],
+      "活动里多配一口价和镶嵌货，可以少压一点毛利。",
+      [...PROMO.map((name, i) => `有${name}成交的那天，毛利率低 ${n1(Math.abs(promoGm[i]))} 个百分点、计价金占比多 ${n1(promoGold[i])} 个百分点。`)],
+      { chart: compare("毛利率比平时低多少（个百分点）", promoGmItems, undefined, "min") }),
+    "promo>mix": C(`有活动成交的那天，卖的计价金更多：最多多【${n1(Math.max(...promoGold))} 个百分点】`,
+      "同一家店，有这个活动成交的日子和没有的日子比，计价金占销售额多少。", ["这就是活动压毛利率的原因。"],
+      "活动里多配一口价和镶嵌货。", PROMO.map((name, i) => `有${name}成交的那天，计价金占比多 ${n1(promoGold[i])} 个百分点。`),
+      { chart: compare("计价金占比比平时多多少（个百分点）", promoGoldItems, undefined, "min") }),
+    "mix>gm": { ...nodeCards.mix, watch: [...nodeCards.mix.watch, ...(lagMix ? ["同一类店里，也有计价金卖得特别多、毛利率特别低的："] : [])], ...(lagMix ? { stores: lagMix } : {}),
+      ...(lagMix ? { todo: "想保毛利，提高一口价和镶嵌货的占比；下面这几家店可以优先看看货品结构。", evidence: [...nodeCards.mix.evidence, ...(peers.mix?.laggards.slice(0, 3) ?? [])] } : {}) },
+    "orders>qty": nodeCards.qty, "orders>sales": nodeCards.sales, "aov>sales": nodeCards.sales, "gm>gp": nodeCards.gp,
   };
 
   // ---------- 连线 ----------
@@ -523,14 +754,14 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   type More = { anomalies?: string[]; recommendation?: string | null; noRecommendation?: string };
   // 有分数的线可以另带一个效应值（effect），作为分数之外的直观说明。
   // 拆解线（恒等式）也给分数，但档位保持「拆解」，画成灰线，和因素线区分。
-  const E = (from: InsightNodeId, to: InsightNodeId, x: (InsightScore & { effect?: Effect; identity?: boolean }) | "id" | "missing", basis: string, more: More = {}): InsightEdge => {
+  const E = (from: InsightNodeId, to: InsightNodeId, x: (InsightScore & { effect?: Effect; identity?: boolean }) | "id" | "missing", basis: string, more: More = {}): Omit<InsightEdge, "card"> => {
     const rest = { basis, anomalies: more.anomalies ?? [], recommendation: more.recommendation ?? null, ...(more.recommendation ? {} : { noRecommendation: more.noRecommendation ?? (x === "id" ? "这是恒等式，没有可选的取值。" : x === "missing" ? "没有数据，推荐不了。" : "关系太弱，按它挑门店或时间意义不大。") }) };
     if (typeof x === "string") return { from, to, strength: x, ...rest };
     const { effect, identity, ...score } = x;
     const restId = identity ? { ...rest, recommendation: null, noRecommendation: "这是恒等式拆解，没有可选的取值；分数说明结果的差异主要来自哪一项。" } : rest;
     return { from, to, strength: identity ? "id" : byScore(score), score, ...(effect ? { effect: { text: effect.text, measure: effect.measure } } : {}), ...restId };
   };
-  const raw: InsightEdge[] = [
+  const raw: Array<Omit<InsightEdge, "card">> = [
     E("image", "store", sc.image, `商圈越好的店一个月卖得越多：${imageRows.filter((r) => r.n >= 20).map((r) => `${short(r.k)} ${wan(r.m)}`).join("，")}。门店属性里它影响最大。`, { anomalies: [
       ...(imageOut.top ? [`每一档里都有特别好的店：一个月卖得超过本档一般水平 3 倍的有 ${n0(imageOut.count)} 家，其中「${short(imageOut.top.k)}」最多（${n0(imageOut.top.n)} 家）。`] : []),
       ...(imageRows.length >= 2 ? [`「${short(imageRows[0].k)}」只有 ${n0(imageRows[0].n)} 家店，比其他档少很多，数字不如别的档稳。`] : []) ],
@@ -606,5 +837,5 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     { title: "口径", text: "只算正常销售行（件数 > 0 且金额 > 0）；毛利率 = 零售毛利 ÷ 不含税 RSV；回收旧金、退货单独看。还没和 Power BI 对数。" },
   ];
   return { schema: "insight-drivers/v2", datasetVersion: data.datasetVersion, builtAt,
-    scope: { period: data.period, rows: data.rows, stores: storeCount, note: "一个月数据，只是相关" }, kpis, nodes: nodes.map((n) => nodeCharts[n.id] ? { ...n, chart: nodeCharts[n.id] } : n), edges, summary, methods };
+    scope: { period: data.period, rows: data.rows, stores: storeCount, note: "一个月数据，只是相关" }, kpis, nodes: nodes.map((n) => ({ ...n, card: nodeCards[n.id], ...(nodeCharts[n.id] ? { chart: nodeCharts[n.id] } : {}) })), edges: edges.map((e) => ({ ...e, card: edgeCards[`${e.from}>${e.to}`] ?? nodeCards[e.to] })), summary, methods };
 }

@@ -2,7 +2,7 @@
 // 这里是纯函数：校验请求、把图谱和选中对象整理成依据材料、检查回答里的数字都出自依据。
 import { selectionLabel } from "./context.ts";
 import { edgeKey, findNode, routes, routesThrough, type InsightSelection } from "./paths.ts";
-import { INSIGHT_EDGE_SOURCE, INSIGHT_NODE_IDS, INSIGHT_SOURCE_KINDS, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightSourceKind } from "./types.ts";
+import { INSIGHT_EDGE_SOURCE, INSIGHT_NODE_IDS, INSIGHT_SOURCE_KINDS, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightSourceKind } from "./types.ts";
 
 export type InsightAskTurn = { role: "user" | "assistant"; text: string };
 export type InsightAskRequest = { selection: InsightSelection | null; question: string; history: InsightAskTurn[] };
@@ -31,15 +31,23 @@ export function parseAskBody(value: unknown): InsightAskRequest {
 const nodeName = (graph: InsightGraph, id: InsightNodeId) => findNode(graph, id)?.label ?? id;
 const route = (graph: InsightGraph, path: InsightEdge[]) => path.length ? [nodeName(graph, path[0].from), ...path.map((e) => `（${INSIGHT_STRENGTH_LABEL[e.strength]}）→ ${nodeName(graph, e.to)}`)].join(" ") : "";
 const sourceLine = (n: InsightNode) => `来源：${INSIGHT_SOURCE_LABEL[n.source.kind].name}${n.source.columns.length ? `；字段 ${n.source.columns.join("、")}` : ""}；怎么来：${n.source.how}${n.source.judgement ? `\nAI 的部分：${n.source.judgement}` : ""}`;
+// 业务卡片：页面上用户看到的结论、要注意和 AI 建议。建议单独标出来，和支撑它的数据分开，问答时不能把建议当成数据。
+const cardText = (c: InsightCard) => [
+  `页面上的结论：${c.say.replace(/[【】]/g, "")}`, `怎么知道的：${c.how}`,
+  ...(c.watch.length ? [`要注意：${c.watch.join("；")}`] : []),
+  ...(c.stores ? [`点名的门店（${c.stores.title}）：${c.stores.rows.map((r) => `${r.name} ${r.value}${c.stores!.unit}`).join("，")}；同类店一般水平 ${c.stores.peer}${c.stores.unit}`] : []),
+  c.todo ? `可以怎么做（AI 建议，不是数据）：${c.todo}` : `可以怎么做：没有建议（${c.todoNote ?? ""}）`,
+  ...(c.todo && c.evidence.length ? [`支撑这条建议的数据：\n${c.evidence.map((x) => `- ${x}`).join("\n")}`] : []),
+].join("\n");
 const nodeDetail = (n: InsightNode) => [
-  `${n.id}「${n.label}」：${n.subtitle}`, sourceLine(n), ...n.paragraphs,
+  `${n.id}「${n.label}」：${n.subtitle}`, cardText(n.card), sourceLine(n), ...n.paragraphs,
   ...(n.table ? [`表：${n.table.head.join(" | ")}\n${n.table.rows.map((r) => `- ${r.join(" | ")}`).join("\n")}`] : []),
   ...(n.note ? [`注意：${n.note}`] : []),
 ].join("\n");
 const strengthText = (e: InsightEdge) => e.score ? `解释度 ${e.score.value.toFixed(1)}/100，${INSIGHT_STRENGTH_LABEL[e.strength]}` : e.effect ? `${e.effect.text}，${INSIGHT_STRENGTH_LABEL[e.strength]}` : INSIGHT_STRENGTH_LABEL[e.strength];
 const edgeLine = (graph: InsightGraph, e: InsightEdge) => `- ${nodeName(graph, e.from)} → ${nodeName(graph, e.to)}（${strengthText(e)}；${INSIGHT_EDGE_SOURCE[e.strength]}）：${e.basis}`;
 // 选中线时展开三段和分数口径。
-const edgeDetail = (graph: InsightGraph, e: InsightEdge) => [edgeLine(graph, e),
+const edgeDetail = (graph: InsightGraph, e: InsightEdge) => [edgeLine(graph, e), cardText(e.card),
   ...(e.score ? [`解释度口径：${e.score.measure}`] : e.effect ? [`效应口径：${e.effect.measure}`] : []),
   ...(e.peers ? [`同类店对比：${e.peers.text}例：${e.peers.example.group}（${e.peers.example.n} 家），${e.peers.example.param}最高的 ${e.peers.example.k} 家 ${e.peers.example.hi.param}、${e.peers.example.outcome} ${e.peers.example.hi.outcome}；最低的 ${e.peers.example.k} 家 ${e.peers.example.lo.param}、${e.peers.example.outcome} ${e.peers.example.lo.outcome}。`] : []),
   `异常：${e.anomalies.length ? e.anomalies.join("；") : "无"}`, `推荐：${e.recommendation ?? `无（${e.noRecommendation ?? ""}）`}`,
