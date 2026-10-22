@@ -80,8 +80,10 @@ export type InsightNode = {
 // peers：同类店对比（peers.ts）。只有能落到门店层面的线才有；放在依据里，落后的店放在推荐里。
 export type InsightEdge = {
   from: InsightNodeId; to: InsightNodeId; strength: InsightStrength; score?: InsightScore; effect?: InsightEffect;
-  card: InsightCard; basis: string; chart?: InsightChart; anomalies: string[]; recommendation: string | null; noRecommendation?: string; peers?: InsightPeers;
+  card: InsightCard; basis: string; chart?: InsightChart; outliers?: InsightOutliers; anomalies: string[]; recommendation: string | null; noRecommendation?: string; peers?: InsightPeers;
 };
+// 和同类店差得特别多的门店：一句总述 + 一店一行（门店、值、同类一般水平、主要原因、和同类比），给页面画成表；text 是同样内容的文字版，给问答用。
+export type InsightOutliers = { metric: string; summary: string; head: string[]; rows: string[][]; foot?: string; text: string[] };
 // verdict：works 参数有利的那头结果更好；flat 两头差不多或各组方向不一；reverse 和图上的方向相反。
 export type InsightPeerSide = { param: string; outcome: string; value: number };
 // lagRows：落后店的结构化数据（店名、结果值、同类一般水平），给业务卡片画条。

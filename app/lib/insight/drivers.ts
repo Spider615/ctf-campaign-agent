@@ -1,6 +1,6 @@
 // 从 Agent 查回来的聚合数据算出指标影响因素图谱：先算统计量，再用模板拼出节点、连线和依据。
 // 图上的数字全部出自这里，文字是模板，不经过模型。
-import { comparePeers, findOutliers, mainPart, peerGroups, type PeerMetric, type PeerStore } from "./peers.ts";
+import { comparePeers, mainPart, outlierTable, peerGroups, shortStoreName, type PeerMetric, type PeerStore } from "./peers.ts";
 import { etaSquared, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayFit } from "./stats.ts";
 import type { InsightChart, InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
 
@@ -515,16 +515,16 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     promoOrders: comparePeers(groupsFull, M.promoDays, M.dailyOrders, 1),
   };
   // 离群店：销售额拆成营业天数 × 日均单数 × 客单价；客单价拆成单均件数 × 件均单价；毛利率看计价金占比。
-  const salesOut = findOutliers(groupsAll, { metric: M.sales, explain: mainPart([
+  const salesOut = outlierTable(groupsAll, { metric: M.sales, explain: mainPart([
     { label: "营业天数", of: (x) => x.days, fmt: (v) => `${n0(v)} 天`, incomplete: true },
     { label: "日均订单数", of: M.dailyOrders.of, fmt: M.dailyOrders.fmt },
     { label: "客单价", of: M.aov.of, fmt: yuan },
   ]), incomplete: (x) => x.days < 10 });
-  const aovOut = findOutliers(groupsFull, { metric: M.aov, explain: mainPart([
+  const aovOut = outlierTable(groupsFull, { metric: M.aov, explain: mainPart([
     { label: "单均件数", of: (x) => div(x.items, x.orders), fmt: (v) => `${n1(v)} 件` },
     { label: "件均单价", of: (x) => div(x.sales, x.items), fmt: yuan },
   ]) });
-  const gmOut = findOutliers(groupsFull, { metric: M.gm, explain: (x, group, high) => {
+  const gmOut = outlierTable(groupsFull, { metric: M.gm, explain: (x, group, high) => {
     const m = median(group.map(M.goldShare.of).filter(Number.isFinite)) ?? 0; const v = M.goldShare.of(x);
     // 毛利率偏高对应计价金卖得少，偏低对应卖得多；差不到 10pp 就说看不出原因，不硬套。
     // 计价金几乎为 0 的多是不卖足金的子品牌店（名字里看得出来），直接说「不卖计价金」。
@@ -578,7 +578,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const mixItems = mixBands.map((r, i): Item => ({ label: r.label, sub: `${n0(r.n)} 家`, value: r1(r.m), text: pct(r.m), ...(i === mixBands.length - 1 ? { tone: "base" as const } : {}) }));
   const mixCompare = compare("门店毛利率，按计价金占这家店销售额多少分档", mixItems);
   // 店名在侧栏里要一眼认出：去掉品牌前缀（周大福荟馆、JEWELRIA 这类）和「珠宝店」后缀，留下城市和地标。
-  const shortStore = (name: string) => name.replace(/^(周大福)?(荟馆|传承|奢华店)?\s*(JEWELRIA|MONOLOGUE|SOINLOVE|ENZO|HEARTS ON FIRE)?\s*/i, "").replace(/(珠宝)?店$/, "") || name;
+  const shortStore = shortStoreName;
   const lagStores = (x: ReturnType<typeof comparePeers>, title: string, unit: string, fmtv: (v: number) => number): Card["stores"] | undefined =>
     x?.lagRows.length ? { title, unit, rows: x.lagRows.slice(0, 3).map((r) => ({ name: shortStore(r.name), value: r1(fmtv(r.value)) })), peer: r1(fmtv(median(x.lagRows.slice(0, 3).map((r) => r.peer)) ?? 0)) } : undefined;
   const ptItems = (of: (p: PtypeRow) => number, text: (v: number) => string) => [gold, fixed, inlay].map((p): Item => ({ label: p.ptype, value: r1(of(p)), text: text(of(p)), ...(p === gold ? { tone: "base" as const } : {}) }));
@@ -829,13 +829,14 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     E("gm", "gp", { ...sc.gmGp, identity: true }, "毛利 = 销售额（不含税）× 毛利率。店和店毛利差多少，主要差在销售额上，毛利率的差别小得多。"),
   ];
 
-  const extra: Partial<Record<string, { peers?: ReturnType<typeof comparePeers>; outliers?: string[] }>> = {
+  const extra: Partial<Record<string, { peers?: ReturnType<typeof comparePeers>; outliers?: ReturnType<typeof outlierTable> }>> = {
     "mix>gm": { peers: peers.mix, outliers: gmOut }, "shift>promo": { peers: peers.shift }, "threshold>promo": { peers: peers.threshold },
     "depth>promo": { peers: peers.depth }, "promo>aov": { peers: peers.promoAov }, "promo>orders": { peers: peers.promoOrders },
     "orders>sales": { outliers: salesOut }, "store>aov": { outliers: aovOut },
   };
   const edges = raw.map((e) => ({ ...e, ...(edgeCharts[`${e.from}>${e.to}`] ? { chart: edgeCharts[`${e.from}>${e.to}`] } : {}) })).map((e) => { const x = extra[`${e.from}>${e.to}`]; if (!x) return e;
-    const withOut = x.outliers?.length ? { ...e, anomalies: [...x.outliers, ...e.anomalies] } : e;
+    // 离群店：页面画成表（outliers），文字版仍放进异常，问答照文字回答。
+    const withOut = x.outliers ? { ...e, outliers: x.outliers, anomalies: [...x.outliers.text, ...e.anomalies] } : e;
     return withPeers(withOut, x.peers ?? null); });
 
   const kpis: InsightKpi[] = [

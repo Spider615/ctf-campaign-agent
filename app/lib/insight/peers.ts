@@ -2,7 +2,7 @@
 // 跨类型比会把商圈、铺型带来的差异混进来，组内比才看得出这个参数本身和结果的关系。
 // 纯函数，文字是模板，数字全部出自门店汇总。
 import { median } from "./stats.ts";
-import type { InsightPeers } from "./types.ts";
+import type { InsightOutliers, InsightPeers } from "./types.ts";
 
 // 一家店一个月的汇总（来自门店日面板）。promoDays：有克减 50 / 克减 30 / 金色星期二成交的天数。
 export type PeerStore = {
@@ -92,7 +92,14 @@ export function mainPart(parts: readonly Part[]) {
   };
 }
 
+// 页面上的店名：去掉品牌前缀（周大福荟馆、JEWELRIA 这类）和「珠宝店」后缀，留下城市和地标。
+export const shortStoreName = (name: string) => name.replace(/^(周大福)?(荟馆|传承|奢华店)?\s*(JEWELRIA|MONOLOGUE|SOINLOVE|ENZO|HEARTS ON FIRE)?\s*/i, "").replace(/(珠宝)?店$/, "") || name;
+
+// 离群店：text 是原来的几句话（问答用），table 是同样内容一店一行（页面画表）。
 export function findOutliers(groups: readonly PeerGroup[], spec: OutlierSpec, examples = 3): string[] {
+  return outlierTable(groups, spec, examples)?.text ?? [];
+}
+export function outlierTable(groups: readonly PeerGroup[], spec: OutlierSpec, examples = 3): InsightOutliers | null {
   const { metric } = spec;
   const hits = groups.flatMap((g) => {
     const valid = g.stores.filter((s) => ok(metric.of(s), metric)); if (valid.length < MIN_GROUP) return [];
@@ -102,7 +109,7 @@ export function findOutliers(groups: readonly PeerGroup[], spec: OutlierSpec, ex
     const med = median(valid.map(metric.of))!;
     return valid.flatMap((s) => { const z = (t(s) - m) / mad; return Math.abs(z) > OUTLIER_Z ? [{ s, g, n: valid.length, z, med, cause: spec.incomplete?.(s) ? { label: "营业天数", incomplete: true } : spec.explain(s, valid, z > 0) }] : []; });
   });
-  if (!hits.length) return [];
+  if (!hits.length) return null;
   const high = hits.filter((h) => h.z > 0).length;
   const incomplete = hits.filter((h) => h.cause.incomplete);
   const real = hits.filter((h) => !h.cause.incomplete).sort((a, b) => Math.abs(b.z) - Math.abs(a.z));
@@ -112,6 +119,12 @@ export function findOutliers(groups: readonly PeerGroup[], spec: OutlierSpec, ex
     : `${metric.fmt(metric.of(h.s))}，比同类一般水平 ${metric.fmt(h.med)} ${metric.of(h.s) >= h.med ? "高" : "低"} ${n1(Math.abs(metric.of(h.s) - h.med))} 个百分点`;
   const lines = [`同类店里${metric.label}和一般水平差得特别多的有 ${n0(hits.length)} 家：偏高 ${n0(high)} 家、偏低 ${n0(hits.length - high)} 家。${kinds.size ? `拆开看，${[...kinds].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n0(n)} 家`).join("，")}。` : ""}`];
   for (const h of real.slice(0, examples)) lines.push(`${storeName(h.s)}（${h.g.label}，同类 ${n0(h.n)} 家）${metric.label} ${vs(h)}；主要是${h.cause.label}。`);
-  if (incomplete.length) lines.push(`另有 ${n0(incomplete.length)} 家主要是营业天数少（比如 ${storeName(incomplete[0].s)} 只有 ${n0(incomplete[0].s.days)} 天有成交），属于数据不完整，先从对比里排除。`);
-  return lines;
+  const foot = incomplete.length ? `另有 ${n0(incomplete.length)} 家主要是营业天数少（比如 ${storeName(incomplete[0].s)} 只有 ${n0(incomplete[0].s.days)} 天有成交），属于数据不完整，先从对比里排除。` : undefined;
+  if (foot) lines.push(foot);
+  // 表：店名（简称）、这家店的值、同类一般水平、主要原因。分组、店号、同类店数不进表，原因只留冒号后面的值。
+  // 原因前面跟一句和同类比：「是同类的 0.1 倍」或「高 23.5 个点」。
+  const ratio = (h: typeof hits[number]) => metric.kind === "log" ? `是同类的 ${n1(metric.of(h.s) / h.med)} 倍 ·` : `${metric.of(h.s) >= h.med ? "高" : "低"} ${n1(Math.abs(metric.of(h.s) - h.med))} 个点 ·`;
+  const rows = real.slice(0, examples).map((h) => [shortStoreName(h.s.name || h.s.id), metric.fmt(metric.of(h.s)), metric.fmt(h.med), h.cause.label, ratio(h)]);
+  const summary = `同类店里${metric.label}和一般水平差得特别多的有 ${n0(hits.length)} 家（偏高 ${n0(high)} 家、偏低 ${n0(hits.length - high)} 家）${kinds.size ? `，原因主要是${[...kinds].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k, n]) => `${k}（${n0(n)} 家）`).join("、")}` : ""}。差得最多的几家：`;
+  return { metric: metric.label, summary, head: ["门店", metric.label, "同类一般水平", "主要原因"], rows, ...(foot ? { foot } : {}), text: lines };
 }

@@ -2,7 +2,7 @@
 
 import { AlertTriangle, ChevronRight, Database, Lightbulb, MessageCircle, Sparkles, X } from "lucide-react";
 import { edgeKey, findEdge, findNode, routes, routesThrough, type InsightSelection } from "../../lib/insight/paths";
-import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightCardStores, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightPeers, type InsightTable } from "../../lib/insight/types";
+import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightCardStores, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightOutliers, type InsightPeers, type InsightTable } from "../../lib/insight/types";
 import { InsightChartView } from "./insight-chart";
 import { SOURCE_TAG, STRENGTH_STYLE, scoreText } from "./insight-graph-view";
 
@@ -42,6 +42,26 @@ function Table({ table }: { table: InsightTable }) {
     <tbody>{table.rows.map((row, r) => <tr key={r} className="border-t border-[#eef2f7]">{row.map((cell, i) => i ? <td key={i} className="px-2.5 py-1.5 text-right tabular-nums text-[#0f172a]">{cell}</td> : <th key={i} scope="row" className="px-2.5 py-1.5 text-left font-normal text-[#334155]">{cell}</th>)}</tr>)}</tbody>
   </table></div>;
 }
+
+// 和同类店差得特别多的门店：一句总述 + 一店一行的表；营业天数少的店另起一行小字。
+// 侧栏窄，表格放不下：一家店一行两层。上面是店名和「这家店 vs 同类」，下面是主要原因。
+function OutlierTable({ x }: { x: InsightOutliers }) {
+  return <div className="space-y-1.5">
+    <p>{x.summary}</p>
+    {x.rows.length ? <ul className="divide-y divide-[#f5ecd9] overflow-hidden rounded-xl border border-[#f1e4c8] bg-white">
+      {x.rows.map(([name, v, p, cause, vs]) => <li key={name} className="px-3 py-2">
+        <div className="flex items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-[#0f172a]" title={name}>{name}</span>
+          <span className="shrink-0 text-[12.5px] tabular-nums"><b className="font-semibold text-[#b45309]">{v}</b><span className="text-[#94a3b8]"> / 同类 {p}</span></span>
+        </div>
+        <p className="mt-0.5 text-[11.5px] leading-snug text-[#64748b]">{vs ? <span className="mr-1 text-[#b45309]">{vs}</span> : null}{cause}</p>
+      </li>)}
+    </ul> : null}
+    {x.foot ? <p className="text-[12px] text-[#64748b]">{x.foot}</p> : null}
+  </div>;
+}
+// 离群店的文字版已经画成表，异常里不再重复列。
+const plainAnomalies = (e: InsightEdge) => e.outliers ? e.anomalies.filter((a) => !e.outliers!.text.includes(a)) : e.anomalies;
 
 // 三段之一：依据 / 异常 / 推荐。图标和色条区分，空的时候写原因。
 const TONE = {
@@ -184,7 +204,7 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
       <BusinessCard card={edge.card} />
       {/* 依据、异常、推荐：紧跟在「可以怎么做」下面，直接展开。 */}
       <Part tone="basis"><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
-      <Part tone="anomaly" empty="这条线上没有看到特别的案例。">{edge.anomalies.length ? edge.anomalies.map((a) => <p key={a}>{a}</p>) : undefined}</Part>
+      <Part tone="anomaly" empty="这条线上没有看到特别的案例。">{edge.anomalies.length ? <>{edge.outliers ? <OutlierTable x={edge.outliers} /> : null}{plainAnomalies(edge).map((a) => <p key={a}>{a}</p>)}</> : undefined}</Part>
       <Part tone="advice" empty={edge.noRecommendation}>{edge.recommendation ? <p>{edge.recommendation}</p> : undefined}
         {edge.peers?.laggards.length ? <div className="space-y-1 pt-1">{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</div> : null}</Part>
       {ask}
@@ -201,7 +221,8 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
   const linked = graph.edges.filter((e) => e.to === node.id || e.from === node.id).sort(byStrength);
   const ins = linked.filter((e) => e.to === node.id); const outs = linked.filter((e) => e.from === node.id);
   const down = routes(graph, node.id, "down"); const up = node.kind === "metric" ? routes(graph, node.id, "up") : [];
-  const anomalies = linked.flatMap((e) => e.anomalies.map((a) => ({ a, e })));
+  const anomalies = linked.flatMap((e) => plainAnomalies(e).map((a) => ({ a, e })));
+  const outlierEdges = linked.filter((e) => e.outliers);
   const advice = linked.filter((e) => e.recommendation);
   const relName = (e: InsightEdge) => e.from === node.id ? findNode(graph, e.to)?.label : findNode(graph, e.from)?.label;
   return <div className="space-y-2.5">
@@ -213,7 +234,7 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
       {node.table ? <div className="pt-1"><Table table={node.table} /></div> : null}
       {node.note ? <p className="text-[12px] text-[#64748b]">{node.note}</p> : null}
     </Part>
-    <Part tone="anomaly" empty="相连的线上没有看到特别的案例。">{anomalies.length ? anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>) : undefined}</Part>
+    <Part tone="anomaly" empty="相连的线上没有看到特别的案例。">{anomalies.length || outlierEdges.length ? <>{outlierEdges.map((e) => <div key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mb-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button><OutlierTable x={e.outliers!} /></div>)}{anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>)}</> : undefined}</Part>
     <Part tone="advice" empty={node.kind === "metric" ? "这是结果指标，推荐看它上游的线。" : "相连的线上没有可推荐的取值。"}>{advice.length ? advice.map((e) => <p key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#047857] hover:bg-white">{relName(e)}</button>{e.recommendation}</p>) : undefined}</Part>
     {ask}
     {down.length ? <Group title="怎么影响到指标">{down.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</Group> : null}

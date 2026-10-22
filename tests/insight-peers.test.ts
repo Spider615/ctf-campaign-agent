@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { comparePeers, findOutliers, mainPart, peerGroups, type PeerMetric, type PeerStore } from "../app/lib/insight/peers.ts";
+import { comparePeers, findOutliers, mainPart, outlierTable, peerGroups, shortStoreName, type PeerMetric, type PeerStore } from "../app/lib/insight/peers.ts";
 import { fakeGraph } from "./helpers/insight-fixture.ts";
 
 const store = (i: number, over: Partial<PeerStore> = {}): PeerStore => ({ id: `S${i}`, name: `店${i}`, image: "重奢场", shopType: "购物中心", region: "华南", bigRegion: "南区",
@@ -41,6 +41,23 @@ test("离群店：按同类中位数和 MAD 找，拆出主因；营业天数少
   assert.ok(lines.some((l) => l.startsWith("店0（S0）") && l.includes("主要是日均订单数低")));
   assert.match(lines.at(-1)!, /另有 1 家主要是营业天数少.*店1（S1） 只有 4 天/);
   assert.deepEqual(findOutliers(peerGroups(stores.slice(2)), { metric: sales, explain: parts }), []);
+  // 同样的结果画成表：一店一行，营业天数少的店不进表、放在表下。
+  const table = outlierTable(peerGroups(stores), { metric: sales, explain: parts })!;
+  assert.deepEqual(table.head, ["门店", "月销售额", "同类一般水平", "主要原因"]);
+  assert.equal(table.rows.length, 1);
+  assert.equal(table.rows[0][0], "店0");
+  assert.match(table.rows[0][3], /^日均订单数低/);
+  assert.match(table.rows[0][4], /^是同类的 0\.\d 倍 ·$/);
+  assert.match(table.summary, /有 2 家（偏高 0 家、偏低 2 家）/);
+  assert.match(table.foot!, /营业天数少/);
+  assert.deepEqual(table.text, findOutliers(peerGroups(stores), { metric: sales, explain: parts }));
+  assert.equal(outlierTable(peerGroups(stores.slice(2)), { metric: sales, explain: parts }), null);
+});
+
+test("店名简称：去掉品牌前缀和「珠宝店」后缀", () => {
+  assert.equal(shortStoreName("周大福荟馆JEWELRIA上海浦东比斯特购物村店"), "上海浦东比斯特购物村");
+  assert.equal(shortStoreName("德州湖滨中大道百大珠宝店"), "德州湖滨中大道百大");
+  assert.equal(shortStoreName("MONOLOGUE海口龙华万象城店"), "海口龙华万象城");
 });
 
 test("图谱：门店层面的线带同类店对比，离群店写进异常", () => {
