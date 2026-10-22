@@ -60,8 +60,9 @@ export type InsightChart = { title: string; note?: string; legend?: InsightChart
   | { kind: "split"; parts: Array<{ label: string; value: number; tone: InsightChartTone }> }
   | { kind: "columns"; unit: string; digits: number; stacked: boolean; series: Array<{ label: string; tone: InsightChartTone }>;
       points: Array<{ label: string; values: number[]; mark?: string }>; band?: { from: string; to: string; label: string } }
-  // lines：逐日几条线，都换算成「是平常工作日的几倍」放在同一根纵轴上（不用双纵轴）；hover 是每条线每天的原值文字。
-  | { kind: "lines"; labels: string[]; series: Array<{ label: string; tone: InsightChartTone; values: number[]; hover: string[] }>; band?: { from: string; to: string; label: string }; marks?: Array<{ at: string; label: string }> }
+  // lines：几条线都换算成「是第一个点的几倍」放在同一根纵轴上（不用双纵轴）；横轴可以是日期，也可以是门店分档。hover 是每条线每个点的原值文字。
+  // base：「1×」指什么（例如「3 单以下那一档」），写在图下；不给时按平常工作日。
+  | { kind: "lines"; labels: string[]; series: Array<{ label: string; tone: InsightChartTone; values: number[]; hover: string[] }>; band?: { from: string; to: string; label: string }; marks?: Array<{ at: string; label: string }>; base?: string }
   | { kind: "scatter"; x: { label: string; unit: string }; y: { label: string; unit: string }; points: Array<[number, number]>; fit: { slope: number; intercept: number } }
 );
 // 给总部业务看的卡片：一句话结论 → 一张对比图 → 怎么知道的 → 要注意 → 可以怎么做。

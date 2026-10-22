@@ -269,33 +269,40 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1)))] ?? 0;
     return [...new Set([0.2, 0.4, 0.6, 0.8].map((q) => round(at(q))))].filter((v) => v > 0);
   };
-  const metricBands = (title: string, by: (s: FullStore) => number, cuts: number[], name: (lo: number, hi: number) => string,
-    y: (g: FullStore[]) => number, yText: (v: number) => string, sub: (g: FullStore[]) => string, note: string): InsightChart => {
+  // 门店按一个乘数从低到高分 5 档，每档两条线：结果和另一个乘数，都换算成第一档的几倍，放在同一根纵轴上。
+  // 一条线往上走、另一条线贴着 1 倍，就看得出结果跟着谁走。横轴是档位，不是时间。
+  type Line = { label: string; of: (g: FullStore[]) => number; text: (v: number) => string };
+  const bandLines = (title: string, by: (s: FullStore) => number, cuts: number[], name: (lo: number, hi: number) => string, result: Line, other: Line, base: string, note: string): InsightChart => {
     const edges = [-Infinity, ...cuts, Infinity];
-    const items = edges.slice(0, -1).map((lo, i) => { const hi = edges[i + 1]; const g = full.filter((s) => { const v = by(s); return Number.isFinite(v) && v >= lo && v < hi; }); return { lo, hi, g }; })
-      .filter((x) => x.g.length >= 20).map((x, i, all) => ({ label: name(x.lo, x.hi), sub: sub(x.g), value: r1(y(x.g)), text: yText(y(x.g)), tone: i === 0 ? "base" as const : i === all.length - 1 ? "hot" as const : "normal" as const }));
-    return { kind: "compare", title, items, note };
+    const groups = edges.slice(0, -1).map((lo, i) => { const hi = edges[i + 1]; return { label: name(lo, hi), g: full.filter((s) => { const v = by(s); return Number.isFinite(v) && v >= lo && v < hi; }) }; }).filter((x) => x.g.length >= 20);
+    const series = [result, other].map((line, k) => { const vals = groups.map((x) => line.of(x.g)); const b = vals[0] || 1;
+      return { label: line.label, tone: k ? "accent" as const : "main" as const, values: vals.map((v) => r2(v / b)), hover: vals.map(line.text) }; });
+    return { kind: "lines", title, labels: groups.map((x) => x.label), series, base: `${base}「${groups[0]?.label ?? ""}」那一档`, note };
   };
   const med = (g: FullStore[], f: (s: FullStore) => number) => median(g.map(f).filter(Number.isFinite)) ?? 0;
   const itemsOfStore = (s: FullStore) => itemsOf.get(s.id) ?? 0;
   const orderCuts = quintiles(full.map(perDay), (v) => Math.round(v));
-  const orderName = (lo: number, hi: number) => lo === -Infinity ? `${hi} 单以下` : hi === Infinity ? `${lo} 单以上` : `${lo}–${hi} 单`;
-  const salesByOrders = metricBands("一家店一天卖多少（万元），按每天来多少单分档", perDay, orderCuts, orderName,
-    (g) => med(g, (s) => s.sales / s.days) / 1e4, (v) => `${n1(v)} 万`, (g) => `${n1(med(g, (s) => s.sales / s.orders) / 1e4)} 万/单`,
-    `柱下小字是客单价。每档约 ${n0(full.length / 5)} 家店，取中间那家。单越多的店卖得越多，客单价各档差得不多。`);
-  const qtyByOrders = metricBands("一家店一天卖几件，按每天来多少单分档", perDay, orderCuts, orderName,
-    (g) => med(g, (s) => itemsOfStore(s) / s.days), (v) => `${n1(v)} 件`, (g) => `${med(g, (s) => itemsOfStore(s) / s.orders).toFixed(2)} 件/单`,
-    `柱下小字是每单件数。每档约 ${n0(full.length / 5)} 家店，取中间那家。单越多的店卖的件数越多，每单件数各档几乎一样。`);
+  const orderName = (lo: number, hi: number) => lo === -Infinity ? `<${hi}单` : hi === Infinity ? `${lo}单+` : `${lo}–${hi}单`;
+  const salesL: Line = { label: "销售额", of: (g) => med(g, (s) => s.sales / s.days), text: (v) => `一天 ${n1(v / 1e4)} 万` };
+  const aovL: Line = { label: "客单价", of: (g) => med(g, (s) => s.sales / s.orders), text: (v) => `${n0(v)} 元/单` };
+  const ordersL: Line = { label: "订单数", of: (g) => med(g, perDay), text: (v) => `一天 ${n1(v)} 单` };
+  const qtyL: Line = { label: "销量", of: (g) => med(g, (s) => itemsOfStore(s) / s.days), text: (v) => `一天 ${n1(v)} 件` };
+  const ipoL: Line = { label: "每单件数", of: (g) => med(g, (s) => itemsOfStore(s) / s.orders), text: (v) => `${v.toFixed(2)} 件/单` };
+  const gpL: Line = { label: "毛利", of: (g) => med(g, (s) => s.gp / s.days), text: (v) => `一天 ${n1(v / 1e4)} 万` };
+  const gmL: Line = { label: "毛利率", of: (g) => med(g, (s) => s.gp / s.revEx * 100), text: pct };
+  const per5 = `每档约 ${n0(full.length / 5)} 家店，取中间那家`;
+  const salesByOrders = bandLines("单越多的店卖得越多，客单价几乎不变", perDay, orderCuts, orderName, salesL, aovL, "每天来的单最少的",
+    `横轴：门店按每天来多少单从少到多分 5 档（${per5}）。`);
+  const qtyByOrders = bandLines("单越多的店卖的件数越多，每单件数几乎不变", perDay, orderCuts, orderName, qtyL, ipoL, "每天来的单最少的",
+    `横轴：门店按每天来多少单从少到多分 5 档（${per5}）。`);
   const aovCuts = quintiles(full.map((s) => s.sales / s.orders), (v) => Math.round(v / 1000) * 1000);
-  const salesByAov = metricBands("一家店一天卖多少（万元），按客单价分档", (s) => s.sales / s.orders, aovCuts,
-    (lo, hi) => lo === -Infinity ? `${n0(hi / 1000)} 千以下` : hi === Infinity ? `${n0(lo / 1000)} 千以上` : `${n0(lo / 1000)}–${n0(hi / 1000)} 千`,
-    (g) => med(g, (s) => s.sales / s.days) / 1e4, (v) => `${n1(v)} 万`, (g) => `${n1(med(g, perDay))} 单/天`,
-    `柱下小字是每天多少单。每档约 ${n0(full.length / 5)} 家店，取中间那家。客单价高的店也卖得多，但差距比按单量分档小。`);
+  const salesByAov = bandLines("客单价高的店也卖得多，但单量也跟着多", (s) => s.sales / s.orders, aovCuts,
+    (lo, hi) => lo === -Infinity ? `<${n0(hi / 1000)}千` : hi === Infinity ? `${n0(lo / 1000)}千+` : `${n0(lo / 1000)}–${n0(hi / 1000)}千`, salesL, ordersL, "客单价最低的",
+    `横轴：门店按客单价从低到高分 5 档（${per5}）。`);
   const revCuts = quintiles(full.map((s) => s.revEx / s.days), (v) => Math.round(v / 1e4) * 1e4);
-  const gpByRev = metricBands("一家店一天赚多少毛利（万元），按一天卖多少分档", (s) => s.revEx / s.days, revCuts,
-    (lo, hi) => lo === -Infinity ? `${n0(hi / 1e4)} 万以下` : hi === Infinity ? `${n0(lo / 1e4)} 万以上` : `${n0(lo / 1e4)}–${n0(hi / 1e4)} 万`,
-    (g) => med(g, (s) => s.gp / s.days) / 1e4, (v) => `${n1(v)} 万`, (g) => pct(med(g, (s) => s.gp / s.revEx * 100)),
-    `柱下小字是毛利率。每档约 ${n0(full.length / 5)} 家店，取中间那家；销售额不含税。卖得越多的店毛利越多，毛利率各档差不到 1 个百分点。`);
+  const gpByRev = bandLines("卖得越多的店毛利越多，毛利率几乎不变", (s) => s.revEx / s.days, revCuts,
+    (lo, hi) => lo === -Infinity ? `<${n0(hi / 1e4)}万` : hi === Infinity ? `${n0(lo / 1e4)}万+` : `${n0(lo / 1e4)}–${n0(hi / 1e4)}万`, gpL, gmL, "一天卖得最少的",
+    `横轴：门店按一天卖多少（不含税）从少到多分 5 档（${per5}）。`);
 
   // 指标拆解：订单数、客单价、毛利率各自被什么拉动。
   const imageOrders = medianBy((s) => s.attr.image, perDay).filter((r) => r.n >= 20 && r.k !== "未定义").sort((a, b) => b.m - a.m);

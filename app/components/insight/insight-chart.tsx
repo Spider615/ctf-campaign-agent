@@ -124,22 +124,25 @@ function Compare({ chart }: { chart: Extract<InsightChart, { kind: "compare" }> 
   </div>;
 }
 
-// 逐日折线：几条线都是「平常工作日的几倍」，同一根纵轴（不用双纵轴）。悬停一天显示各线原值。
+// 折线：几条线都是「第一个点的几倍」，同一根纵轴（不用双纵轴）。横轴可以是逐日，也可以是门店分档；悬停一个点显示各线原值。
 function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
   const [hover, setHover] = useState<number | null>(null);
   const W = 300; const H = 170; const l = 26; const r = 44; const t = 22; const b = 18; const pw = W - l - r; const ph = H - t - b;
   const n = chart.labels.length; const max = Math.max(1, ...chart.series.flatMap((s) => s.values));
   const step = [0.5, 1, 2, 5].find((s) => max / s <= 5) ?? 10; const top = Math.ceil(max / step) * step;
-  const x = (i: number) => l + (n > 1 ? i / (n - 1) : 0.5) * pw; const y = (v: number) => t + ph - v / top * ph;
+  const pad = n <= 8 ? 16 : 0;
+  const x = (i: number) => l + pad + (n > 1 ? i / (n - 1) : 0.5) * (pw - pad * 2); const y = (v: number) => t + ph - v / top * ph;
   const idx = (label: string) => chart.labels.indexOf(label);
   const band = chart.band ? { a: idx(chart.band.from), b: idx(chart.band.to) } : null;
   const ticks: number[] = []; for (let v = 0; v <= top + 1e-9; v += step) ticks.push(v);
-  // 横轴只标首尾、铺开那天和 mark 那天；和已标的挨得近（不到 4 天）就不标，免得字叠在一起。
+  // 点少（门店分档）时每个点都标、画圆点；点多（逐日）时只标首尾、铺开那天和 mark 那天，挨得近的不标。
+  const few = n <= 8;
   const shown = new Set<number>();
-  for (const i of [0, n - 1, ...(band && band.a >= 0 ? [band.a] : []), ...(chart.marks ?? []).map((m) => idx(m.at))]) if (i >= 0 && [...shown].every((j) => Math.abs(i - j) >= 4)) shown.add(i);
+  if (few) for (let i = 0; i < n; i++) shown.add(i);
+  else for (const i of [0, n - 1, ...(band && band.a >= 0 ? [band.a] : []), ...(chart.marks ?? []).map((m) => idx(m.at))]) if (i >= 0 && [...shown].every((j) => Math.abs(i - j) >= 4)) shown.add(i);
   return <div>
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={chart.title}
-      onMouseMove={(e) => { const box = e.currentTarget.getBoundingClientRect(); const px = (e.clientX - box.left) / box.width * W; setHover(Math.max(0, Math.min(n - 1, Math.round((px - l) / pw * (n - 1))))); }}
+      onMouseMove={(e) => { const box = e.currentTarget.getBoundingClientRect(); const px = (e.clientX - box.left) / box.width * W; setHover(Math.max(0, Math.min(n - 1, Math.round((px - l - pad) / (pw - pad * 2) * (n - 1))))); }}
       onMouseLeave={() => setHover(null)}>
       {band && band.a >= 0 && band.b >= 0 ? <g>
         <rect x={x(band.a)} y={t} width={x(band.b) - x(band.a)} height={ph} fill="#eef3ff" />
@@ -156,7 +159,8 @@ function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
         return <text key={`l${s.label}`} x={W - r + 4} y={y(v) + dy + 3} fontSize="9" textAnchor="start" fill={TONE[s.tone]} fontWeight="600">{s.label}</text>; })}
       {(chart.marks ?? []).map((m) => { const i = idx(m.at); if (i < 0) return null; const v = Math.max(...chart.series.map((s) => s.values[i]));
         return <text key={m.at} x={x(i) - 4} y={Math.max(9, y(v) - 4)} fontSize="9" textAnchor="end" fill="#b45309" fontWeight="600">{m.label} {fmt(v, 1)}×</text>; })}
-      {chart.labels.map((label, i) => shown.has(i) ? <text key={label} x={x(i)} y={H - 5} fontSize="9" textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"} fill="#94a3b8">{label}</text> : null)}
+      {few ? chart.series.map((s) => s.values.map((v, i) => <circle key={`${s.label}${i}`} cx={x(i)} cy={y(v)} r="2.6" fill={TONE[s.tone]} stroke="#fff" strokeWidth="1.2" />)) : null}
+      {chart.labels.map((label, i) => shown.has(i) ? <text key={label} x={x(i)} y={H - 5} fontSize="9" textAnchor={few ? "middle" : i === 0 ? "start" : i === n - 1 ? "end" : "middle"} fill="#94a3b8">{label}</text> : null)}
       {hover !== null ? <g>
         <line x1={x(hover)} x2={x(hover)} y1={t} y2={t + ph} stroke="#94a3b8" />
         {chart.series.map((s) => <circle key={s.label} cx={x(hover)} cy={y(s.values[hover])} r="3" fill={TONE[s.tone]} stroke="#fff" strokeWidth="1.5" />)}
@@ -164,7 +168,7 @@ function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
     </svg>
     <p className="min-h-4 text-[11.5px] tabular-nums text-[#334155]" aria-live="polite">{hover !== null
       ? <><b className="font-semibold">{chart.labels[hover]}</b>{chart.series.map((s) => <span key={s.label} className="ml-2"><span aria-hidden="true" className="mr-1 inline-block h-0.5 w-2.5 align-middle" style={{ background: TONE[s.tone] }} />{s.label} {s.hover[hover]}（{fmt(s.values[hover], 1)}×）</span>)}</>
-      : <span className="text-[#94a3b8]">1× = 平常工作日的日均；把鼠标移到图上看每天的数</span>}</p>
+      : <span className="text-[#94a3b8]">1× = {chart.base ?? "平常工作日的日均"}；把鼠标移到图上看{few ? "每一档" : "每天"}的数</span>}</p>
   </div>;
 }
 

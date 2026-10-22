@@ -125,21 +125,23 @@ test("依据里的图：每个有数据的节点和每条有分数的线都带�
   assert.ok(mix.kind === "bars" && mix.bars.length >= 3 && mix.bars[0].value > mix.bars.at(-1)!.value, JSON.stringify(mix));
 });
 
-test("指标的图：横轴是影响因素的档位，不是时间；结果一档比一档高", () => {
+test("指标的图：两条折线，横轴是门店分档不是时间；结果一路往上，另一个乘数贴着 1 倍", () => {
   const g = fakeGraph();
   for (const id of ["qty", "sales", "gp"] as const) {
     const c = g.nodes.find((n) => n.id === id)!.chart!;
-    assert.equal(c.kind, "compare", id);
-    if (c.kind !== "compare") continue;
-    assert.ok(c.items.length >= 3, `${id} 档位太少`);
-    assert.ok(c.items.every((x) => !/^\d+\/\d+$/.test(x.label)), `${id} 横轴不能是日期`);
-    // 第一档是对照，最后一档最突出；结果随档位往上走。
-    assert.equal(c.items[0].tone, "base"); assert.equal(c.items.at(-1)!.tone, "hot");
-    assert.ok(c.items.at(-1)!.value > c.items[0].value, `${id} ${JSON.stringify(c.items)}`);
-    assert.ok(c.items.every((x) => x.sub), `${id} 柱下要写另一个乘数`);
+    assert.equal(c.kind, "lines", id);
+    if (c.kind !== "lines") continue;
+    assert.ok(c.labels.length >= 3 && c.labels.length <= 5, `${id} 档位数 ${c.labels.length}`);
+    assert.ok(c.labels.every((x) => !/^\d+\/\d+$/.test(x)), `${id} 横轴不能是日期`);
+    assert.equal(c.series.length, 2);
+    for (const s of c.series) { assert.equal(s.values.length, c.labels.length); assert.equal(s.hover.length, c.labels.length); assert.equal(s.values[0], 1); }
+    // 结果那条线最后一档比第一档高。
+    assert.ok(c.series[0].values.at(-1)! > 1, `${id} ${JSON.stringify(c.series[0].values)}`);
+    assert.match(c.base ?? "", /那一档$/);
   }
-  assert.match(g.nodes.find((n) => n.id === "qty")!.chart!.title, /按每天来多少单分档/);
-  assert.match((g.nodes.find((n) => n.id === "qty")!.chart as { items: Array<{ sub?: string }> }).items[0].sub!, / 件\/单$/);
+  const qty = g.nodes.find((n) => n.id === "qty")!.chart as { series: Array<{ label: string }>; title: string };
+  assert.deepEqual(qty.series.map((s) => s.label), ["销量", "每单件数"]);
+  assert.match(qty.title, /每单件数几乎不变/);
 });
 
 // 给总部业务看的卡片：一句话结论、怎么知道的、要注意、可以怎么做。
