@@ -4,6 +4,7 @@ import { AlertTriangle, ChevronRight, Database, Lightbulb, MessageCircle, Sparkl
 import { useState } from "react";
 import { edgeKey, findEdge, findNode, routes, routesThrough, type InsightSelection } from "../../lib/insight/paths";
 import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightPeers, type InsightTable } from "../../lib/insight/types";
+import { InsightChartView } from "./insight-chart";
 import { SOURCE_TAG, STRENGTH_STYLE, scoreText } from "./insight-graph-view";
 
 const ORDER = { strong: 0, id: 1, med: 2, weak: 3, missing: 4 } as const;
@@ -163,7 +164,7 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
         <button type="button" onClick={() => onSelect({ kind: "node", id: edge.to })} className="hover:text-[#1d4ed8]">{findNode(graph, edge.to)?.label}</button>
       </Header>
       <ScoreBar x={edge} />
-      <Part tone="basis"><p>{edge.basis}</p>{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
+      <Part tone="basis"><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
       <Part tone="anomaly" empty="这条线上没有看到特别的案例。">{edge.anomalies.length ? edge.anomalies.map((a) => <p key={a}>{a}</p>) : undefined}</Part>
       <Part tone="advice" empty={edge.noRecommendation}>{edge.recommendation ? <p>{edge.recommendation}</p> : undefined}
         {edge.peers?.laggards.length ? <More title="同类店里可以推一把的店" count={edge.peers.laggards.length}>{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</More> : null}</Part>
@@ -189,7 +190,9 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
     <SourceBox node={node} />
     <Part tone="basis">
       {node.paragraphs.map((p) => <p key={p}>{p}</p>)}
-      {node.table ? <div className="pt-1"><Table table={node.table} /></div> : null}
+      {node.chart ? <InsightChartView chart={node.chart} /> : null}
+      {/* 横条图画的就是两三列小表里的数，有图就不再重复；列多的表还有图上没有的数，照样列。 */}
+      {node.table && !(node.chart?.kind === "bars" && node.table.head.length <= 3) ? <div className="pt-1"><Table table={node.table} /></div> : null}
       {node.note ? <p className="text-[12px] text-[#64748b]">{node.note}</p> : null}
     </Part>
     <Part tone="anomaly" empty="相连的线上没有看到特别的案例。">{anomalies.length ? anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>) : undefined}</Part>

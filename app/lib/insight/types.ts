@@ -48,17 +48,31 @@ export type InsightSource = { kind: InsightSourceKind; columns: string[]; how: s
 
 // 节点详情里的小表：第一行是表头。
 export type InsightTable = { head: string[]; rows: string[][] };
+// 依据里的图：数字由 drivers.ts 算好、换成展示单位，页面只画。tone：main 主色、accent 重点、muted 对照。
+// bars 横条比大小（可有负值）；split 一根条拆成几段（差异来自哪里）；columns 按日或按克的柱（可堆叠，band 标一段区间，mark 标在柱顶）；
+// lines 逐日折线（同一根纵轴的倍数）；scatter 门店散点 + 最小二乘拟合线。
+export type InsightChartTone = "main" | "accent" | "muted" | "soft";
+export type InsightChartLegend = Array<{ tone: InsightChartTone; label: string }>;
+export type InsightChart = { title: string; note?: string; legend?: InsightChartLegend } & (
+  | { kind: "bars"; bars: Array<{ label: string; value: number; text: string; tone?: InsightChartTone }> }
+  | { kind: "split"; parts: Array<{ label: string; value: number; tone: InsightChartTone }> }
+  | { kind: "columns"; unit: string; digits: number; stacked: boolean; series: Array<{ label: string; tone: InsightChartTone }>;
+      points: Array<{ label: string; values: number[]; mark?: string }>; band?: { from: string; to: string; label: string } }
+  // lines：逐日几条线，都换算成「是平常工作日的几倍」放在同一根纵轴上（不用双纵轴）；hover 是每条线每天的原值文字。
+  | { kind: "lines"; labels: string[]; series: Array<{ label: string; tone: InsightChartTone; values: number[]; hover: string[] }>; band?: { from: string; to: string; label: string }; marks?: Array<{ at: string; label: string }> }
+  | { kind: "scatter"; x: { label: string; unit: string }; y: { label: string; unit: string }; points: Array<[number, number]>; fit: { slope: number; intercept: number } }
+);
 export type InsightNode = {
   id: InsightNodeId; column: InsightColumn; section?: InsightSection; kind: InsightNodeKind;
   label: string; subtitle: string; strength?: InsightStrength; score?: InsightScore; effect?: InsightEffect;
-  source: InsightSource; paragraphs: string[]; table?: InsightTable; note?: string;
+  source: InsightSource; paragraphs: string[]; chart?: InsightChart; table?: InsightTable; note?: string;
 };
 // 每条线三部分（2026-10-19 会议定的）：依据 basis（数据验证的关联）、异常 anomalies（特殊案例和数据里能看到的共同点）、
 // 推荐 recommendation（表现最好的取值和搭配；恒等式、缺数据或关系太弱时为 null，noRecommendation 写原因）。
 // peers：同类店对比（peers.ts）。只有能落到门店层面的线才有；放在依据里，落后的店放在推荐里。
 export type InsightEdge = {
   from: InsightNodeId; to: InsightNodeId; strength: InsightStrength; score?: InsightScore; effect?: InsightEffect;
-  basis: string; anomalies: string[]; recommendation: string | null; noRecommendation?: string; peers?: InsightPeers;
+  basis: string; chart?: InsightChart; anomalies: string[]; recommendation: string | null; noRecommendation?: string; peers?: InsightPeers;
 };
 // verdict：works 参数有利的那头结果更好；flat 两头差不多或各组方向不一；reverse 和图上的方向相反。
 export type InsightPeerSide = { param: string; outcome: string; value: number };

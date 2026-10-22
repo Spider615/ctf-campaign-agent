@@ -105,3 +105,37 @@ test("每条线都有依据、异常、推荐三段；没有推荐时写原因",
   }
   assert.ok(g.edges.filter((e) => e.strength === "id").every((e) => !e.recommendation && /恒等式/.test(e.noRecommendation!)));
 });
+
+test("依据里的图：每个有数据的节点和每条有分数的线都带图，图上的数是有限值", () => {
+  const g = fakeGraph();
+  const values = (c: NonNullable<typeof g.nodes[number]["chart"]>): number[] => c.kind === "bars" ? c.bars.map((b) => b.value) : c.kind === "split" ? c.parts.map((p) => p.value)
+    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values) : [...c.points.flat(), c.fit.slope, c.fit.intercept];
+  for (const n of g.nodes) if (n.source.kind !== "suggested" && n.id !== "areaage") assert.ok(n.chart, n.id);
+  for (const e of g.edges) if (e.score && e.from !== "areaage") assert.ok(e.chart, edgeKey(e));
+  for (const c of [...g.nodes.map((n) => n.chart), ...g.edges.map((e) => e.chart)]) if (c) {
+    assert.ok(values(c).length > 0 && values(c).every(Number.isFinite), c.title);
+    assert.doesNotMatch(JSON.stringify(c), /NaN|undefined|Infinity/);
+  }
+  // 日期和活动：逐日堆叠柱，标出克减铺开的区间和七夕当天。
+  const day = g.nodes.find((n) => n.id === "day")!.chart!;
+  assert.equal(day.kind, "columns");
+  if (day.kind === "columns") { assert.equal(day.points.length, 31); assert.deepEqual(day.band && [day.band.from, day.band.to], ["8/22", "8/31"]); assert.equal(day.points.find((p) => p.mark)?.label, "8/29"); }
+  // 货品结构 → 毛利率：散点的拟合线往下走。
+  const mix = g.edges.find((e) => e.from === "mix" && e.to === "gm")!.chart!;
+  assert.ok(mix.kind === "scatter" && mix.fit.slope < 0);
+});
+
+test("指标的图：两个乘数两条线，都是平常工作日的几倍", () => {
+  const g = fakeGraph();
+  for (const id of ["qty", "sales", "gp"] as const) {
+    const c = g.nodes.find((n) => n.id === id)!.chart!;
+    assert.equal(c.kind, "lines", id);
+    if (c.kind !== "lines") continue;
+    assert.equal(c.series.length, 2); assert.equal(c.labels.length, 31);
+    for (const s of c.series) { assert.equal(s.values.length, 31); assert.equal(s.hover.length, 31); }
+    // 8/22 前的周一就是平常工作日，两条线都在 1 倍附近。
+    const i = c.labels.indexOf("8/4"); for (const s of c.series) assert.ok(Math.abs(s.values[i] - 1) < 0.5, `${id} ${s.label} ${s.values[i]}`);
+    assert.deepEqual(c.marks?.map((m) => m.at), ["8/29"]);
+  }
+  assert.deepEqual((g.nodes.find((n) => n.id === "qty")!.chart as { series: Array<{ label: string }> }).series.map((s) => s.label), ["订单数", "单均件数"]);
+});

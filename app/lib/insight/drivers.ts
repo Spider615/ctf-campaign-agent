@@ -2,7 +2,7 @@
 // 图上的数字全部出自这里，文字是模板，不经过模型。
 import { comparePeers, findOutliers, mainPart, peerGroups, type PeerMetric, type PeerStore } from "./peers.ts";
 import { etaSquared, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayFit } from "./stats.ts";
-import type { InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
+import type { InsightChart, InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
 
 // 优惠按名称归成几组（AI 归类）：克减 50、克减 30、金色星期二、一般開單、其他。
 export type OfferGroup = "base" | "k50" | "k30" | "gt" | "other";
@@ -236,6 +236,119 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const festSorted = [...festDays].sort((a, b) => b.sales - a.sales);
   const lowDay = [...daily].sort((a, b) => a.sales - b.sales)[0];
 
+  // ---------- 依据里的图 ----------
+  // 图上的数都在这里换成展示单位（亿、万、%、元/克），页面不再算。
+  const r1 = (v: number) => Math.round(v * 10) / 10; const r2 = (v: number) => Math.round(v * 100) / 100;
+  const toYi = (v: number) => r2(v / 1e8);
+  // 逐日：一般開單计价金、活动计价金（不含金色星期二）、其余，堆起来就是当天销售额；克减铺开以后标一段区间，节日最高那天标在柱顶。
+  const lastDay = daily.at(-1)?.day ?? rollout;
+  const dailyChart: InsightChart = { kind: "columns", title: "全国逐日销售额（亿）", unit: "亿", digits: 2, stacked: true,
+    series: [{ label: "一般開單计价金", tone: "muted" }, { label: "克减等活动计价金", tone: "main" }, { label: "其余（金色星期二、一口价、镶嵌等）", tone: "soft" }],
+    points: daily.map((d) => ({ label: day(d.day), values: [toYi(d.baseGold), toYi(d.promoGold), toYi(Math.max(0, d.sales - d.baseGold - d.promoGold))], ...(d.day === peak?.day ? { mark: festName } : {}) })),
+    ...(rollout <= lastDay ? { band: { from: day(rollout), to: day(lastDay), label: "克减全国铺开" } } : {}),
+    note: `${day(rollout)} 以后蓝色（活动计价金）一下子变多，灰色（一般開單）变少；${peak ? `${festName}也落在这一段里，` : ""}所以哪一天高、当天做了什么活动，在数据里是绑在一起的。` };
+  const shareParts = (x: { store: number; day: number; resid: number }): InsightChart => ({ kind: "split", title: "门店日的差异来自哪里", legend: [{ tone: "main", label: "门店之间" }, { tone: "soft", label: "日期之间" }, { tone: "muted", label: "店内逐日波动" }],
+    parts: [{ label: "门店之间", value: r1(x.store), tone: "main" }, { label: "日期之间", value: r1(x.day), tone: "soft" }, { label: "店内逐日波动", value: r1(x.resid), tone: "muted" }] });
+  const logParts = (title: string, x: { orders: number; aov: number; cov: number }, a: string, b: string): InsightChart => ({ kind: "split", title,
+    parts: [{ label: a, value: r1(x.orders), tone: "main" as const }, { label: b, value: r1(x.aov), tone: "soft" as const }, { label: "两者同向", value: r1(x.cov), tone: "muted" as const }].filter((p) => p.value >= 0.5),
+    note: x.cov < 0 ? `两者反向抵掉了 ${pct(-x.cov)}，所以各段加起来超过 100%。` : undefined });
+  const barsOf = (title: string, rows: Array<{ label: string; value: number; text: string }>, best: "max" | "min" | null = "max", note?: string): InsightChart => {
+    const pick = best === null ? null : best === "max" ? Math.max(...rows.map((r) => r.value)) : Math.min(...rows.map((r) => r.value));
+    return { kind: "bars", title, bars: rows.map((r) => ({ ...r, tone: r.value === pick ? "main" : "soft" })), ...(note ? { note } : {}) };
+  };
+  // 门店散点：计价金占比 × 毛利率，一家店一个点，配一条最小二乘直线。
+  const mixPoints = full.map((s, i): [number, number] => [r1(goldShare[i]), r1(yStoreGm[i])]).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+  const mx = mean(mixPoints.map((p) => p[0])); const my = mean(mixPoints.map((p) => p[1]));
+  const sxx = sum(mixPoints.map((p) => (p[0] - mx) ** 2)); const slope = sxx > 0 ? sum(mixPoints.map((p) => (p[0] - mx) * (p[1] - my))) / sxx : 0;
+  const mixChart: InsightChart = { kind: "scatter", title: `${n0(mixPoints.length)} 家店：计价金占比越高，毛利率越低`, x: { label: "计价金占销售额", unit: "%" }, y: { label: "毛利率", unit: "%" },
+    points: mixPoints, fit: { slope: r2(slope), intercept: r2(my - slope * mx) }, note: `计价金占比每高 10 个百分点，毛利率约低 ${n1(Math.abs(slope) * 10)}pp；只看这一个数就解释了门店毛利率差异的 ${pct(mixOnly)}。` };
+  const gramsLo = Math.min(...data.threshold.map((t) => t.gram)); const gramsHi = Math.max(...data.threshold.map((t) => t.gram));
+  const thresholdChart: InsightChart = { kind: "columns", title: "每克一档的件数", unit: "件", digits: 0, stacked: false,
+    series: [{ label: "克减 50", tone: "main" }, { label: "一般開單", tone: "muted" }],
+    points: [...data.threshold].sort((a, b) => a.gram - b.gram).map((t) => ({ label: `${t.gram}`, values: [t.k50, t.base] })),
+    ...(gramsHi >= 20 && gramsLo < 20 ? { band: { from: "20", to: `${gramsHi}`, label: "20 克及以上" } } : {}),
+    note: `横轴是单件克重（克）。从 19 克到 20 克，一般開單从 ${n0(t19.base)} 件变成 ${n0(t20.base)} 件，克减 50 从 ${n0(t19.k50)} 件跳到 ${n0(t20.k50)} 件：像是有 20 克的门槛。` };
+  const promoBars = (title: string, values: number[], text: (v: number) => string, best: "max" | "min", note?: string) => barsOf(title, PROMO.map((name, i) => ({ label: name, value: r2(values[i]), text: text(values[i]) })), best, note);
+  // 周一排到周日。
+  const dowChart = barsOf("不含节日，各星期几的日均销售额", [...DOW.slice(1), DOW[0]].flatMap((name) => dowRows.filter((r) => r.name === name)).map((r) => ({ label: r.name, value: toYi(r.avg), text: yi(r.avg) })), "max", "周二高，差额主要在计价金：这是金色星期二。");
+  const qixiChart: InsightChart = { kind: "columns", title: "全国逐日销售额（亿）", unit: "亿", digits: 2, stacked: false, series: [{ label: "当天销售额", tone: "soft" }],
+    points: daily.map((d) => ({ label: day(d.day), values: [toYi(d.sales)], ...(d.day === peak?.day ? { mark: festName } : {}) })),
+    ...(festDays.length ? { band: { from: day(festDays[0].day), to: day(festDays.at(-1)!.day), label: `日历上的${peak?.festival ?? "节日"}` } } : {}) };
+  const ptBars = (title: string, of: (p: PtypeRow) => number, text: (v: number) => string) => barsOf(title, [gold, fixed, inlay].map((p) => ({ label: p.ptype, value: r1(of(p)), text: text(of(p)) })));
+  const tradeInChart = barsOf("订单里带回收旧金的比例", [
+    { label: "金色星期二", value: r1(share(trGt.tradeIn, trGt.orders)), text: pct(share(trGt.tradeIn, trGt.orders)) },
+    { label: "一般開單", value: r1(share(trBase.tradeIn, trBase.orders)), text: pct(share(trBase.tradeIn, trBase.orders)) },
+    { label: "克减类", value: r1(promoTradeInShare), text: pct(promoTradeInShare) },
+  ], "max", `金色星期二成交 ${yi(trGt.sales)} 里，${yi(trGt.recycle)} 是旧金抵的。`);
+  const shiftChart: InsightChart = { kind: "columns", title: "周一、三、四的计价金日均（万）", unit: "万", digits: 0, stacked: true,
+    series: [{ label: "一般開單", tone: "muted" }, { label: "克减等活动", tone: "main" }],
+    points: [{ label: `${day(rollout)} 之前`, values: [Math.round(shift.baseBefore / 1e4), Math.round(shift.promoBefore / 1e4)] }, { label: `${day(rollout)} 之后`, values: [Math.round(shift.baseAfter / 1e4), Math.round(shift.promoAfter / 1e4)] }],
+    note: `灰色只少了 ${n1(Math.abs(shiftPct))}%，蓝色多出来的大部分不是从一般開單挪过来的。` };
+  const imageChart = barsOf("各形象级别的店销售额中位数", imageRows.filter((r) => r.n >= 20).map((r) => ({ label: short(r.k), value: r1(r.m / 1e4), text: `${wan(r.m)}（${n0(r.n)} 家）` })));
+  const expChart = barsOf("各店型的店销售额中位数", expRows.slice(0, 5).map((r) => ({ label: r.k, value: r1(r.m / 1e4), text: `${wan(r.m)}（${n0(r.n)} 家）` })));
+  const regionChart = barsOf("各大区的店销售额中位数", regionRows.map((r) => ({ label: r.k, value: r1(r.m / 1e4), text: `${wan(r.m)}（${n0(r.n)} 家）` })), "max", "大区之间的差，多半是各区门店的商圈、店型构成不同。");
+  const natureChart = barsOf("毛利率中位数", natureGm.map((r) => ({ label: r.k, value: r1(r.m), text: `${pct(r.m)}（${n0(r.n)} 家）` })));
+  const dailyOrdersChart: InsightChart = { kind: "columns", title: "全国逐日订单数（万单）", unit: "万单", digits: 1, stacked: false, series: [{ label: "订单数", tone: "soft" }],
+    points: daily.map((d) => ({ label: day(d.day), values: [r1(d.orders / 1e4)], ...(d.day === peak?.day ? { mark: festName } : {}) })) };
+  // 指标的逐日双折线：指标的两个乘数，各自除以平常工作日的值，变成「几倍」放在同一根纵轴上。
+  // 一条线跳、一条线平，就看得出指标是被哪个乘数推着走的。
+  const byDay = new Map<string, { items: number; orders: number; sales: number; gp: number; revEx: number }>();
+  for (const p of panel) { const x = byDay.get(p.day) ?? { items: 0, orders: 0, sales: 0, gp: 0, revEx: 0 }; x.items += p.items; x.orders += p.orders; x.sales += p.sales; x.gp += p.gp; x.revEx += p.revEx; byDay.set(p.day, x); }
+  type DayAgg = { items: number; orders: number; sales: number; gp: number; revEx: number };
+  const dayAgg = daily.map((d): DayAgg => byDay.get(d.day) ?? { items: 0, orders: 0, sales: 0, gp: 0, revEx: 0 });
+  const ordinaryDays = new Set(ordinary.map((d) => d.day));
+  const ordAgg = dayAgg.filter((_, i) => ordinaryDays.has(daily[i].day));
+  type Factor = { label: string; of: (x: DayAgg) => number; text: (v: number) => string };
+  // 基准取平常工作日的合计再算比值（比值类的乘数不能直接平均）。
+  const total0 = ordAgg.reduce((a, x) => ({ items: a.items + x.items, orders: a.orders + x.orders, sales: a.sales + x.sales, gp: a.gp + x.gp, revEx: a.revEx + x.revEx }), { items: 0, orders: 0, sales: 0, gp: 0, revEx: 0 });
+  const baseDays = Math.max(1, ordAgg.length);
+  const timesOf = (f: Factor, perDay: boolean) => { const b = f.of(total0) / (perDay ? baseDays : 1); return dayAgg.map((x) => b > 0 ? r2(f.of(x) / b) : 0); };
+  const range = (f: Factor) => { const v = dayAgg.map(f.of).filter((x) => x > 0); return [Math.min(...v), Math.max(...v)]; };
+  const peakI = peak ? daily.indexOf(peak) : -1;
+  const pair = (title: string, a: Factor & { perDay: boolean }, b: Factor & { perDay: boolean }, note: string): InsightChart => ({
+    kind: "lines", title, labels: daily.map((d) => day(d.day)),
+    series: [a, b].map((f, k) => ({ label: f.label, tone: k ? "accent" as const : "main" as const, values: timesOf(f, f.perDay), hover: dayAgg.map((x) => f.text(f.of(x))) })),
+    ...(rollout <= lastDay ? { band: { from: day(rollout), to: day(lastDay), label: "克减全国铺开" } } : {}),
+    ...(peak ? { marks: [{ at: day(peak.day), label: festName }] } : {}), note });
+  const peakOf = (f: Factor & { perDay: boolean }) => peakI >= 0 ? n1(timesOf(f, f.perDay)[peakI]) : "";
+  const ordersF = { label: "订单数", of: (x: DayAgg) => x.orders, text: (v: number) => `${n0(v)} 单`, perDay: true };
+  const ipoF = { label: "单均件数", of: (x: DayAgg) => x.orders > 0 ? x.items / x.orders : 0, text: (v: number) => `${v.toFixed(2)} 件`, perDay: false };
+  const aovF = { label: "客单价", of: (x: DayAgg) => x.orders > 0 ? x.sales / x.orders : 0, text: (v: number) => `${n0(v)} 元`, perDay: false };
+  const revF = { label: "销售额", of: (x: DayAgg) => x.revEx, text: wan, perDay: true };
+  const gmF = { label: "毛利率", of: (x: DayAgg) => x.revEx > 0 ? x.gp / x.revEx * 100 : 0, text: pct, perDay: false };
+  const [ipoLo, ipoHi] = range(ipoF); const [aovLo, aovHi] = range(aovF); const [gmLo, gmHi] = range(gmF);
+  const qtyLines = pair("销量 = 订单数 × 单均件数：谁在动", ordersF, ipoF,
+    `订单数跟着日子大起大落${peak ? `（${festName}是平常的 ${peakOf(ordersF)} 倍）` : ""}，单均件数一直贴着 1 倍，整个月只在 ${ipoLo.toFixed(2)}–${ipoHi.toFixed(2)} 件之间。销量的起落几乎全是订单数带来的。`);
+  const salesLines = pair("销售额 = 订单数 × 客单价：谁在动", ordersF, aovF,
+    `订单数跟着日子大起大落${peak ? `（${festName}是平常的 ${peakOf(ordersF)} 倍）` : ""}，客单价只在 ${n0(aovLo)}–${n0(aovHi)} 元之间小幅波动。销售额的起落主要是订单数带来的。`);
+  const gpLines = pair("毛利 = 销售额（不含税）× 毛利率：谁在动", revF, gmF,
+    `销售额跟着日子大起大落${peak ? `（${festName}是平常的 ${peakOf(revF)} 倍）` : ""}；毛利率在 ${pct(gmLo)}–${pct(gmHi)} 之间，做活动、过节的日子反而略低（卖的计价金多）。毛利的起落主要跟着销售额。`);
+  const named = (rows: Array<[string, number]>, text: (v: number) => string) => rows.map(([label, v]) => ({ label, value: r1(v), text: text(v) }));
+  const depthChart = barsOf("同日对齐的每克实让（元/克）", named([["克减 30", g30], ["克减 50", g50], ["金色星期二", gGt]], (v) => `${n1(v)} 元`), "max", "金色星期二的优惠在旧金抵价上，不在每克实收里。");
+  const nodeCharts: Partial<Record<InsightNodeId, InsightChart>> = {
+    image: imageChart, shoptype: expChart, region: regionChart, nature: natureChart, qixi: qixiChart, weekday: dowChart,
+    depth: depthChart,
+    threshold: thresholdChart, tradein: tradeInChart, shift: shiftChart,
+    store: shareParts(fe), day: dailyChart,
+    promo: promoBars("有这个活动成交那天，销售额是平时的几倍", promoSales, times, "max"),
+    mix: mixChart,
+    orders: logParts("门店之间销售额的差异来自哪里", storeSplit, "订单数", "客单价"), aov: logParts("门店之间销售额的差异来自哪里", storeSplit, "订单数", "客单价"),
+    gm: ptBars("各货类毛利率", ptGm, pct),
+    qty: qtyLines, sales: salesLines, gp: gpLines,
+  };
+  const edgeCharts: Record<string, InsightChart | undefined> = {
+    "image>store": imageChart, "shoptype>store": expChart, "region>store": regionChart, "nature>store": natureChart,
+    "qixi>day": qixiChart, "weekday>day": dowChart, "depth>promo": depthChart, "threshold>promo": thresholdChart, "tradein>promo": tradeInChart, "shift>promo": shiftChart,
+    "store>orders": shareParts(feOrders), "store>aov": shareParts(feAov), "day>orders": dailyOrdersChart,
+    "promo>orders": promoBars("有这个活动成交那天，销售额是平时的几倍", promoSales, times, "max"),
+    "promo>aov": barsOf("计价金件均克重", named([["克减 50", k50.gramsPerItem], ["金色星期二", gtG.gramsPerItem], ["一般開單", baseG.gramsPerItem]], (v) => `${n1(v)} 克`)),
+    "promo>gm": promoBars("有这个活动成交那天，毛利率变化（pp）", promoGm, pp, "max", "都是负数：活动那天毛利率更低，条越短降得越少。"),
+    "promo>mix": promoBars("有这个活动成交那天，计价金占比变化（pp）", promoGold, pp, "min"),
+    "mix>gm": mixChart,
+    "orders>sales": salesLines, "aov>sales": salesLines,
+    "orders>qty": qtyLines, "gm>gp": gpLines,
+  };
+
   // ---------- 节点 ----------
   const N = (node: InsightNode) => node;
   const imageS = byScore(sc.image); const expS = byScore(sc.shoptype);
@@ -295,7 +408,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       paragraphs: [`把每家店每天的对数销售额拆开：门店之间的固定差异占 ${pct(fe.store)}，日期占 ${pct(fe.day)}，剩下 ${pct(fe.resid)} 是店内逐日波动。`, `毛利率不一样：门店占 ${pct(feGm.store)}，日期只占 ${pct(feGm.day)}。`] }),
     N({ id: "day", column: 1, kind: "factor", label: "日期和活动", subtitle: `销售额波动的 ${pct(fe.day)}`, score: sc.day,
       source: { kind: "grouping", columns: ["交易日期wid", "节庆"], how: `同一个模型里日期那部分占 ${pct(fe.day)}`, judgement: "日期和当天有什么活动分不开，AI 把它们归成一类" },
-      paragraphs: [`全国一天卖多少差很多：普通工作日日均 ${yi(ordinaryAvg)}${peak ? `，${festName}当天 ${yi(peak.sales)}` : ""}。`, `日期和当天活动分不开：${day(rollout)} 以后全国克减铺开${peak ? `，${festName}在 ${day(peak.day)}` : ""}。`] }),
+      paragraphs: [`全国一天卖多少差很多：普通工作日日均 ${yi(ordinaryAvg)}${peak ? `，${festName}当天 ${yi(peak.sales)}` : ""}。`, `活动是全国同一天一起变的：${day(rollout)} 起各店一起做克减${peak ? `，${day(peak.day)} 各店一起过${festName}` : ""}。光看日子拆不出哪部分是日子带来的、哪部分是活动带来的，所以合在一起看。`] }),
     N({ id: "promo", column: 1, kind: "factor", label: "活动和力度", subtitle: `当天销售 ${times(Math.min(...promoSales))}–${times(Math.max(...promoSales))}`, score: sc.promoSales,
       source: { kind: "grouping", columns: ["优惠小类"], how: "同店同日对比有无克减 50 / 克减 30 / 金色星期二成交", judgement: "按名称把优惠小类归成克减 50、克减 30、金色星期二、一般開單几组，是 AI 做的" },
       paragraphs: ["同一家店、同一天比，这家店当天有没有这个活动的成交：", "活动压毛利率，主要是因为卖的货更偏计价金。"],
@@ -454,7 +567,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     "depth>promo": { peers: peers.depth }, "promo>aov": { peers: peers.promoAov }, "promo>orders": { peers: peers.promoOrders },
     "orders>sales": { outliers: salesOut }, "store>aov": { outliers: aovOut },
   };
-  const edges = raw.map((e) => { const x = extra[`${e.from}>${e.to}`]; if (!x) return e;
+  const edges = raw.map((e) => ({ ...e, ...(edgeCharts[`${e.from}>${e.to}`] ? { chart: edgeCharts[`${e.from}>${e.to}`] } : {}) })).map((e) => { const x = extra[`${e.from}>${e.to}`]; if (!x) return e;
     const withOut = x.outliers?.length ? { ...e, anomalies: [...x.outliers, ...e.anomalies] } : e;
     return withPeers(withOut, x.peers ?? null); });
 
@@ -477,5 +590,5 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     { title: "口径", text: "只算正常销售行（件数 > 0 且金额 > 0）；毛利率 = 零售毛利 ÷ 不含税 RSV；回收旧金、退货单独看。还没和 Power BI 对数。" },
   ];
   return { schema: "insight-drivers/v2", datasetVersion: data.datasetVersion, builtAt,
-    scope: { period: data.period, rows: data.rows, stores: storeCount, note: "一个月数据，只是相关" }, kpis, nodes, edges, summary, methods };
+    scope: { period: data.period, rows: data.rows, stores: storeCount, note: "一个月数据，只是相关" }, kpis, nodes: nodes.map((n) => nodeCharts[n.id] ? { ...n, chart: nodeCharts[n.id] } : n), edges, summary, methods };
 }
