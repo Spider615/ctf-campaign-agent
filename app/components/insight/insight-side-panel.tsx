@@ -104,7 +104,7 @@ function Relation({ graph, edge, onSelect }: { graph: InsightGraph; edge: Insigh
   </button>;
 }
 
-// 业务卡片：一句话结论 → 对比图 → 怎么知道的 → 要注意 → 可以怎么做（AI 建议）。【】里的字标蓝。
+// 业务卡片：一句话结论 → 对比图（有点名门店时列在图下）。【】里的字标蓝。
 function Say({ text }: { text: string }) {
   return <p className="text-[16.5px] font-semibold leading-[1.5] tracking-[-0.01em] text-[#0f172a]">{text.split(/(【[^】]*】)/).map((part, i) => part.startsWith("【") ? <span key={i} className="text-[#2f6bff]">{part.slice(1, -1)}</span> : part)}</p>;
 }
@@ -117,25 +117,12 @@ function StoreRows({ stores }: { stores: InsightCardStores }) {
   </div>;
   return <div className="mt-1.5 space-y-1.5">{stores.rows.map((r) => row(r.name, r.value, true))}{row("同类店一般水平", stores.peer, false)}</div>;
 }
-const SECTION = {
-  how: { title: "怎么知道的", box: "bg-[#f5f8ff]", ink: "text-[#1d4ed8]" },
-  watch: { title: "要注意", box: "bg-[#fffbf2]", ink: "text-[#b45309]" },
-  todo: { title: "可以怎么做", box: "bg-[#f2fbf7]", ink: "text-[#047857]" },
-} as const;
-function Sec({ kind, children, tag }: { kind: keyof typeof SECTION; children: React.ReactNode; tag?: string }) {
-  const t = SECTION[kind];
-  return <section aria-label={t.title} className={`rounded-xl ${t.box} px-3 py-2.5 text-[13px] leading-relaxed text-[#334155]`}>
-    <h3 className={`mb-0.5 flex items-center gap-1.5 text-[12.5px] font-semibold ${t.ink}`}>{t.title}{tag ? <span className="rounded border border-[#e6defc] bg-[#faf8ff] px-1 text-[10px] font-medium leading-4 text-[#6d28d9]">{tag}</span> : null}</h3>
-    {children}
-  </section>;
-}
 function BusinessCard({ card }: { card: InsightCard }) {
   return <div className="space-y-2.5">
     <Say text={card.say} />
     {card.chart ? <div className="pt-1"><InsightChartView chart={card.chart} plain /></div> : null}
-    <Sec kind="how"><p>{card.how}</p></Sec>
-    {card.watch.length || card.stores ? <Sec kind="watch">{card.watch.map((w) => <p key={w}>{w}</p>)}{card.stores ? <StoreRows stores={card.stores} /> : null}</Sec> : null}
-    <Sec kind="todo" tag={card.todo ? "AI 建议" : undefined}>{card.todo ? <p>{card.todo}</p> : <p className="text-[#64748b]">{card.todoNote}</p>}</Sec>
+    {/* 点名的门店直接列在图下面；怎么知道的、要注意、可以怎么做不再单独显示，由下面的依据、异常、推荐承担。 */}
+    {card.stores ? <div className="rounded-xl bg-[#fffbf2] px-3 py-2.5 text-[12.5px] text-[#334155]"><p className="font-medium text-[#b45309]">{card.stores.title}</p><StoreRows stores={card.stores} /></div> : null}
   </div>;
 }
 

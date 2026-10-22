@@ -125,19 +125,21 @@ test("依据里的图：每个有数据的节点和每条有分数的线都带�
   assert.ok(mix.kind === "bars" && mix.bars.length >= 3 && mix.bars[0].value > mix.bars.at(-1)!.value, JSON.stringify(mix));
 });
 
-test("指标的图：两个乘数两条线，都是平常工作日的几倍", () => {
+test("指标的图：横轴是影响因素的档位，不是时间；结果一档比一档高", () => {
   const g = fakeGraph();
   for (const id of ["qty", "sales", "gp"] as const) {
     const c = g.nodes.find((n) => n.id === id)!.chart!;
-    assert.equal(c.kind, "lines", id);
-    if (c.kind !== "lines") continue;
-    assert.equal(c.series.length, 2); assert.equal(c.labels.length, 31);
-    for (const s of c.series) { assert.equal(s.values.length, 31); assert.equal(s.hover.length, 31); }
-    // 8/22 前的周一就是平常工作日，两条线都在 1 倍附近。
-    const i = c.labels.indexOf("8/4"); for (const s of c.series) assert.ok(Math.abs(s.values[i] - 1) < 0.5, `${id} ${s.label} ${s.values[i]}`);
-    assert.deepEqual(c.marks?.map((m) => m.at), ["8/29"]);
+    assert.equal(c.kind, "compare", id);
+    if (c.kind !== "compare") continue;
+    assert.ok(c.items.length >= 3, `${id} 档位太少`);
+    assert.ok(c.items.every((x) => !/^\d+\/\d+$/.test(x.label)), `${id} 横轴不能是日期`);
+    // 第一档是对照，最后一档最突出；结果随档位往上走。
+    assert.equal(c.items[0].tone, "base"); assert.equal(c.items.at(-1)!.tone, "hot");
+    assert.ok(c.items.at(-1)!.value > c.items[0].value, `${id} ${JSON.stringify(c.items)}`);
+    assert.ok(c.items.every((x) => x.sub), `${id} 柱下要写另一个乘数`);
   }
-  assert.deepEqual((g.nodes.find((n) => n.id === "qty")!.chart as { series: Array<{ label: string }> }).series.map((s) => s.label), ["订单数", "每单件数"]);
+  assert.match(g.nodes.find((n) => n.id === "qty")!.chart!.title, /按每天来多少单分档/);
+  assert.match((g.nodes.find((n) => n.id === "qty")!.chart as { items: Array<{ sub?: string }> }).items[0].sub!, / 件\/单$/);
 });
 
 // 给总部业务看的卡片：一句话结论、怎么知道的、要注意、可以怎么做。

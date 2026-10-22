@@ -251,38 +251,51 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   };
   const perDay = (s: FullStore) => s.orders / s.days;
 
-  // 指标：逐日双折线。指标的两个乘数各自除以平常工作日的值，变成「几倍」放在同一根纵轴上；一条线跳、一条线平，就看得出指标跟着谁走。
+  // 逐日的每单件数、客单价、毛利率：卡片里写「整个月在多少到多少之间」。
   const byDay = new Map<string, { items: number; orders: number; sales: number; gp: number; revEx: number }>();
   for (const p of panel) { const x = byDay.get(p.day) ?? { items: 0, orders: 0, sales: 0, gp: 0, revEx: 0 }; x.items += p.items; x.orders += p.orders; x.sales += p.sales; x.gp += p.gp; x.revEx += p.revEx; byDay.set(p.day, x); }
   type DayAgg = { items: number; orders: number; sales: number; gp: number; revEx: number };
   const dayAgg = daily.map((d): DayAgg => byDay.get(d.day) ?? { items: 0, orders: 0, sales: 0, gp: 0, revEx: 0 });
-  const ordinaryDays = new Set(ordinary.map((d) => d.day));
-  const ordAgg = dayAgg.filter((_, i) => ordinaryDays.has(daily[i].day));
-  type Factor = { label: string; of: (x: DayAgg) => number; text: (v: number) => string; perDay: boolean };
-  // 基准取平常工作日的合计再算（比值类的乘数不能直接平均）。
-  const total0 = ordAgg.reduce((a, x) => ({ items: a.items + x.items, orders: a.orders + x.orders, sales: a.sales + x.sales, gp: a.gp + x.gp, revEx: a.revEx + x.revEx }), { items: 0, orders: 0, sales: 0, gp: 0, revEx: 0 });
-  const baseDays = Math.max(1, ordAgg.length);
-  const timesOf = (f: Factor) => { const b = f.of(total0) / (f.perDay ? baseDays : 1); return dayAgg.map((x) => b > 0 ? r2(f.of(x) / b) : 0); };
+  type Factor = { of: (x: DayAgg) => number };
   const range = (f: Factor) => { const v = dayAgg.map(f.of).filter((x) => x > 0); return [Math.min(...v), Math.max(...v)]; };
-  const peakI = peak ? daily.indexOf(peak) : -1;
-  const lines = (title: string, fs: Factor[], note: string): InsightChart => ({
-    kind: "lines", title, labels: daily.map((d) => day(d.day)),
-    series: fs.map((f, k) => ({ label: f.label, tone: k ? "accent" as const : "main" as const, values: timesOf(f), hover: dayAgg.map((x) => f.text(f.of(x))) })),
-    ...(rollout <= lastDay ? { band: { from: day(rollout), to: day(lastDay), label: "克减全国铺开" } } : {}),
-    ...(peak ? { marks: [{ at: day(peak.day), label: festName }] } : {}), note });
-  const peakOf = (f: Factor) => peakI >= 0 ? n1(timesOf(f)[peakI]) : "";
-  const ordersF: Factor = { label: "订单数", of: (x) => x.orders, text: (v) => `${n0(v)} 单`, perDay: true };
-  const ipoF: Factor = { label: "每单件数", of: (x) => x.orders > 0 ? x.items / x.orders : 0, text: (v) => `${v.toFixed(2)} 件`, perDay: false };
-  const aovF: Factor = { label: "客单价", of: (x) => x.orders > 0 ? x.sales / x.orders : 0, text: (v) => `${n0(v)} 元`, perDay: false };
-  const revF: Factor = { label: "销售额", of: (x) => x.revEx, text: wan, perDay: true };
-  const gmF: Factor = { label: "毛利率", of: (x) => x.revEx > 0 ? x.gp / x.revEx * 100 : 0, text: pct, perDay: false };
+  const ipoF: Factor = { of: (x) => x.orders > 0 ? x.items / x.orders : 0 };
+  const aovF: Factor = { of: (x) => x.orders > 0 ? x.sales / x.orders : 0 };
+  const gmF: Factor = { of: (x) => x.revEx > 0 ? x.gp / x.revEx * 100 : 0 };
   const [ipoLo, ipoHi] = range(ipoF); const [aovLo, aovHi] = range(aovF); const [gmLo, gmHi] = range(gmF);
-  const qtyLines = lines("销量跟着订单数走，每单件数基本不变", [ordersF, ipoF],
-    `1× 是平常工作日的水平。订单数随日子大起大落${peak ? `，${festName}是平常的 ${peakOf(ordersF)} 倍` : ""}；每单件数整个月都在 ${ipoLo.toFixed(2)}–${ipoHi.toFixed(2)} 件。`);
-  const salesLines = lines("销售额主要跟着订单数走", [ordersF, aovF],
-    `1× 是平常工作日的水平。订单数随日子大起大落${peak ? `，${festName}是平常的 ${peakOf(ordersF)} 倍` : ""}；客单价在 ${n0(aovLo)}–${n0(aovHi)} 元之间小幅波动。`);
-  const gpLines = lines("毛利跟着销售额走，毛利率变化不大", [revF, gmF],
-    `1× 是平常工作日的水平。销售额${peak ? `在${festName}是平常的 ${peakOf(revF)} 倍` : "随日子起落"}；毛利率在 ${pct(gmLo)}–${pct(gmHi)} 之间，做活动、过节的日子略低。`);
+  // 指标：横轴放影响因素，不放时间。开满 20 天的店按一个乘数从低到高分 5 档（每档约同样多的店），
+  // 柱子是这一档店的结果，柱下写另一个乘数：柱子一路涨、另一个乘数几乎不变，就看得出结果跟着谁走。
+  const quintiles = (x: number[], round: (v: number) => number) => {
+    const sorted = [...x].filter(Number.isFinite).sort((a, b) => a - b);
+    const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1)))] ?? 0;
+    return [...new Set([0.2, 0.4, 0.6, 0.8].map((q) => round(at(q))))].filter((v) => v > 0);
+  };
+  const metricBands = (title: string, by: (s: FullStore) => number, cuts: number[], name: (lo: number, hi: number) => string,
+    y: (g: FullStore[]) => number, yText: (v: number) => string, sub: (g: FullStore[]) => string, note: string): InsightChart => {
+    const edges = [-Infinity, ...cuts, Infinity];
+    const items = edges.slice(0, -1).map((lo, i) => { const hi = edges[i + 1]; const g = full.filter((s) => { const v = by(s); return Number.isFinite(v) && v >= lo && v < hi; }); return { lo, hi, g }; })
+      .filter((x) => x.g.length >= 20).map((x, i, all) => ({ label: name(x.lo, x.hi), sub: sub(x.g), value: r1(y(x.g)), text: yText(y(x.g)), tone: i === 0 ? "base" as const : i === all.length - 1 ? "hot" as const : "normal" as const }));
+    return { kind: "compare", title, items, note };
+  };
+  const med = (g: FullStore[], f: (s: FullStore) => number) => median(g.map(f).filter(Number.isFinite)) ?? 0;
+  const itemsOfStore = (s: FullStore) => itemsOf.get(s.id) ?? 0;
+  const orderCuts = quintiles(full.map(perDay), (v) => Math.round(v));
+  const orderName = (lo: number, hi: number) => lo === -Infinity ? `${hi} 单以下` : hi === Infinity ? `${lo} 单以上` : `${lo}–${hi} 单`;
+  const salesByOrders = metricBands("一家店一天卖多少（万元），按每天来多少单分档", perDay, orderCuts, orderName,
+    (g) => med(g, (s) => s.sales / s.days) / 1e4, (v) => `${n1(v)} 万`, (g) => `${n1(med(g, (s) => s.sales / s.orders) / 1e4)} 万/单`,
+    `柱下小字是客单价。每档约 ${n0(full.length / 5)} 家店，取中间那家。单越多的店卖得越多，客单价各档差得不多。`);
+  const qtyByOrders = metricBands("一家店一天卖几件，按每天来多少单分档", perDay, orderCuts, orderName,
+    (g) => med(g, (s) => itemsOfStore(s) / s.days), (v) => `${n1(v)} 件`, (g) => `${med(g, (s) => itemsOfStore(s) / s.orders).toFixed(2)} 件/单`,
+    `柱下小字是每单件数。每档约 ${n0(full.length / 5)} 家店，取中间那家。单越多的店卖的件数越多，每单件数各档几乎一样。`);
+  const aovCuts = quintiles(full.map((s) => s.sales / s.orders), (v) => Math.round(v / 1000) * 1000);
+  const salesByAov = metricBands("一家店一天卖多少（万元），按客单价分档", (s) => s.sales / s.orders, aovCuts,
+    (lo, hi) => lo === -Infinity ? `${n0(hi / 1000)} 千以下` : hi === Infinity ? `${n0(lo / 1000)} 千以上` : `${n0(lo / 1000)}–${n0(hi / 1000)} 千`,
+    (g) => med(g, (s) => s.sales / s.days) / 1e4, (v) => `${n1(v)} 万`, (g) => `${n1(med(g, perDay))} 单/天`,
+    `柱下小字是每天多少单。每档约 ${n0(full.length / 5)} 家店，取中间那家。客单价高的店也卖得多，但差距比按单量分档小。`);
+  const revCuts = quintiles(full.map((s) => s.revEx / s.days), (v) => Math.round(v / 1e4) * 1e4);
+  const gpByRev = metricBands("一家店一天赚多少毛利（万元），按一天卖多少分档", (s) => s.revEx / s.days, revCuts,
+    (lo, hi) => lo === -Infinity ? `${n0(hi / 1e4)} 万以下` : hi === Infinity ? `${n0(lo / 1e4)} 万以上` : `${n0(lo / 1e4)}–${n0(hi / 1e4)} 万`,
+    (g) => med(g, (s) => s.gp / s.days) / 1e4, (v) => `${n1(v)} 万`, (g) => pct(med(g, (s) => s.gp / s.revEx * 100)),
+    `柱下小字是毛利率。每档约 ${n0(full.length / 5)} 家店，取中间那家；销售额不含税。卖得越多的店毛利越多，毛利率各档差不到 1 个百分点。`);
 
   // 指标拆解：订单数、客单价、毛利率各自被什么拉动。
   const imageOrders = medianBy((s) => s.attr.image, perDay).filter((r) => r.n >= 20 && r.k !== "未定义").sort((a, b) => b.m - a.m);
@@ -348,7 +361,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     depth: depthChart, threshold: thresholdChart, tradein: tradeInChart, shift: shiftChart,
     store: storeChart, day: dailyChart, promo: promoChart, mix: mixChart,
     orders: ordersChart, aov: aovChart, gm: gmChart,
-    qty: qtyLines, sales: salesLines, gp: gpLines,
+    qty: qtyByOrders, sales: salesByOrders, gp: gpByRev,
   };
   // 连线：图讲的是「左边这一项怎么影响右边那一项」。
   const imageOrdersChart = barsOf("商圈越好的店，每天单越多", imageOrders.map((r) => ({ label: short(r.k), value: r1(r.m), text: `${n1(r.m)} 单（${n0(r.n)} 家）` })), "max", "门店日均订单数的一般水平。");
@@ -367,7 +380,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     "qixi>day": qixiChart, "weekday>day": dowChart, "depth>promo": depthChart, "threshold>promo": thresholdChart, "tradein>promo": tradeInChart, "shift>promo": shiftChart,
     "store>orders": imageOrdersChart, "store>aov": expAovChart, "day>orders": dayOrdersChart,
     "promo>orders": promoChart, "promo>aov": aovChart, "promo>gm": promoGmChart, "promo>mix": promoMixChart, "mix>gm": mixChart,
-    "orders>sales": salesLines, "aov>sales": salesLines, "orders>qty": qtyLines, "gm>gp": gpLines,
+    "orders>sales": salesByOrders, "aov>sales": salesByAov, "orders>qty": qtyByOrders, "gm>gp": gpByRev,
   };
 
   // ---------- 节点 ----------
@@ -702,19 +715,19 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       "销量 = 订单数 × 每单件数。每单件数基本不变，所以看订单数就够了。",
       [], "想多卖件数，重点是多来单，而不是让顾客一单多买几件。",
       [`8 月 ${n0(total.items / 1e4)} 万件、${n1(total.orders / 1e4)} 万单，平均每单 ${(total.orders > 0 ? total.items / total.orders : 0).toFixed(2)} 件。`, `每单件数整个月都在 ${ipoLo.toFixed(2)}–${ipoHi.toFixed(2)} 件。`],
-      { chart: qtyLines }),
+      { chart: qtyByOrders }),
     sales: C(`8 月卖了【${yi(total.sales)}】，起落主要跟着订单数`,
       `销售额 = 订单数 × 客单价。${n1(total.orders / 1e4)} 万单，平均一单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。`,
       ["还没和 Power BI 核对，绝对数先只作参考。"],
       "提销售额先抓单量：好商圈的店、做活动和过节的日子。",
       [`8 月 ${yi(total.sales)}、${n1(total.orders / 1e4)} 万单。`, `客单价每天在 ${n0(aovLo)}–${n0(aovHi)} 元之间。`],
-      { chart: salesLines }),
+      { chart: salesByOrders }),
     gp: C(`8 月毛利【${yi(total.gp)}】，毛利率 ${pct(gm)}，基本跟着销售额走`,
       "毛利 = 销售额（不含税）× 毛利率。毛利率每天变化不大。",
       ["做活动、过节的日子毛利率略低，因为那几天卖的计价金更多。"],
       "保毛利的关键是货品结构：活动里多配一口价和镶嵌货。",
       [`毛利率每天在 ${pct(gmLo)}–${pct(gmHi)} 之间。`, `计价金毛利率 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}，镶嵌及其他 ${pct(ptGm(inlay))}。`],
-      { chart: gpLines }),
+      { chart: gpByRev }),
   };
   const lagMix = lagStores(peers.mix, "计价金卖得多、毛利率特别低的店", "%", (v) => v);
   const edgeCards: Record<string, Card> = {

@@ -44,7 +44,7 @@ export const focusLabel = (focus: InsightFocus) => focus.label;
 // 放进问答请求的 context，不改问题原文。
 export function focusContext(focus: InsightFocus): string {
   const what = focus.kind === "node" ? `节点「${focus.label}」` : `连线「${focus.label}」（图上依据：${focus.basis}）`;
-  const card = [focus.say ? `页面上的结论是「${focus.say}」` : "", focus.todo ? `页面上 AI 给的建议是「${focus.todo}」，这是建议不是数据：用户问到这条建议时，要先查数据给出支撑或反证，再说建议` : ""].filter(Boolean).join("；");
+  const card = [focus.say ? `页面上的结论是「${focus.say}」` : "", focus.todo ? `AI 对它的建议是「${focus.todo}」，这是建议不是数据：用户问到建议或「该怎么做」时，要先查数据给出支撑或反证，再说建议` : ""].filter(Boolean).join("；");
   return `用户正在看智能洞察的指标影响因素图谱（销售额、毛利、销量受哪些因素影响，2025 年 8 月全国），选中了${what}。${card ? `${card}。` : ""}「这个」「这条线」「这个因素」指它。没有明确改变时沿用这个范围。`;
 }
 
