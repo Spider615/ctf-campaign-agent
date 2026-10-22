@@ -76,17 +76,22 @@ export async function startContainerMysql() {
   // 内存给得保守：容器里还跑着页面和 Agent。
   const mysqld = spawn("mysqld", ["--user=root", `--datadir=${DATA_DIR}`, `--socket=${SOCKET}`, "--bind-address=127.0.0.1", `--port=${PORT}`,
     "--innodb-buffer-pool-size=768M", "--tmp-table-size=128M", "--max-heap-table-size=128M", "--skip-log-bin", "--mysqlx=OFF",
-    "--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--secure-file-priv=NULL"], { stdio: ["ignore", "inherit", "inherit"] });
-  await waitReady(mysqld);
-  if (!existsSync(READY_MARK)) {
-    const work = path.join(DATA_DIR, "..", "ctf-data-download");
-    fetchDump(work);
-    await importDump(work);
-    rmSync(work, { recursive: true, force: true });
-    writeFileSync(READY_MARK, new Date().toISOString());
-    log("导入完成");
-  }
+    "--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--secure-file-priv=NULL",
+    // 导入时 redo 日志太小会让检查点追不上写入，导入明显变慢；只读库不在乎崩溃时丢最后一秒。
+    "--innodb-redo-log-capacity=1G", "--innodb-flush-log-at-trx-commit=2"], { stdio: ["ignore", "inherit", "inherit"] });
   const password = process.env.CTF_MYSQL_READER_PASSWORD || createHash("sha256").update(`${process.env.CTF_DATA_REPO_TOKEN}:reader`).digest("hex").slice(0, 32);
-  createReader(password);
+  // 导入中途失败就停掉 mysqld，交给平台重启；没写完成标记，下次重新导入（导出里带 DROP TABLE IF EXISTS）。
+  try {
+    await waitReady(mysqld);
+    if (!existsSync(READY_MARK)) {
+      const work = path.join(DATA_DIR, "..", "ctf-data-download");
+      fetchDump(work);
+      await importDump(work);
+      rmSync(work, { recursive: true, force: true });
+      writeFileSync(READY_MARK, new Date().toISOString());
+      log("导入完成");
+    }
+    createReader(password);
+  } catch (error) { mysqld.kill("SIGTERM"); throw error; }
   return { mysqld, env: { CTF_MYSQL_HOST: "127.0.0.1", CTF_MYSQL_PORT: PORT, CTF_MYSQL_USER: "ctf_reader", CTF_MYSQL_PASSWORD: password, CTF_MYSQL_DATABASE: DATABASE } };
 }

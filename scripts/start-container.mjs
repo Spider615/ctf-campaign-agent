@@ -28,25 +28,15 @@ for (const { binding } of config.d1_databases) {
   if (migrated.status !== 0) process.exit(migrated.status ?? 1);
 }
 
-// 内置历史库（配了数据仓库口令才启动）：第一次启动会拉数据、导入，之后重启直接用。
-const mysql = await startContainerMysql();
-
+// 页面先起来：平台健康检查只等 90 秒，第一次启动导入数据要几分钟。
 const children = [
-  ...(mysql ? [mysql.mysqld] : []),
-  // 地址和端口固定成页面的默认值；口令清空，回环地址外面连不到，留着反而会和页面对不上。
-  spawn(process.execPath, [
-    "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "agent/server.ts",
-  ], {
-    stdio: "inherit",
-    env: { ...process.env, AGENT_HOST: "127.0.0.1", AGENT_PORT: "8788", AGENT_SERVICE_TOKEN: "", ...(mysql?.env ?? {}) },
-  }),
   spawn(process.execPath, [
     WRANGLER, "dev", "--config", "dist/server/wrangler.json", "--local",
     "--persist-to", PERSIST_DIR, "--ip", "0.0.0.0", "--port", PORT,
   ], { stdio: "inherit" }),
 ];
 
-// 任意一个进程退出就停掉另一个并以非零码退出，交给平台重启整个容器。
+// 任意一个进程退出就停掉其他的并以非零码退出，交给平台重启整个容器。
 let stopping = false;
 function stop(code) {
   if (stopping) return;
@@ -54,7 +44,20 @@ function stop(code) {
   for (const child of children) if (child.exitCode === null) child.kill("SIGTERM");
   process.exitCode = code;
 }
+const watch = (child) => { children.push(child); child.on("exit", (code) => stop(code || 1)); };
+children[0].on("exit", (code) => stop(code || 1));
 
-for (const child of children) child.on("exit", (code) => stop(code || 1));
+// 内置历史库（配了数据仓库口令才启动）：第一次启动拉数据、导入，之后重启直接用。
+// Agent 等库就绪后再起，这段时间页面照常打开，对话和图谱会提示 Agent 还没好。
+let mysql = null;
+try { mysql = await startContainerMysql(); } catch (error) { console.error(`[mysql] ${error instanceof Error ? error.message : error}`); stop(1); }
+if (mysql) watch(mysql.mysqld);
+// 地址和端口固定成页面的默认值；口令清空，回环地址外面连不到，留着反而会和页面对不上。
+if (!stopping) watch(spawn(process.execPath, [
+  "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "agent/server.ts",
+], {
+  stdio: "inherit",
+  env: { ...process.env, AGENT_HOST: "127.0.0.1", AGENT_PORT: "8788", AGENT_SERVICE_TOKEN: "", ...(mysql?.env ?? {}) },
+}));
 process.on("SIGINT", () => stop(0));
 process.on("SIGTERM", () => stop(0));
