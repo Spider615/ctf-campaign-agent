@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { startContainerMysql } from "./container-mysql.mjs";
 import { projectRoot } from "./sites-env.mjs";
 
 // 容器入口（butler 单容器多进程）：页面用 wrangler 本地模式对外监听 0.0.0.0；
@@ -27,13 +28,17 @@ for (const { binding } of config.d1_databases) {
   if (migrated.status !== 0) process.exit(migrated.status ?? 1);
 }
 
+// 内置历史库（配了数据仓库口令才启动）：第一次启动会拉数据、导入，之后重启直接用。
+const mysql = await startContainerMysql();
+
 const children = [
+  ...(mysql ? [mysql.mysqld] : []),
   // 地址和端口固定成页面的默认值；口令清空，回环地址外面连不到，留着反而会和页面对不上。
   spawn(process.execPath, [
     "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "agent/server.ts",
   ], {
     stdio: "inherit",
-    env: { ...process.env, AGENT_HOST: "127.0.0.1", AGENT_PORT: "8788", AGENT_SERVICE_TOKEN: "" },
+    env: { ...process.env, AGENT_HOST: "127.0.0.1", AGENT_PORT: "8788", AGENT_SERVICE_TOKEN: "", ...(mysql?.env ?? {}) },
   }),
   spawn(process.execPath, [
     WRANGLER, "dev", "--config", "dist/server/wrangler.json", "--local",
