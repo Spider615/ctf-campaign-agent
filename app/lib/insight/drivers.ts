@@ -91,16 +91,20 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const mixOnly = rSquared([new Float64Array(full.length).fill(1), goldShare], yStoreGm) * 100;
   const u = (r: { unique: Record<string, number> }, k: string) => Math.max(0, r.unique[k] * 100);
   const storeSplit = logSplit(full.map((s) => s.sales), full.map((s) => s.orders));
-  // 订单数 ↔ 客单价：门店间横截面的真实回归关系（不是恒等式），供拖动联动用。月度聚合上算斜率，换算到日均展示不改变斜率。
-  const ordersAovFit = logLinearFit(full.map((s) => s.orders), full.map((s) => s.sales / s.orders));
+  // 订单数 ↔ 客单价：门店间横截面的真实回归关系（不是恒等式），供拖动联动用。
+  // 回归和展示用同一个口径（日均），不能在月度口径上拟合再套到日均基准值上——每家店 days 不同，不是公共常数，月度拟合的截距会系统性偏离日均关系。
+  // 两个方向各自独立拟合（不是把一个方向的斜率代数反解）：两条回归线的斜率乘积是 r²，不是互为倒数，混用会在弱相关时把反解结果放大到离谱。
+  const dailyOrders = full.map((s) => s.orders / s.days); const dailyAov = full.map((s) => s.sales / s.orders);
+  const ordersToAov = logLinearFit(dailyOrders, dailyAov);
+  const aovToOrders = logLinearFit(dailyAov, dailyOrders);
   // 滑块的可拖动范围是各自变量日均口径的 2%–98% 分位（样本实际分布），不是回归线算出来的建议值区间。
   const quantile = (values: readonly number[], p: number) => { const s = [...values].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.round(p * (s.length - 1))))] ?? 0; };
-  const dailyOrders = full.map((s) => s.orders / s.days); const dailyAov = full.map((s) => s.sales / s.orders);
   const midStore = [...full].sort((a, b) => a.orders / a.days - b.orders / b.days)[Math.floor(full.length / 2)];
-  const ordersAovChart: InsightChart | undefined = midStore ? { kind: "linked", title: "订单数、客单价按历史数据联动",
+  // 样本太少（拟合退化成全 0）或没有中位数店时，这段关系算不出来，不挂图——不展示一条没有信息量、拖起来是常数的联动。
+  const ordersAovChart: InsightChart | undefined = midStore && ordersToAov.r2 > 0 ? { kind: "linked", title: "订单数、客单价按历史数据联动",
     a: { label: "订单数", unit: "单", digits: 0, base: midStore.orders / midStore.days, min: quantile(dailyOrders, 0.02), max: quantile(dailyOrders, 0.98) },
     b: { label: "客单价", unit: "元", digits: 0, base: midStore.sales / midStore.orders, min: quantile(dailyAov, 0.02), max: quantile(dailyAov, 0.98) },
-    fit: ordersAovFit, sales: { label: "销售额", unit: "元", digits: 0 } } : undefined;
+    aToB: ordersToAov, bToA: aovToOrders, sales: { label: "销售额", unit: "元", digits: 0 } } : undefined;
   // 拆解线的分数：门店之间结果的差异，多少来自这一项（对数方差拆分）。件数 = 订单数 × 单均件数；毛利 = 不含税销售额 × 毛利率。
   const itemsOf = new Map<string, number>(); for (const p of panel) itemsOf.set(p.store, (itemsOf.get(p.store) ?? 0) + p.items);
   const qtySplit = logSplit(full.map((s) => Math.max(1, itemsOf.get(s.id) ?? 1)), full.map((s) => s.orders));

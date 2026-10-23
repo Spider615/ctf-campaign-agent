@@ -89,14 +89,18 @@ test("订单数/客单价：card.sim 挂了 linked 图，基准值是日均口�
   // node.chart（既有的商圈/活动力度对比图）不受影响，继续存在。
   assert.ok(orders.chart); assert.ok(aov.chart);
   assert.notEqual(orders.chart?.kind, "linked"); assert.notEqual(aov.chart?.kind, "linked");
-  // 两个节点共享同一份回归系数（同一次计算）。
+  // 两个节点共享同一份回归系数（同一次计算），两个方向各自独立（不是互为代数反解）。
   const oc = orders.card.sim as Extract<InsightChart, { kind: "linked" }>;
   const ac = aov.card.sim as Extract<InsightChart, { kind: "linked" }>;
-  assert.equal(oc.fit.slope, ac.fit.slope);
-  assert.equal(oc.fit.intercept, ac.fit.intercept);
+  assert.equal(oc.aToB.slope, ac.aToB.slope); assert.equal(oc.bToA.slope, ac.bToA.slope);
+  assert.equal(oc.aToB.intercept, ac.aToB.intercept);
   // 基准值是正数、在 min/max 范围内。
   assert.ok(oc.a.base > 0 && oc.a.base >= oc.a.min && oc.a.base <= oc.a.max);
   assert.ok(oc.b.base > 0 && oc.b.base >= oc.b.min && oc.b.base <= oc.b.max);
+  // 回归和展示用同一口径（日均）：在基准订单数处，aToB 算出的建议客单价要落在 b 的范围内，且接近真实基准客单价
+  // （口径不一致时，比如误用月度口径拟合去推日均基准值，这里会系统性偏离，参见 ledger Final 裁决）。
+  const suggestedB = Math.exp(oc.aToB.intercept + oc.aToB.slope * Math.log(oc.a.base));
+  assert.ok(suggestedB >= oc.b.min * 0.5 && suggestedB <= oc.b.max * 1.5, `建议值 ${suggestedB} 应接近真实范围 [${oc.b.min}, ${oc.b.max}]`);
 });
 
 test("图谱：合成数据里设定的关系能被认出来", () => {
@@ -155,7 +159,7 @@ test("依据里的图：每个有数据的节点和每条有分数的线都带�
   const g = fakeGraph();
   const values = (c: NonNullable<typeof g.nodes[number]["chart"]>): number[] => c.kind === "bars" ? c.bars.map((b) => b.value) : c.kind === "split" ? c.parts.map((p) => p.value)
     : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values.filter((v): v is number => v !== null)) : c.kind === "compare" ? c.items.map((x) => x.value) : c.kind === "whatif" ? [c.result.base, ...c.factors.map((f) => f.base)]
-    : c.kind === "linked" ? [c.a.base, c.b.base, c.fit.slope, c.fit.intercept, c.fit.sigma] : [...c.points.flat(), c.fit.slope, c.fit.intercept];
+    : c.kind === "linked" ? [c.a.base, c.b.base, c.aToB.slope, c.aToB.intercept, c.aToB.sigma, c.bToA.slope, c.bToA.intercept, c.bToA.sigma] : [...c.points.flat(), c.fit.slope, c.fit.intercept];
   for (const n of g.nodes) if (n.source.kind !== "suggested" && n.id !== "areaage") assert.ok(n.chart, n.id);
   for (const e of g.edges) if (e.score && e.from !== "areaage") assert.ok(e.chart, edgeKey(e));
   for (const c of [...g.nodes.map((n) => n.chart), ...g.edges.map((e) => e.chart)]) if (c) {

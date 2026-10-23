@@ -68,14 +68,17 @@ export type InsightChart = { title: string; note?: string; legend?: InsightChart
   // ref：同类店（商圈、铺型、区域相同）前 1/4 的店比中间那家高多少（%），滑块上标出来，表示「做到同类好店的水平」大概是多少。
   | { kind: "whatif"; result: { label: string; base: number; unit: string; digits: number };
       factors: Array<{ label: string; base: number; unit: string; digits: number; ref: number }>; min: number; max: number }
-  // linked：两个变量互相按真实回归关系联动（不是恒等式）。拖一个，另一个按 slope/intercept 给建议值 + 波动范围；
+  // linked：两个变量互相按真实回归关系联动（不是恒等式）。拖一个，另一个按回归给建议值 + 波动范围；
   // 建议值可以被用户再次手动覆盖，覆盖后角色互换（谁最后被拖动，谁是自变量）。
-  // a/b：两个滑块各自的展示信息（日均口径）；fit：a 对 b 的对数线性回归系数（log(b)=intercept+slope*log(a)），sigma 是对数尺度残差标准差；
+  // a/b：两个滑块各自的展示信息，口径跟 base/min/max 一致（不混用月度/日均）。
+  // aToB：a 对 b 的回归（log(b)=intercept+slope*log(a)），拖 a 时用；bToA：b 对 a 的独立回归（不是 aToB 的代数反解——
+  // 两条回归线斜率不是互为倒数，是 aToB.slope * bToA.slope = r²），拖 b 时用。sigma 各自是对数尺度残差标准差。
   // sales：销售额展示信息，base 是 a.base * b.base。
   | { kind: "linked";
       a: { label: string; unit: string; digits: number; base: number; min: number; max: number };
       b: { label: string; unit: string; digits: number; base: number; min: number; max: number };
-      fit: { slope: number; intercept: number; sigma: number };
+      aToB: { slope: number; intercept: number; sigma: number };
+      bToA: { slope: number; intercept: number; sigma: number };
       sales: { label: string; unit: string; digits: number } }
   | { kind: "scatter"; x: { label: string; unit: string }; y: { label: string; unit: string }; points: Array<[number, number]>; fit: { slope: number; intercept: number } }
 );

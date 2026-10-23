@@ -174,7 +174,7 @@ const linkedFmt = (v: number, d: number) => v.toLocaleString("zh-CN", { minimumF
 
 // 两变量回归联动的单个滑块：isSuggested 时画波动范围、标「按历史关系建议」；否则是用户刚拖过的手动值，或两侧都没拖动过的基准值。
 function LinkedSlider({ id, side, f, value, onDrag, isSuggested, anchor, band }: { id: string; side: "a" | "b"; f: LinkedFactor; value: number; onDrag: (v: number) => void; isSuggested: boolean; anchor: "a" | "b" | null; band: (v: number) => [number, number] }) {
-  const span = f.max - f.min; const at = (v: number) => `${Math.max(0, Math.min(100, (v - f.min) / span * 100))}%`;
+  const span = f.max - f.min || 1; const at = (v: number) => `${Math.max(0, Math.min(100, (v - f.min) / span * 100))}%`;
   const [lo, hi] = isSuggested ? band(value) : [0, 0];
   return <div>
     <div className="flex items-baseline justify-between text-[12.5px]">
@@ -195,24 +195,29 @@ function LinkedSlider({ id, side, f, value, onDrag, isSuggested, anchor, band }:
 
 // 两变量回归联动：拖一个，另一个按真实回归关系给建议值 + 波动范围（不是恒等式，是历史统计趋势）。
 // anchor 记录最后一次被用户拖动的是哪一侧；它是自变量，另一侧是回归算出来的因变量。两侧都没拖动过时 anchor 为 null，只显示基准值。
+// 建议值按「相对变化」联动（b' = b0 × (a'/a0)^slope，从 anchor 刚切换时两侧的当前值出发），不是直接取回归线在 a' 处的绝对值——
+// 基准值是中位数店的真实值，不在回归线上，拖一小步就跳到回归线绝对值会让客单价突然跳变一大截，相对缩放不会。
 function Linked({ chart }: { chart: Extract<InsightChart, { kind: "linked" }> }) {
   const [anchor, setAnchor] = useState<"a" | "b" | null>(null);
   const [aValue, setAValue] = useState(chart.a.base);
   const [bValue, setBValue] = useState(chart.b.base);
-  const { slope, intercept, sigma } = chart.fit;
+  // anchor 切换的那一刻，把当时两侧的值记成这次联动的参照点（不是 chart.a.base/chart.b.base，那是全局基准，不是上次手动值）。
+  const [anchorFrom, setAnchorFrom] = useState({ a: chart.a.base, b: chart.b.base });
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-  const bSuggestFromA = (a: number) => clamp(Math.exp(intercept + slope * Math.log(a)), chart.b.min, chart.b.max);
-  // slope 接近 0 或反解结果会冲出 a 的物理范围时，回归关系在这个方向上不可靠：a 不随 b 变化，诚实地反映"这个方向没有稳定关系"，
-  // 而不是显示一个被钳制到边界、看似精确却是数学假象的数字（弱回归反解时 1/slope 放大误差，裁出离谱的值）。
-  const aSuggestFromB = (b: number) => {
-    if (Math.abs(slope) < 1e-6) return aValue;
-    const raw = Math.exp((Math.log(b) - intercept) / slope);
-    return clamp(raw, chart.a.min, chart.a.max);
+  const bSuggestFromA = (a: number, a0: number, b0: number) => clamp(b0 * Math.pow(a / a0, chart.aToB.slope), chart.b.min, chart.b.max);
+  const aSuggestFromB = (b: number, a0: number, b0: number) => clamp(a0 * Math.pow(b / b0, chart.bToA.slope), chart.a.min, chart.a.max);
+  const onDragA = (v: number) => {
+    const from = anchor === "a" ? anchorFrom : { a: aValue, b: bValue };
+    if (anchor !== "a") { setAnchor("a"); setAnchorFrom(from); }
+    setAValue(v); setBValue(bSuggestFromA(v, from.a, from.b));
   };
-  const onDragA = (v: number) => { setAValue(v); setAnchor("a"); setBValue(bSuggestFromA(v)); };
-  const onDragB = (v: number) => { setBValue(v); setAnchor("b"); if (Math.abs(slope) >= 1e-6) setAValue(aSuggestFromB(v)); };
+  const onDragB = (v: number) => {
+    const from = anchor === "b" ? anchorFrom : { a: aValue, b: bValue };
+    if (anchor !== "b") { setAnchor("b"); setAnchorFrom(from); }
+    setBValue(v); setAValue(aSuggestFromB(v, from.a, from.b));
+  };
   const sales = aValue * bValue;
-  const band = (suggestedBase: number): [number, number] => [suggestedBase * Math.exp(-sigma), suggestedBase * Math.exp(sigma)];
+  const band = (suggestedBase: number, sigma: number): [number, number] => [suggestedBase * Math.exp(-sigma), suggestedBase * Math.exp(sigma)];
   const id = useId();
   return <div className="space-y-3">
     <div className="rounded-xl bg-[#f5f8ff] px-3 py-2.5" aria-live="polite">
@@ -222,9 +227,9 @@ function Linked({ chart }: { chart: Extract<InsightChart, { kind: "linked" }> })
         <span className="ml-auto text-[11.5px] text-[#94a3b8]">现在 {linkedFmt(chart.a.base * chart.b.base, chart.sales.digits)}{chart.sales.unit}</span>
       </p>
     </div>
-    <LinkedSlider id={id} side="a" f={chart.a} value={aValue} onDrag={onDragA} isSuggested={anchor === "b" && Math.abs(slope) >= 1e-6} anchor={anchor} band={band} />
-    <LinkedSlider id={id} side="b" f={chart.b} value={bValue} onDrag={onDragB} isSuggested={anchor === "a"} anchor={anchor} band={band} />
-    <button type="button" onClick={() => { setAnchor(null); setAValue(chart.a.base); setBValue(chart.b.base); }} disabled={anchor === null}
+    <LinkedSlider id={id} side="a" f={chart.a} value={aValue} onDrag={onDragA} isSuggested={anchor === "b"} anchor={anchor} band={(v) => band(v, chart.bToA.sigma)} />
+    <LinkedSlider id={id} side="b" f={chart.b} value={bValue} onDrag={onDragB} isSuggested={anchor === "a"} anchor={anchor} band={(v) => band(v, chart.aToB.sigma)} />
+    <button type="button" onClick={() => { setAnchor(null); setAValue(chart.a.base); setBValue(chart.b.base); setAnchorFrom({ a: chart.a.base, b: chart.b.base }); }} disabled={anchor === null}
       className="min-h-8 whitespace-nowrap rounded-lg border border-[#e4eaf2] px-2.5 text-[12px] text-[#334155] hover:bg-[#f8fafc] disabled:opacity-40">恢复</button>
   </div>;
 }
