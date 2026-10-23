@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayFit } from "../app/lib/insight/stats.ts";
 import { edgeKey, highlightOf, reach, routes, routesThrough } from "../app/lib/insight/paths.ts";
-import { INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL } from "../app/lib/insight/types.ts";
+import { INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL, type InsightChart } from "../app/lib/insight/types.ts";
 import { fakeGraph } from "./helpers/insight-fixture.ts";
 
 test("最小二乘：精确还原系数，共线的列记 0", () => {
@@ -80,6 +80,25 @@ test("图谱：节点齐全、名字固定，每条线两端都在图上，依�
   assert.ok(g.edges.filter((e) => e.strength === "id").every((e) => ["orders", "aov", "gm"].includes(e.from)));
 });
 
+test("订单数/客单价：card.sim 挂了 linked 图，基准值是日均口径的中位数店", () => {
+  const g = fakeGraph();
+  const orders = g.nodes.find((n) => n.id === "orders")!;
+  const aov = g.nodes.find((n) => n.id === "aov")!;
+  assert.equal(orders.card.sim?.kind, "linked");
+  assert.equal(aov.card.sim?.kind, "linked");
+  // node.chart（既有的商圈/活动力度对比图）不受影响，继续存在。
+  assert.ok(orders.chart); assert.ok(aov.chart);
+  assert.notEqual(orders.chart?.kind, "linked"); assert.notEqual(aov.chart?.kind, "linked");
+  // 两个节点共享同一份回归系数（同一次计算）。
+  const oc = orders.card.sim as Extract<InsightChart, { kind: "linked" }>;
+  const ac = aov.card.sim as Extract<InsightChart, { kind: "linked" }>;
+  assert.equal(oc.fit.slope, ac.fit.slope);
+  assert.equal(oc.fit.intercept, ac.fit.intercept);
+  // 基准值是正数、在 min/max 范围内。
+  assert.ok(oc.a.base > 0 && oc.a.base >= oc.a.min && oc.a.base <= oc.a.max);
+  assert.ok(oc.b.base > 0 && oc.b.base >= oc.b.min && oc.b.base <= oc.b.max);
+});
+
 test("图谱：合成数据里设定的关系能被认出来", () => {
   const g = fakeGraph();
   const edge = (from: string, to: string) => g.edges.find((e) => e.from === from && e.to === to)!;
@@ -135,7 +154,8 @@ test("每条线都有依据、异常、推荐三段；没有推荐时写原因",
 test("依据里的图：每个有数据的节点和每条有分数的线都带图，图上的数是有限值", () => {
   const g = fakeGraph();
   const values = (c: NonNullable<typeof g.nodes[number]["chart"]>): number[] => c.kind === "bars" ? c.bars.map((b) => b.value) : c.kind === "split" ? c.parts.map((p) => p.value)
-    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values.filter((v): v is number => v !== null)) : c.kind === "compare" ? c.items.map((x) => x.value) : c.kind === "whatif" ? [c.result.base, ...c.factors.map((f) => f.base)] : [...c.points.flat(), c.fit.slope, c.fit.intercept];
+    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values.filter((v): v is number => v !== null)) : c.kind === "compare" ? c.items.map((x) => x.value) : c.kind === "whatif" ? [c.result.base, ...c.factors.map((f) => f.base)]
+    : c.kind === "linked" ? [c.a.base, c.b.base, c.fit.slope, c.fit.intercept, c.fit.sigma] : [...c.points.flat(), c.fit.slope, c.fit.intercept];
   for (const n of g.nodes) if (n.source.kind !== "suggested" && n.id !== "areaage") assert.ok(n.chart, n.id);
   for (const e of g.edges) if (e.score && e.from !== "areaage") assert.ok(e.chart, edgeKey(e));
   for (const c of [...g.nodes.map((n) => n.chart), ...g.edges.map((e) => e.chart)]) if (c) {

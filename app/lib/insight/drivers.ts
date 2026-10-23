@@ -1,7 +1,7 @@
 // 从 Agent 查回来的聚合数据算出指标影响因素图谱：先算统计量，再用模板拼出节点、连线和依据。
 // 图上的数字全部出自这里，文字是模板，不经过模型。
 import { comparePeers, mainPart, outlierTable, peerGroups, shortStoreName, type PeerMetric, type PeerStore } from "./peers.ts";
-import { etaSquared, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayFit } from "./stats.ts";
+import { etaSquared, logLinearFit, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayFit } from "./stats.ts";
 import type { InsightChart, InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
 
 // 优惠按名称归成几组（AI 归类）：克减 50、克减 30、金色星期二、一般開單、其他。
@@ -91,6 +91,16 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const mixOnly = rSquared([new Float64Array(full.length).fill(1), goldShare], yStoreGm) * 100;
   const u = (r: { unique: Record<string, number> }, k: string) => Math.max(0, r.unique[k] * 100);
   const storeSplit = logSplit(full.map((s) => s.sales), full.map((s) => s.orders));
+  // 订单数 ↔ 客单价：门店间横截面的真实回归关系（不是恒等式），供拖动联动用。月度聚合上算斜率，换算到日均展示不改变斜率。
+  const ordersAovFit = logLinearFit(full.map((s) => s.orders), full.map((s) => s.sales / s.orders));
+  // 滑块的可拖动范围是各自变量日均口径的 2%–98% 分位（样本实际分布），不是回归线算出来的建议值区间。
+  const quantile = (values: readonly number[], p: number) => { const s = [...values].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.round(p * (s.length - 1))))] ?? 0; };
+  const dailyOrders = full.map((s) => s.orders / s.days); const dailyAov = full.map((s) => s.sales / s.orders);
+  const midStore = [...full].sort((a, b) => a.orders / a.days - b.orders / b.days)[Math.floor(full.length / 2)];
+  const ordersAovChart: InsightChart | undefined = midStore ? { kind: "linked", title: "订单数、客单价按历史数据联动",
+    a: { label: "订单数", unit: "单", digits: 0, base: midStore.orders / midStore.days, min: quantile(dailyOrders, 0.02), max: quantile(dailyOrders, 0.98) },
+    b: { label: "客单价", unit: "元", digits: 0, base: midStore.sales / midStore.orders, min: quantile(dailyAov, 0.02), max: quantile(dailyAov, 0.98) },
+    fit: ordersAovFit, sales: { label: "销售额", unit: "元", digits: 0 } } : undefined;
   // 拆解线的分数：门店之间结果的差异，多少来自这一项（对数方差拆分）。件数 = 订单数 × 单均件数；毛利 = 不含税销售额 × 毛利率。
   const itemsOf = new Map<string, number>(); for (const p of panel) itemsOf.set(p.store, (itemsOf.get(p.store) ?? 0) + p.items);
   const qtySplit = logSplit(full.map((s) => Math.max(1, itemsOf.get(s.id) ?? 1)), full.map((s) => s.orders));
@@ -770,13 +780,13 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       ["数据里没有客流和成交率，订单数再往下拆不了。"],
       "提销售额先想办法多来单：好商圈的店和做活动、过节的日子，单量明显更多。",
       [`各档商圈门店一天多少单：${imageOrders.map((r) => `${short(r.k)} ${n1(r.m)} 单`).join("，")}。`, `全国平常工作日约 ${n1(ordAvgOrders / 1e4)} 万单${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单（${n1(orderTimes)} 倍）` : ""}。`],
-      { chart: compare("一家店一天多少单", imageOrders.map((r): Item => ({ label: short(r.k), sub: `${n0(r.n)} 家`, value: r1(r.m), text: `${n1(r.m)} 单`, ...(r.k.startsWith("社区") ? { tone: "base" as const } : {}) }))) }),
+      { chart: compare("一家店一天多少单", imageOrders.map((r): Item => ({ label: short(r.k), sub: `${n0(r.n)} 家`, value: r1(r.m), text: `${n1(r.m)} 单`, ...(r.k.startsWith("社区") ? { tone: "base" as const } : {}) }))), ...(ordersAovChart ? { sim: ordersAovChart } : {}) }),
     aov: C(`力度大的活动，顾客每件买得更重：克减 50 是一般開單的【${n1(k50Ratio)} 倍】`,
       `8 月平均一单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。看每类活动计价金平均每件多少克。`,
       ["高端店型的客单价也更高，但这类店不多。"],
       "想提客单价，力度大的活动配大克重的货一起推。",
       [`计价金每件平均克重：${gramItems.map((x) => `${x.label} ${x.text}`).join("，")}。`],
-      { chart: compare("计价金平均每件多少克", gramItems) }),
+      { chart: compare("计价金平均每件多少克", gramItems), ...(ordersAovChart ? { sim: ordersAovChart } : {}) }),
     gm: C(`一口价、镶嵌的毛利率是计价金的【2 倍】左右`,
       `毛利 = 销售额（不含税）× 毛利率。8 月整体毛利率 ${pct(gm)}，主要看卖了什么货。`,
       [`计价金卖了 ${pct(share(gold.sales, total.sales))} 的钱，只贡献 ${pct(share(gold.gp, total.gp))} 的毛利。`],
