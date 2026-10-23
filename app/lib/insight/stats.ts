@@ -50,17 +50,12 @@ export function twoWayShares(storeKeys: readonly string[], dayKeys: readonly str
   return tot > 0 ? { store: st / tot * 100, day: dt / tot * 100, resid: re / tot * 100 } : { store: 0, day: 0, resid: 0 };
 }
 
-// 同店同日：把 y 和每个 x 按门店、日期双向去均值，再回归，系数就是「同一家店、同一天」的差。
-export function withinStoreDay(storeKeys: readonly string[], dayKeys: readonly string[], y: Float64Array, xs: readonly Float64Array[]): number[] {
-  return withinStoreDayFit(storeKeys, dayKeys, y, xs).beta;
-}
-
-// 同上，另给出偏 R²（%）：去掉门店、日期差异之后，这几个 x 还能解释剩余差异的多少。
-export function withinStoreDayFit(storeKeys: readonly string[], dayKeys: readonly string[], y: Float64Array, xs: readonly Float64Array[]): { beta: number[]; r2: number } {
-  const s = groupIndex(storeKeys); const d = groupIndex(dayKeys); const n = y.length;
+// 按门店、日期交替去均值（双向固定效应），返回的函数把一列数换成「比本店平时、比全国这一天」高多少。
+function twoWayDemeaner(storeKeys: readonly string[], dayKeys: readonly string[]): (v: Float64Array) => Float64Array {
+  const s = groupIndex(storeKeys); const d = groupIndex(dayKeys); const n = storeKeys.length;
   const cs = new Float64Array(s.size()); const cd = new Float64Array(d.size());
   for (let r = 0; r < n; r++) { cs[s.index[r]]++; cd[d.index[r]]++; }
-  const demean = (v: Float64Array) => {
+  return (v) => {
     const out = Float64Array.from(v); let mean = 0; for (let r = 0; r < n; r++) mean += out[r]; mean /= n; for (let r = 0; r < n; r++) out[r] -= mean;
     for (let iter = 0; iter < 40; iter++) {
       const ms = new Float64Array(cs.length); for (let r = 0; r < n; r++) ms[s.index[r]] += out[r]; for (let r = 0; r < n; r++) out[r] -= ms[s.index[r]] / cs[s.index[r]];
@@ -68,6 +63,29 @@ export function withinStoreDayFit(storeKeys: readonly string[], dayKeys: readonl
     }
     return out;
   };
+}
+
+// 同店不同日分档：x 和每个 y 都双向去均值后，按 x 从低到高分成 bands 个店日数相同的档，给出每档 x、各 y 的平均。
+// 用来看「这一项比本店平时高 / 低的日子，结果怎样」，能看出先升后降这类非线性，回归系数看不出来。
+export function withinStoreDayBands(storeKeys: readonly string[], dayKeys: readonly string[], x: Float64Array, ys: readonly Float64Array[], bands: number): Array<{ x: number; ys: number[]; n: number }> {
+  const n = x.length; if (n < bands || bands < 1) return [];
+  const demean = twoWayDemeaner(storeKeys, dayKeys); const dx = demean(x); const dys = ys.map(demean);
+  const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => dx[a] - dx[b]);
+  return Array.from({ length: bands }, (_, b) => {
+    const idx = order.slice(Math.floor(b * n / bands), Math.floor((b + 1) * n / bands));
+    const avg = (v: Float64Array) => idx.reduce((a, i) => a + v[i], 0) / idx.length;
+    return { x: avg(dx), ys: dys.map(avg), n: idx.length };
+  });
+}
+
+// 同店同日：把 y 和每个 x 按门店、日期双向去均值，再回归，系数就是「同一家店、同一天」的差。
+export function withinStoreDay(storeKeys: readonly string[], dayKeys: readonly string[], y: Float64Array, xs: readonly Float64Array[]): number[] {
+  return withinStoreDayFit(storeKeys, dayKeys, y, xs).beta;
+}
+
+// 同上，另给出偏 R²（%）：去掉门店、日期差异之后，这几个 x 还能解释剩余差异的多少。
+export function withinStoreDayFit(storeKeys: readonly string[], dayKeys: readonly string[], y: Float64Array, xs: readonly Float64Array[]): { beta: number[]; r2: number } {
+  const demean = twoWayDemeaner(storeKeys, dayKeys); const n = y.length;
   const dx = xs.map(demean); const dy = demean(y); const beta = leastSquares(dx, dy);
   let ss = 0; let tot = 0;
   for (let r = 0; r < n; r++) { let fit = 0; for (let i = 0; i < dx.length; i++) fit += beta[i] * dx[i][r]; ss += (dy[r] - fit) ** 2; tot += dy[r] ** 2; }

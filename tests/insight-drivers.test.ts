@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayFit } from "../app/lib/insight/stats.ts";
+import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayBands, withinStoreDayFit } from "../app/lib/insight/stats.ts";
 import { edgeKey, highlightOf, reach, routes, routesThrough } from "../app/lib/insight/paths.ts";
 import { INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL, type InsightChart } from "../app/lib/insight/types.ts";
 import { fakeGraph } from "./helpers/insight-fixture.ts";
@@ -78,6 +78,44 @@ test("图谱：节点齐全、名字固定，每条线两端都在图上，依�
   // 只有最右一列是指标，恒等式只连到拆解和指标。
   assert.deepEqual(g.nodes.filter((n) => n.column === 3).map((n) => n.id), ["qty", "sales", "gp"]);
   assert.ok(g.edges.filter((e) => e.strength === "id").every((e) => ["orders", "aov", "gm"].includes(e.from)));
+});
+
+test("同店不同日分档：门店大小、全国日期起落去掉后，认得出先升后降和单调", () => {
+  // 10 家店 × 40 天：店的规模差 10 倍、日期有起落，这些都不该进到分档结果里；x 只在店内变化。
+  const s: string[] = []; const d: string[] = []; const x: number[] = []; const peak: number[] = []; const up: number[] = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 40; j++) {
+    const xi = ((i * 7 + j * 13) % 40) / 20 - 1; // −1 … +1，店内各天都有
+    s.push(`S${i}`); d.push(`D${j}`); x.push(xi);
+    const fe = Math.log(1 + i) + 0.3 * Math.sin(j);
+    peak.push(fe - xi * xi); up.push(fe + 0.5 * xi);
+  }
+  const bands = withinStoreDayBands(s, d, Float64Array.from(x), [Float64Array.from(peak), Float64Array.from(up)], 8);
+  assert.equal(bands.length, 8); assert.equal(bands.reduce((a, b) => a + b.n, 0), 400);
+  for (let k = 1; k < 8; k++) assert.ok(bands[k].x >= bands[k - 1].x);
+  const p = bands.map((b) => b.ys[0]); const top = p.indexOf(Math.max(...p));
+  assert.ok(top > 0 && top < 7 && p[top] - p[0] > 0.3 && p[top] - p[7] > 0.3, `先升后降 ${p}`);
+  const u = bands.map((b) => b.ys[1]); for (let k = 1; k < 8; k++) assert.ok(u[k] > u[k - 1], `单调 ${u}`);
+  assert.deepEqual(withinStoreDayBands(["a"], ["1"], Float64Array.from([1]), [Float64Array.from([1])], 8), []);
+});
+
+test("联动：每克价格、毛利率、每件克重挂同一张多参数联动图，每档 单数 × 客单价 = 销售额", () => {
+  const g = fakeGraph();
+  for (const [id, initial] of [["depth", "price"], ["gm", "gm"], ["threshold", "weight"]] as const) {
+    const sim = g.nodes.find((n) => n.id === id)!.card.sim!;
+    assert.equal(sim.kind, "levers", id);
+    if (sim.kind !== "levers") continue;
+    assert.equal(sim.initial, initial); assert.ok(sim.levers.some((l) => l.id === initial));
+    assert.ok(sim.base.items >= sim.base.orders && sim.base.orders > 0 && sim.base.aov > 0 && sim.base.gp > 0 && sim.base.gm > 0 && sim.base.gm < 100, JSON.stringify(sim.base));
+    for (const l of sim.levers) {
+      for (const col of [l.xs, l.orders, l.aov, l.items, l.gp, l.revEx]) assert.equal(col.length, 10, `${l.id} 档数`);
+      for (let k = 1; k < 10; k++) assert.ok(l.xs[k] >= l.xs[k - 1], `${l.id} 横轴要从低到高`);
+      assert.ok(l.xs[0] < 0 && l.xs[9] > 0, `${l.id} 横轴要跨过「平时」 ${l.xs}`);
+      for (const v of [...l.orders, ...l.aov, ...l.items, ...l.gp, ...l.revEx]) assert.ok(v > 0 && Number.isFinite(v), `${l.id} ${v}`);
+      assert.doesNotMatch([l.label, l.axis, l.note].join(" "), JARGON, l.id);
+    }
+    assert.doesNotMatch([sim.title, sim.note ?? ""].join(" "), JARGON, id);
+    assert.doesNotMatch(JSON.stringify(sim), /NaN|undefined|Infinity/, id);
+  }
 });
 
 test("订单数/客单价：card.sim 挂了 linked 图，基准值是日均口径的中位数店", () => {
@@ -158,8 +196,9 @@ test("每条线都有依据、异常、推荐三段；没有推荐时写原因",
 test("依据里的图：每个有数据的节点和每条有分数的线都带图，图上的数是有限值", () => {
   const g = fakeGraph();
   const values = (c: NonNullable<typeof g.nodes[number]["chart"]>): number[] => c.kind === "bars" ? c.bars.map((b) => b.value) : c.kind === "split" ? c.parts.map((p) => p.value)
-    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values.filter((v): v is number => v !== null)) : c.kind === "compare" ? c.items.map((x) => x.value) : c.kind === "whatif" ? [c.result.base, ...c.factors.map((f) => f.base)]
-    : c.kind === "linked" ? [c.a.base, c.b.base, c.aToB.slope, c.aToB.intercept, c.aToB.sigma, c.bToA.slope, c.bToA.intercept, c.bToA.sigma] : [...c.points.flat(), c.fit.slope, c.fit.intercept];
+    : c.kind === "columns" ? c.points.flatMap((p) => p.values) : c.kind === "lines" ? c.series.flatMap((s) => s.values.filter((v): v is number => v !== null)) : c.kind === "compare" ? c.items.map((x) => x.value) 
+    : c.kind === "linked" ? [c.a.base, c.b.base, c.aToB.slope, c.aToB.intercept, c.aToB.sigma, c.bToA.slope, c.bToA.intercept, c.bToA.sigma]
+    : c.kind === "levers" ? [c.base.items, c.base.orders, c.base.aov, ...c.levers.flatMap((l) => [...l.xs, ...l.orders, ...l.aov, ...l.items, ...l.gp, ...l.revEx])] : [...c.points.flat(), c.fit.slope, c.fit.intercept];
   for (const n of g.nodes) if (n.source.kind !== "suggested" && n.id !== "areaage") assert.ok(n.chart, n.id);
   for (const e of g.edges) if (e.score && e.from !== "areaage") assert.ok(e.chart, edgeKey(e));
   for (const c of [...g.nodes.map((n) => n.chart), ...g.edges.map((e) => e.chart)]) if (c) {
@@ -219,7 +258,7 @@ test("业务卡片：每个节点和每条线都有，结论和建议里没有�
   if (mix.stores) for (const r of mix.stores.rows) assert.ok(r.value < mix.stores.peer, r.name);
 });
 
-test("指标卡片：两个乘数各高多少、结果跟着高多少；拖动模拟的结果等于两个乘数相乘", () => {
+test("指标卡片：两个乘数各高多少、结果跟着高多少；下面挂联动面板，标出这个指标", () => {
   const g = fakeGraph();
   for (const [id, a, b] of [["sales", "订单数", "客单价"], ["qty", "订单数", "每单件数"], ["gp", "销售额", "毛利率"]] as const) {
     const card = g.nodes.find((n) => n.id === id)!.card;
@@ -230,12 +269,8 @@ test("指标卡片：两个乘数各高多少、结果跟着高多少；拖动�
       // 和同类持平的那一档，结果也在 1 倍附近。
       for (const line of c.series) if (line.values[2] !== null) assert.ok(Math.abs(line.values[2] - 1) < 0.3, `${id} ${line.label} ${line.values[2]}`);
     }
-    const sim = card.sim!; assert.equal(sim.kind, "whatif", id);
-    if (sim.kind === "whatif") {
-      assert.equal(sim.factors.length, 2); assert.equal(sim.min, -50); assert.equal(sim.max, 50);
-      const product = sim.factors[0].base * sim.factors[1].base / (id === "gp" ? 100 : 1);
-      assert.ok(Math.abs(product - sim.result.base) / sim.result.base < 0.02, `${id} ${product} vs ${sim.result.base}`);
-      for (const f of sim.factors) assert.ok(f.ref >= 0 && Number.isFinite(f.ref), `${id} ${f.label} ref ${f.ref}`);
-    }
+    // 指标下面挂联动面板，打开时标出这个指标的格子。
+    const sim = card.sim!; assert.equal(sim.kind, "levers", id);
+    if (sim.kind === "levers") assert.equal(sim.focus, id);
   }
 });

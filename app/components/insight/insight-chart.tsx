@@ -124,51 +124,6 @@ function Compare({ chart }: { chart: Extract<InsightChart, { kind: "compare" }> 
   </div>;
 }
 
-// 拖动模拟：结果 = 两个乘数相乘。拖滑块改一个乘数（另一个不动），结果按公式算出来；这是算术，不是预测。
-// 滑块上的小刻度是同类好店（前 1/4）比一般店高多少，帮业务判断拖到多少是现实的。
-function WhatIf({ chart }: { chart: Extract<InsightChart, { kind: "whatif" }> }) {
-  const [pcts, setPcts] = useState<number[]>(() => chart.factors.map(() => 0));
-  const fmt2 = (v: number, d: number) => v.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d });
-  const sign = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${fmt2(Math.abs(v), Math.abs(v) < 10 && v % 1 !== 0 ? 1 : 0)}%`;
-  const ratio = pcts.reduce((a, p) => a * (1 + p / 100), 1);
-  const after = chart.result.base * ratio; const change = (ratio - 1) * 100;
-  const span = chart.max - chart.min; const at = (v: number) => `${(v - chart.min) / span * 100}%`;
-  const id = useId();
-  return <div className="space-y-3">
-    <div className="rounded-xl bg-[#f5f8ff] px-3 py-2.5" aria-live="polite">
-      <p className="text-[11.5px] text-[#64748b]">一家店一天的{chart.result.label}</p>
-      <p className="mt-0.5 flex items-baseline gap-2 tabular-nums">
-        <b className="text-[22px] font-semibold leading-none tracking-tight text-[#0f172a]">{fmt2(after, chart.result.digits)}<small className="ml-0.5 text-[12px] font-medium text-[#64748b]">{chart.result.unit}</small></b>
-        <span className={`text-[13px] font-semibold ${change > 0.05 ? "text-[#047857]" : change < -0.05 ? "text-[#b91c1c]" : "text-[#94a3b8]"}`}>{Math.abs(change) < 0.05 ? "不变" : sign(change)}</span>
-        <span className="ml-auto text-[11.5px] text-[#94a3b8]">现在 {fmt2(chart.result.base, chart.result.digits)}{chart.result.unit}</span>
-      </p>
-    </div>
-    {chart.factors.map((f, i) => {
-      const v = pcts[i]; const now = f.base * (1 + v / 100);
-      return <div key={f.label}>
-        <div className="flex items-baseline justify-between text-[12.5px]">
-          <label htmlFor={`${id}-${i}`} className="font-medium text-[#0f172a]">{f.label}</label>
-          <span className="tabular-nums text-[#334155]">{fmt2(now, f.digits)}{f.unit}<span className={`ml-1.5 ${v ? "font-semibold text-[#2f6bff]" : "text-[#94a3b8]"}`}>{v ? sign(v) : "不变"}</span></span>
-        </div>
-        <div className="relative mt-1">
-          <input id={`${id}-${i}`} type="range" min={chart.min} max={chart.max} step={1} value={v}
-            onChange={(e) => setPcts((p) => p.map((x, k) => k === i ? Number(e.target.value) : x))}
-            aria-valuetext={`${f.label}${v ? sign(v) : "不变"}，${fmt2(now, f.digits)}${f.unit}`}
-            className="h-6 w-full cursor-pointer accent-[#2f6bff]" />
-          {f.ref > 0 && f.ref <= chart.max ? <span aria-hidden="true" className="pointer-events-none absolute -bottom-3 -translate-x-1/2 whitespace-nowrap text-[10px] text-[#b45309]" style={{ left: at(f.ref) }}>▲ 同类好店 +{fmt2(f.ref, 0)}%</span> : null}
-        </div>
-        <div className="mt-3.5 flex justify-between text-[10.5px] tabular-nums text-[#94a3b8]"><span>{chart.min}%</span><span>0</span><span>+{chart.max}%</span></div>
-      </div>;
-    })}
-    <div className="flex flex-wrap items-center gap-1.5">
-      <button type="button" onClick={() => setPcts(chart.factors.map(() => 0))} disabled={pcts.every((p) => p === 0)}
-        className="min-h-8 whitespace-nowrap rounded-lg border border-[#e4eaf2] px-2.5 text-[12px] text-[#334155] hover:bg-[#f8fafc] disabled:opacity-40">恢复</button>
-      {chart.factors.map((f, i) => f.ref > 0 && f.ref <= chart.max ? <button key={f.label} type="button" onClick={() => setPcts(chart.factors.map((_, k) => k === i ? Math.round(f.ref) : 0))}
-        className="min-h-8 whitespace-nowrap rounded-lg border border-[#f1e4c8] bg-[#fffbf2] px-2.5 text-[12px] text-[#92400e] hover:bg-[#fff4dd]">{f.label.replace(/^每天|（不含税）$/g, "")}到好店水平</button> : null)}
-    </div>
-  </div>;
-}
-
 type LinkedFactor = Extract<InsightChart, { kind: "linked" }>["a"];
 const linkedFmt = (v: number, d: number) => v.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d });
 
@@ -234,6 +189,96 @@ function Linked({ chart }: { chart: Extract<InsightChart, { kind: "linked" }> })
   </div>;
 }
 
+type Lever = Extract<InsightChart, { kind: "levers" }>["levers"][number];
+// 在相邻两档之间线性插值；超出数据范围时取两端的值（滑块本身也只能拖到数据范围内）。
+const interp = (xs: readonly number[], ys: readonly number[], x: number) => {
+  if (x <= xs[0]) return ys[0]; if (x >= xs[xs.length - 1]) return ys[ys.length - 1];
+  let i = 1; while (i < xs.length - 1 && xs[i] < x) i++;
+  const w = xs[i] === xs[i - 1] ? 0 : (x - xs[i - 1]) / (xs[i] - xs[i - 1]); return ys[i - 1] + w * (ys[i] - ys[i - 1]);
+};
+// 拖到 x 时，五个结果各是平时的几倍。曲线先除以 x = 0 处的值，保证「和平时一样」时全部不变。
+function leverAt(l: Lever, x: number) {
+  const rel = (ys: number[]) => interp(l.xs, ys, x) / (interp(l.xs, ys, 0) || 1);
+  const orders = rel(l.orders); const aov = rel(l.aov); const gp = rel(l.gp); const revEx = rel(l.revEx);
+  return { orders, aov, items: rel(l.items), sales: orders * aov, gp, gm: gp / (revEx || 1) };
+}
+const LEVER_TONE = { orders: "#2f6bff", sales: "#0f766e", gp: "#f59e0b" } as const;
+
+// 多参数联动：选一个参数拖动，单数、客单价、销量、销售额、毛利、毛利率一起跟着变；从指标点进来时，那个指标的格子描边标出来；下面的小图标出当前位置在三条历史曲线上的哪里。
+function Levers({ chart }: { chart: Extract<InsightChart, { kind: "levers" }> }) {
+  const [leverId, setLeverId] = useState(chart.initial);
+  const [x, setX] = useState(0);
+  const l = chart.levers.find((v) => v.id === leverId) ?? chart.levers[0];
+  const lo = l.xs[0]; const hi = l.xs[l.xs.length - 1];
+  const at = leverAt(l, Math.min(hi, Math.max(lo, x)));
+  const id = useId();
+  const unitText = l.unit === "点" ? " 个点" : "%";
+  const xText = (v: number) => Math.abs(v) < 0.05 ? "和平时一样" : `${v > 0 ? "高" : "低"} ${fmt(Math.abs(v), 1)}${unitText}`;
+  const change = (ratio: number) => { const v = (ratio - 1) * 100; return Math.abs(v) < 0.5 ? null : v; };
+  const base = { items: chart.base.items, orders: chart.base.orders, aov: chart.base.aov, sales: chart.base.orders * chart.base.aov, gp: chart.base.gp, gm: chart.base.gm };
+  const tiles: Array<{ key: string; label: string; value: string; delta: number | null; points?: boolean }> = [
+    { key: "orders", label: "单数", value: `${fmt(base.orders * at.orders, 1)} 单`, delta: change(at.orders) },
+    { key: "aov", label: "客单价", value: `${fmt(base.aov * at.aov, 0)} 元`, delta: change(at.aov) },
+    { key: "qty", label: "销量", value: `${fmt(base.items * at.items, 1)} 件`, delta: change(at.items) },
+    { key: "sales", label: "销售额", value: `${fmt(base.sales * at.sales / 1e4, 1)} 万`, delta: change(at.sales) },
+    { key: "gp", label: "毛利", value: `${fmt(base.gp * at.gp / 1e4, 1)} 万`, delta: change(at.gp) },
+    { key: "gm", label: "毛利率", value: `${fmt(base.gm * at.gm, 1)}%`, delta: Math.abs(base.gm * (at.gm - 1)) < 0.05 ? null : base.gm * (at.gm - 1), points: true },
+  ];
+  // 销售额、毛利各在哪一档最高（只有落在中间、不在两端时才算「最高点」）。
+  const peakOf = (key: "sales" | "gp") => { const v = l.xs.map((p) => leverAt(l, p)[key]); const k = v.indexOf(Math.max(...v)); return k > 0 && k < v.length - 1 ? l.xs[k] : null; };
+  const presets = [{ label: "销售额最高处", x: peakOf("sales") }, { label: "毛利最高处", x: peakOf("gp") }].filter((p): p is { label: string; x: number } => p.x !== null);
+  // 小图：横轴是这一项的取值（实际刻度），三条线是单数、销售额、毛利是平时的几倍。
+  const W = 300; const H = 120; const pl = 30; const pr = 44; const pt = 10; const pb = 18;
+  const series = (["orders", "sales", "gp"] as const).map((key) => ({ key, pts: l.xs.map((p) => [p, leverAt(l, p)[key]] as const) }));
+  const ys = series.flatMap((s) => s.pts.map(([, v]) => v)); const yMin = Math.min(0.95, ...ys); const yMax = Math.max(1.05, ...ys);
+  const sx = (v: number) => pl + (v - lo) / (hi - lo || 1) * (W - pl - pr); const sy = (v: number) => pt + (yMax - v) / (yMax - yMin || 1) * (H - pt - pb);
+  const cx = sx(Math.min(hi, Math.max(lo, x)));
+  const name = { orders: "单数", sales: "销售额", gp: "毛利" } as const;
+  return <div className="space-y-3">
+    <div role="group" aria-label="选一个参数来拖动" className="flex gap-1 rounded-lg bg-[#f1f5f9] p-1">
+      {chart.levers.map((v) => <button key={v.id} type="button" aria-pressed={v.id === l.id} onClick={() => { setLeverId(v.id); setX(0); }}
+        className={`min-h-8 flex-1 rounded-md px-2 text-[12px] transition-colors ${v.id === l.id ? "bg-white font-semibold text-[#0f172a] shadow-sm" : "text-[#64748b] hover:text-[#0f172a]"}`}>{v.label}</button>)}
+    </div>
+    <div>
+      <div className="flex items-baseline justify-between gap-2 text-[12.5px]">
+        <label htmlFor={`${id}-x`} className="font-medium text-[#0f172a]">{l.axis}</label>
+        <b className={`shrink-0 tabular-nums ${Math.abs(x) < 0.05 ? "text-[#94a3b8]" : "text-[#2f6bff]"}`}>{xText(x)}</b>
+      </div>
+      <input id={`${id}-x`} type="range" min={lo} max={hi} step={(hi - lo) / 200 || 0.01} value={Math.min(hi, Math.max(lo, x))}
+        onChange={(e) => setX(Number(e.target.value))} aria-valuetext={`${l.axis}${xText(x)}`}
+        className="mt-1 h-6 w-full cursor-pointer accent-[#2f6bff]" />
+      <div className="flex justify-between text-[10.5px] tabular-nums text-[#94a3b8]"><span>{xText(lo)}</span><span>{xText(hi)}</span></div>
+    </div>
+    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3" aria-live="polite">
+      {tiles.map((t) => <div key={t.key} aria-current={chart.focus === t.key ? "true" : undefined} className={`rounded-lg border px-2.5 py-2 transition-colors duration-300 ${chart.focus === t.key ? "ring-2 ring-[#2f6bff] ring-offset-1" : ""} ${t.delta === null ? "border-[#e4eaf2] bg-white" : t.delta > 0 ? "border-[#bbf7d0] bg-[#f0fdf4]" : "border-[#fecaca] bg-[#fef2f2]"}`}>
+        <p className="text-[11px] text-[#64748b]">{t.label}</p>
+        <p className="mt-0.5 text-[15px] font-semibold leading-tight tabular-nums text-[#0f172a]">{t.value}</p>
+        <p className={`text-[11px] font-medium tabular-nums ${t.delta === null ? "text-[#94a3b8]" : t.delta > 0 ? "text-[#047857]" : "text-[#b91c1c]"}`}>
+          {t.delta === null ? "不变" : `${t.delta > 0 ? "▲" : "▼"} ${fmt(Math.abs(t.delta), t.points ? 1 : 0)}${t.points ? " 个点" : "%"}`}</p>
+      </div>)}
+    </div>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={`${l.label}从${xText(lo)}到${xText(hi)}时，单数、销售额、毛利各是平时的几倍`}>
+      <line x1={pl} x2={W - pr} y1={sy(1)} y2={sy(1)} stroke="#cbd5e1" strokeDasharray="3 3" />
+      <text x={pl - 4} y={sy(1) + 3} fontSize="9" textAnchor="end" fill="#94a3b8">平时</text>
+      {[yMin, yMax].map((v) => <text key={v} x={pl - 4} y={sy(v) + 3} fontSize="9" textAnchor="end" fill="#94a3b8">{fmt(v, 2)}×</text>)}
+      {lo < 0 && hi > 0 ? <line x1={sx(0)} x2={sx(0)} y1={pt} y2={H - pb} stroke="#e2e8f0" /> : null}
+      {series.map((s) => <path key={s.key} d={s.pts.map(([p, v], i) => `${i ? "L" : "M"}${sx(p)},${sy(v)}`).join("")} fill="none" stroke={LEVER_TONE[s.key]} strokeWidth="2" strokeLinejoin="round" />)}
+      {series.map((s) => { const end = s.pts[s.pts.length - 1]; return <text key={`n${s.key}`} x={W - pr + 4} y={sy(end[1]) + 3} fontSize="9" fill={LEVER_TONE[s.key]} fontWeight="600">{name[s.key]}</text>; })}
+      <line x1={cx} x2={cx} y1={pt} y2={H - pb} stroke="#0f172a" strokeOpacity="0.35" />
+      {series.map((s) => <circle key={`c${s.key}`} cx={cx} cy={sy(at[s.key])} r="3.5" fill={LEVER_TONE[s.key]} stroke="#fff" strokeWidth="1.5" />)}
+      <text x={sx(lo)} y={H - 5} fontSize="9" fill="#94a3b8">{xText(lo)}</text>
+      <text x={sx(hi)} y={H - 5} fontSize="9" textAnchor="end" fill="#94a3b8">{xText(hi)}</text>
+    </svg>
+    <div className="flex flex-wrap gap-1.5">
+      <button type="button" onClick={() => setX(0)} disabled={Math.abs(x) < 1e-9}
+        className="min-h-8 whitespace-nowrap rounded-lg border border-[#e4eaf2] px-2.5 text-[12px] text-[#334155] hover:bg-[#f8fafc] disabled:opacity-40">回到平时</button>
+      {presets.map((p) => <button key={p.label} type="button" onClick={() => setX(p.x)}
+        className="min-h-8 whitespace-nowrap rounded-lg border border-[#f1e4c8] bg-[#fffbf2] px-2.5 text-[12px] text-[#92400e] hover:bg-[#fff4dd]">{p.label}（{xText(p.x)}）</button>)}
+    </div>
+    <p className="text-[11px] leading-relaxed text-[#94a3b8]">{l.note}</p>
+  </div>;
+}
+
 // 折线：几条线都是「第一个点的几倍」，同一根纵轴（不用双纵轴）。横轴可以是逐日，也可以是门店分档；悬停一个点显示各线原值。
 function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -288,9 +333,9 @@ function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
 export function InsightChartView({ chart, plain = false }: { chart: InsightChart; plain?: boolean }) {
   return <figure className={plain ? "m-0" : "mt-1 rounded-lg border border-[#dbe5ff] bg-white/85 p-2.5"}>
     {plain ? null : <figcaption className="mb-2 text-[12px] font-semibold text-[#1e3a8a]">{chart.title}</figcaption>}
-    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : chart.kind === "compare" ? <Compare chart={chart} /> : chart.kind === "whatif" ? <WhatIf chart={chart} /> : chart.kind === "linked" ? <Linked chart={chart} /> : <Scatter chart={chart} />}
+    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : chart.kind === "compare" ? <Compare chart={chart} /> : chart.kind === "linked" ? <Linked chart={chart} /> : chart.kind === "levers" ? <Levers chart={chart} /> : <Scatter chart={chart} />}
     {chart.legend && chart.kind !== "split" ? <Legend items={chart.legend} /> : null}
-    {plain && chart.kind !== "whatif" ? <figcaption className="mt-1.5 text-[11.5px] leading-relaxed text-[#94a3b8]">{chart.title}{chart.kind === "compare" && chart.note ? `；${chart.note}` : ""}</figcaption> : null}
+    {plain && chart.kind !== "levers" ? <figcaption className="mt-1.5 text-[11.5px] leading-relaxed text-[#94a3b8]">{chart.title}{chart.kind === "compare" && chart.note ? `；${chart.note}` : ""}</figcaption> : null}
     {chart.note && !(plain && chart.kind === "compare") ? <p className="mt-2 text-[11.5px] leading-relaxed text-[#64748b]">{chart.note}</p> : null}
   </figure>;
 }

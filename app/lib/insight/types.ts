@@ -64,10 +64,6 @@ export type InsightChart = { title: string; note?: string; legend?: InsightChart
   // base：「1×」指什么（例如「3 单以下那一档」），写在图下；不给时按平常工作日。
   // values 里的 null：这一档店太少，不画点，折线在这里断开。
   | { kind: "lines"; labels: string[]; series: Array<{ label: string; tone: InsightChartTone; values: Array<number | null>; hover: string[] }>; band?: { from: string; to: string; label: string }; marks?: Array<{ at: string; label: string }>; base?: string }
-  // whatif：拖动模拟。result = 两个 factor 相乘（恒等式），页面按滑块算新值；数字都已换成展示单位。
-  // ref：同类店（商圈、铺型、区域相同）前 1/4 的店比中间那家高多少（%），滑块上标出来，表示「做到同类好店的水平」大概是多少。
-  | { kind: "whatif"; result: { label: string; base: number; unit: string; digits: number };
-      factors: Array<{ label: string; base: number; unit: string; digits: number; ref: number }>; min: number; max: number }
   // linked：两个变量互相按真实回归关系联动（不是恒等式）。拖一个，另一个按回归给建议值 + 波动范围；
   // 建议值可以被用户再次手动覆盖，覆盖后角色互换（谁最后被拖动，谁是自变量）。
   // a/b：两个滑块各自的展示信息，口径跟 base/min/max 一致（不混用月度/日均）。
@@ -81,6 +77,14 @@ export type InsightChart = { title: string; note?: string; legend?: InsightChart
       bToA: { slope: number; intercept: number; sigma: number };
       sales: { label: string; unit: string; digits: number } }
   | { kind: "scatter"; x: { label: string; unit: string }; y: { label: string; unit: string }; points: Array<[number, number]>; fit: { slope: number; intercept: number } }
+  // levers：多参数联动。选一个推动的参数（levers 里的一项），拖它，单数、客单价、销量、销售额、毛利、毛利率一起按历史曲线变。
+  // 每个 lever：xs 是 10 档里这一项比本店平时高多少（unit 为 % 或「点」），orders / aov / items / gp / revEx 是同一档几个结果是本店平时的几倍；
+  // 页面在相邻两档之间线性插值，销售额 = 单数 × 客单价、毛利率 = 毛利 ÷ 不含税销售额，按倍数算出来，不另外拟合。
+  // base：起点（当天 10 单以上的门店平均一天）的销量（件）、单数、客单价（元）、毛利（元）、毛利率（%）。
+  // initial：一打开选中哪个参数；focus：从哪个指标点进来，那一格标出来。
+  | { kind: "levers"; initial: string; focus?: "qty" | "sales" | "gp";
+      base: { items: number; orders: number; aov: number; gp: number; gm: number };
+      levers: Array<{ id: string; label: string; axis: string; unit: "%" | "点"; note: string; n: number; xs: number[]; orders: number[]; aov: number[]; items: number[]; gp: number[]; revEx: number[] }> }
 );
 // 给总部业务看的卡片：一句话结论 → 一张对比图 → 怎么知道的 → 要注意 → 可以怎么做。
 // say 里用【】包住要标蓝的数字。todo 是 AI 建议，evidence 是支撑这条建议的数据事实（问答时照这些回答）；给不出建议时 todo 为 null、todoNote 写原因。

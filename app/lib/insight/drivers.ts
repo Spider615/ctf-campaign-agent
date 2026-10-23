@@ -1,7 +1,7 @@
 // 从 Agent 查回来的聚合数据算出指标影响因素图谱：先算统计量，再用模板拼出节点、连线和依据。
 // 图上的数字全部出自这里，文字是模板，不经过模型。
 import { comparePeers, mainPart, outlierTable, peerGroups, shortStoreName, type PeerMetric, type PeerStore } from "./peers.ts";
-import { etaSquared, logLinearFit, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayFit } from "./stats.ts";
+import { etaSquared, logLinearFit, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayBands, withinStoreDayFit } from "./stats.ts";
 import type { InsightChart, InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
 
 // 优惠按名称归成几组（AI 归类）：克减 50、克减 30、金色星期二、一般開單、其他。
@@ -251,6 +251,38 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   // 图上的数都在这里换成展示单位，页面不再算。
   const r1 = (v: number) => Math.round(v * 10) / 10; const r2 = (v: number) => Math.round(v * 100) / 100;
   const lastDay = daily.at(-1)?.day ?? rollout;
+  // ---------- 联动：推一个参数，单数、客单价、销售额、毛利、毛利率一起怎么变 ----------
+  // 同一家店不同日子：按这一项比本店平时高多少分 10 档，每档几个结果是本店平时的几倍（也去掉了全国这一天的起落）。
+  // 只算开满 20 天的店、当天 10 单以上的日子：单数少的日子，任何比例都容易偏到最高、最低两档，两头的单数天然偏少，会画出假的「先升后降」。
+  // 结果全在对数上分档求平均，所以每档 单数倍数 × 客单价倍数 = 销售额倍数 严格成立；毛利率倍数 = 毛利倍数 ÷ 不含税销售额倍数。
+  const fullIds = new Set(full.map((s) => s.id));
+  const busyDays = panel.filter((p) => fullIds.has(p.store) && p.orders >= 10 && p.gp > 0);
+  type LeversChart = Extract<InsightChart, { kind: "levers" }>; type Lever = LeversChart["levers"][number];
+  const LEVER_BANDS = 10;
+  const lever = (id: string, label: string, axis: string, unit: Lever["unit"], note: string, rows: PanelRow[], x: (p: PanelRow) => number, show: (v: number) => number): Lever | null => {
+    const outs = [(p: PanelRow) => p.orders, (p: PanelRow) => p.sales / p.orders, (p: PanelRow) => p.gp, (p: PanelRow) => p.revEx, (p: PanelRow) => Math.max(1, p.items)];
+    const bands = withinStoreDayBands(rows.map((p) => p.store), rows.map((p) => p.day), Float64Array.from(rows, x), outs.map((f) => Float64Array.from(rows, (p) => Math.log(f(p)))), LEVER_BANDS);
+    if (bands.length < LEVER_BANDS || bands.some((b) => b.n < 30)) return null;
+    const r4 = (v: number) => Math.round(v * 1e4) / 1e4; const col = (k: number) => bands.map((b) => r4(Math.exp(b.ys[k])));
+    return { id, label, axis, unit, note, n: sum(bands.map((b) => b.n)), xs: bands.map((b) => r2(show(b.x))), orders: col(0), aov: col(1), gp: col(2), revEx: col(3), items: col(4) };
+  };
+  const pctOf = (v: number) => (Math.exp(v) - 1) * 100;
+  const levers = [
+    lever("price", "每克价格", "计价金每克收的钱，比本店平时", "%", "每克便宜的日子多半在做活动、卖的货也不一样，不等于降价就能多卖这么多。",
+      busyDays.filter((p) => p.goldGrams > 1 && p.goldSales > 0), (p) => Math.log(p.goldSales / p.goldGrams), pctOf),
+    lever("gm", "毛利率", "当天毛利率，比本店平时", "点", "毛利率低的日子多半卖计价金多、在做活动，不等于压低毛利率就能多卖这么多。",
+      busyDays, (p) => p.gp / p.revEx * 100, (v) => v),
+    lever("weight", "每件克重", "计价金平均每件多重，比本店平时", "%", "每件买得重的日子，多半是在推大克重的货、做克减，不等于把货换重就能多卖这么多。",
+      busyDays.filter((p) => p.goldQty > 0 && p.goldGrams > 0), (p) => Math.log(p.goldGrams / p.goldQty), pctOf),
+  ].filter((l): l is Lever => l !== null);
+  const busy = { n: busyDays.length, items: sum(busyDays.map((p) => p.items)), orders: sum(busyDays.map((p) => p.orders)), sales: sum(busyDays.map((p) => p.sales)), gp: sum(busyDays.map((p) => p.gp)), revEx: sum(busyDays.map((p) => p.revEx)) };
+  // focus：从哪个指标点进来，就把那一格标出来（销量、销售额、毛利）。
+  const leverChart = (initial: string, focus?: "qty" | "sales" | "gp"): InsightChart | undefined => levers.some((l) => l.id === initial) && busy.n > 0 && busy.orders > 0 && busy.revEx > 0 ? {
+    kind: "levers", title: "推一个参数，看单数、客单价、销量、销售额、毛利一起怎么变", initial, levers, ...(focus ? { focus } : {}),
+    base: { items: busy.items / busy.n, orders: busy.orders / busy.n, aov: busy.sales / busy.orders, gp: busy.gp / busy.n, gm: busy.gp / busy.revEx * 100 },
+    note: `起点是当天 10 单以上的门店平均一天。几个数怎么跟着变，来自同一家店不同日子的对比（${n0(busy.n)} 个店日）：是历史上一起出现的关系，不是改了这一项就一定会这样；只能拖到数据里出现过的范围。`,
+  } : undefined;
+  const simOf = (c: InsightChart | undefined) => c ? { sim: c } : {};
   // 横条：每一档一个数，最好的一档用主色。
   const barsOf = (title: string, rows: Array<{ label: string; value: number; text: string }>, best: "max" | "min" | null = "max", note?: string): InsightChart => {
     const pick = best === null ? null : best === "max" ? Math.max(...rows.map((r) => r.value)) : Math.min(...rows.map((r) => r.value));
@@ -579,30 +611,6 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     };
     return { kind: "lines", title, labels: LIFT_BANDS.map((x) => x.label), series: [line(a, (x) => x.a, 0), line(b, (x) => x.b, 1)], base: "和同类店一样", note };
   };
-  // 拖动模拟：一家一般门店（开满 20 天的店里各项取中间那家），结果 = 两个乘数相乘。
-  // ref：同类店里，前 1/4 那家比中间那家高多少，各组取中间值。滑块范围 −50% 到 +50%。
-  const peerFull = groupsFull.flatMap((g) => g.stores);
-  const room = (f: (s: PeerStore) => number) => median(groupsFull.map((g) => {
-    const v = g.stores.map(f).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b); if (v.length < 8) return NaN;
-    const mid = v[Math.floor((v.length - 1) / 2)]; const q3 = v[Math.floor((v.length - 1) * 0.75)]; return mid > 0 ? (q3 / mid - 1) * 100 : NaN;
-  }).filter(Number.isFinite)) ?? 0;
-  const typical = (f: (s: PeerStore) => number) => median(peerFull.map(f).filter((x) => Number.isFinite(x) && x > 0)) ?? 0;
-  type Knob = { label: string; of: (s: PeerStore) => number; scale: number; unit: string; digits: number };
-  const whatIf = (title: string, result: { label: string; unit: string; digits: number; scale: number }, a: Knob, b: Knob): InsightChart => {
-    const ra = typical(a.of), rb = typical(b.of); const va = ra * a.scale, vb = rb * b.scale;
-    const { scale, ...shown } = result;
-    return { kind: "whatif", title, min: -50, max: 50,
-      result: { ...shown, base: Math.round(ra * rb * scale * 100) / 100 },
-      factors: [a, b].map((k, i) => ({ label: k.label, base: Math.round((i ? vb : va) * 100) / 100, unit: k.unit, digits: k.digits, ref: Math.round(room(k.of)) })),
-      note: `以一家一般门店为例（各项取全国开满 20 天的店的中间值）。${result.label} = ${a.label} × ${b.label}：一个不动、另一个提高多少，${result.label}就跟着变多少。三角是同类店（商圈、铺型、区域相同）前 1/4 的店比一般店高多少。` };
-  };
-  const ordersK: Knob = { label: "每天订单数", of: (s) => div(s.orders, s.days), scale: 1, unit: " 单", digits: 1 };
-  const salesWhatIf = whatIf("拖一拖：订单数不变，客单价提高，销售额会怎样", { label: "销售额", unit: " 万", digits: 2, scale: 1e-4 },
-    ordersK, { label: "客单价", of: (s) => div(s.sales, s.orders), scale: 1e-4, unit: " 万", digits: 2 });
-  const qtyWhatIf = whatIf("拖一拖：订单数、每单件数各提高多少，销量会怎样", { label: "销量", unit: " 件", digits: 1, scale: 1 },
-    ordersK, { label: "每单件数", of: (s) => div(s.items, s.orders), scale: 1, unit: " 件", digits: 2 });
-  const gpWhatIf = whatIf("拖一拖：销售额、毛利率各提高多少，毛利会怎样", { label: "毛利", unit: " 万", digits: 2, scale: 1e-4 },
-    { label: "每天销售额（不含税）", of: (s) => div(s.revEx, s.days), scale: 1e-4, unit: " 万", digits: 2 }, { label: "毛利率", of: (s) => div(s.gp, s.revEx), scale: 100, unit: "%", digits: 1 });
   const L = {
     sales: { label: "销售额", of: (s: PeerStore) => div(s.sales, s.days), text: wan },
     orders: { label: "订单数", of: (s: PeerStore) => div(s.orders, s.days), text: (v: number) => `${n1(v)} 单` },
@@ -735,13 +743,13 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       [`克减 30 实际只让了 ${n1(g30)} 元，不到名义的 30 元，可能有克数门槛或叠加规则，要用规则表核对。`, "金色星期二的优惠在旧金抵价上，所以每克几乎不让。"],
       `定力度时要和它带来的大件一起看：克减 50 顾客平均每件买 ${n1(k50.gramsPerItem)} 克，一般開單 ${n1(baseG.gramsPerItem)} 克。`,
       [`每克实际少收：克减 50 ${n1(g50)} 元，克减 30 ${n1(g30)} 元，金色星期二 ${n1(gGt)} 元。`, `计价金每件平均克重：克减 50 ${n1(k50.gramsPerItem)} 克，一般開單 ${n1(baseG.gramsPerItem)} 克。`],
-      { chart: compare("每克实际少收多少钱", depthItems) }),
+      { chart: compare("每克实际少收多少钱", depthItems), ...simOf(leverChart("price")) }),
     threshold: C(`克减 50 的顾客集中买 20 克以上：【${pct(k50.ge20)}】的计价金是 20 克以上的货`,
       "数每个克重卖了多少件，比较克减 50 和一般開單。",
       [`从 19 克到 20 克，克减 50 的件数从 ${n0(t19.k50)} 跳到 ${n0(t20.k50)}，一般開單却从 ${n0(t19.base)} 降到 ${n0(t20.base)}：像是有 20 克的门槛，规则表还没确认。`],
       "如果门槛确实是 20 克，可以重点备 20–22 克的货，让顾客刚好跨过门槛。",
       [`20 克以上的货占计价金销售额：克减 50 ${pct(k50.ge20)}，克减 30 ${pct(k30.ge20)}，一般開單 ${pct(baseG.ge20)}。`, `19 克到 20 克：克减 50 ${n0(t19.k50)} → ${n0(t20.k50)} 件，一般開單 ${n0(t19.base)} → ${n0(t20.base)} 件。`],
-      { chart: compare("20 克以上的货占计价金多少", heavyItems) }),
+      { chart: compare("20 克以上的货占计价金多少", heavyItems), ...simOf(leverChart("weight")) }),
     tradein: C(`金色星期二几乎每单都带旧金换，卖的 ${yi(trGt.sales)} 里【${yi(trGt.recycle)}】是旧金抵的`,
       "按单看有没有回收旧金，以及旧金抵了多少钱。",
       [`金色星期二真正收进的新钱是 ${yi(gtNew)}。克减类基本不带旧金（${pct(promoTradeInShare)}）。`],
@@ -797,24 +805,24 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       [`计价金卖了 ${pct(share(gold.sales, total.sales))} 的钱，只贡献 ${pct(share(gold.gp, total.gp))} 的毛利。`],
       "保毛利的关键是货品结构：一口价和镶嵌卖得越多，毛利率越高。",
       [`各类货毛利率：计价金 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}，镶嵌及其他 ${pct(ptGm(inlay))}。`],
-      { chart: ptGmCompare }),
+      { chart: ptGmCompare, ...simOf(leverChart("gm")) }),
     qty: C(`8 月卖了【${n0(total.items / 1e4)} 万件】，销量跟着订单数走`,
       "销量 = 订单数 × 每单件数。每单件数基本不变，所以看订单数就够了。",
       [], "想多卖件数，重点是多来单，而不是让顾客一单多买几件。",
       [`8 月 ${n0(total.items / 1e4)} 万件、${n1(total.orders / 1e4)} 万单，平均每单 ${(total.orders > 0 ? total.items / total.orders : 0).toFixed(2)} 件。`, `每单件数整个月都在 ${ipoLo.toFixed(2)}–${ipoHi.toFixed(2)} 件。`],
-      { chart: qtyLift, sim: qtyWhatIf }),
+      { chart: qtyLift, ...simOf(leverChart("price", "qty")) }),
     sales: C(`8 月卖了【${yi(total.sales)}】，起落主要跟着订单数`,
       `销售额 = 订单数 × 客单价。${n1(total.orders / 1e4)} 万单，平均一单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。`,
       ["还没和 Power BI 核对，绝对数先只作参考。"],
       "提销售额先抓单量：好商圈的店、做活动和过节的日子。",
       [`8 月 ${yi(total.sales)}、${n1(total.orders / 1e4)} 万单。`, `客单价每天在 ${n0(aovLo)}–${n0(aovHi)} 元之间。`],
-      { chart: salesLift, sim: salesWhatIf }),
+      { chart: salesLift, ...simOf(leverChart("price", "sales")) }),
     gp: C(`8 月毛利【${yi(total.gp)}】，毛利率 ${pct(gm)}，基本跟着销售额走`,
       "毛利 = 销售额（不含税）× 毛利率。毛利率每天变化不大。",
       ["做活动、过节的日子毛利率略低，因为那几天卖的计价金更多。"],
       "保毛利的关键是货品结构：活动里多配一口价和镶嵌货。",
       [`毛利率每天在 ${pct(gmLo)}–${pct(gmHi)} 之间。`, `计价金毛利率 ${pct(ptGm(gold))}，一口价黄金 ${pct(ptGm(fixed))}，镶嵌及其他 ${pct(ptGm(inlay))}。`],
-      { chart: gpLift, sim: gpWhatIf }),
+      { chart: gpLift, ...simOf(leverChart("gm", "gp")) }),
   };
   const lagMix = lagStores(peers.mix, "计价金卖得多、毛利率特别低的店", "%", (v) => v);
   const edgeCards: Record<string, Card> = {
