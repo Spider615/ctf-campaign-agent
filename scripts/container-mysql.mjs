@@ -13,6 +13,10 @@ const SOCKET = "/run/mysqld/mysqld.sock";
 const PORT = "3306";
 const DATABASE = process.env.CTF_MYSQL_DATABASE || "ctf_sales_202508";
 const READY_MARK = path.join(DATA_DIR, ".ctf-imported");
+// 明细视图现拼 11 张表，每次分析都要重做一遍关联；导入后物化成一张宽表，问答和图谱都查它（本地实测同一查询 10 秒 → 3 秒）。
+const VIEW = "sales_detail_202508";
+const WIDE = `${VIEW}_wide`;
+const WIDE_MARK = path.join(DATA_DIR, ".ctf-wide");
 const DUMP = "ctf_sales_202508.sql.gz";
 
 const log = (text) => console.log(`[mysql] ${text}`);
@@ -58,6 +62,16 @@ async function importDump(work) {
   await done;
 }
 
+// 先建到临时名再改名，中途被打断也不会留下半张表给应用查。
+function buildWide() {
+  log("把明细视图物化成宽表（约 4 分钟，只在第一次）");
+  const sql = `DROP TABLE IF EXISTS \`${WIDE}_building\`;
+CREATE TABLE \`${WIDE}_building\` ENGINE=InnoDB AS SELECT * FROM \`${VIEW}\`;
+DROP TABLE IF EXISTS \`${WIDE}\`;
+RENAME TABLE \`${WIDE}_building\` TO \`${WIDE}\`;`;
+  run("mysql", ["--socket", SOCKET, "-uroot", "--default-character-set=utf8mb4", DATABASE, "-e", sql]);
+}
+
 // 只读账号：应用只发 SELECT，用它连库。
 function createReader(password) {
   const sql = `CREATE USER IF NOT EXISTS 'ctf_reader'@'127.0.0.1' IDENTIFIED BY '${password}';
@@ -90,8 +104,12 @@ export async function startContainerMysql() {
       rmSync(work, { recursive: true, force: true });
       writeFileSync(READY_MARK, new Date().toISOString());
       log("导入完成");
+      rmSync(WIDE_MARK, { force: true });
     }
+    if (!existsSync(WIDE_MARK)) { buildWide(); writeFileSync(WIDE_MARK, new Date().toISOString()); log("宽表就绪"); }
     createReader(password);
   } catch (error) { mysqld.kill("SIGTERM"); throw error; }
-  return { mysqld, env: { CTF_MYSQL_HOST: "127.0.0.1", CTF_MYSQL_PORT: PORT, CTF_MYSQL_USER: "ctf_reader", CTF_MYSQL_PASSWORD: password, CTF_MYSQL_DATABASE: DATABASE } };
+  return { mysqld, env: { CTF_MYSQL_HOST: "127.0.0.1", CTF_MYSQL_PORT: PORT, CTF_MYSQL_USER: "ctf_reader", CTF_MYSQL_PASSWORD: password, CTF_MYSQL_DATABASE: DATABASE,
+    // 环境变量里另配了表名就听配置的。
+    CTF_MYSQL_TABLE: process.env.CTF_MYSQL_TABLE || WIDE, CTF_INSIGHT_TABLE: process.env.CTF_INSIGHT_TABLE || WIDE } };
 }
