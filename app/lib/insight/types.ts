@@ -68,6 +68,15 @@ export type InsightChart = { title: string; note?: string; legend?: InsightChart
   // ref：同类店（商圈、铺型、区域相同）前 1/4 的店比中间那家高多少（%），滑块上标出来，表示「做到同类好店的水平」大概是多少。
   | { kind: "whatif"; result: { label: string; base: number; unit: string; digits: number };
       factors: Array<{ label: string; base: number; unit: string; digits: number; ref: number }>; min: number; max: number }
+  // linked：两个变量互相按真实回归关系联动（不是恒等式）。拖一个，另一个按 slope/intercept 给建议值 + 波动范围；
+  // 建议值可以被用户再次手动覆盖，覆盖后角色互换（谁最后被拖动，谁是自变量）。
+  // a/b：两个滑块各自的展示信息（日均口径）；fit：a 对 b 的对数线性回归系数（log(b)=intercept+slope*log(a)），sigma 是对数尺度残差标准差；
+  // sales：销售额展示信息，base 是 a.base * b.base。
+  | { kind: "linked";
+      a: { label: string; unit: string; digits: number; base: number; min: number; max: number };
+      b: { label: string; unit: string; digits: number; base: number; min: number; max: number };
+      fit: { slope: number; intercept: number; sigma: number };
+      sales: { label: string; unit: string; digits: number } }
   | { kind: "scatter"; x: { label: string; unit: string }; y: { label: string; unit: string }; points: Array<[number, number]>; fit: { slope: number; intercept: number } }
 );
 // 给总部业务看的卡片：一句话结论 → 一张对比图 → 怎么知道的 → 要注意 → 可以怎么做。
