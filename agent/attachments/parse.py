@@ -32,7 +32,7 @@ result = dict(status="ready", mime="application/octet-stream", blocks=[], tables
 budget = dict(bytes=0, files=0, rows=0)
 
 try:
-    resource.setrlimit(resource.RLIMIT_CPU, (110, 115))
+    resource.setrlimit(resource.RLIMIT_CPU, (290, 295))
     resource.setrlimit(resource.RLIMIT_FSIZE, (260 * 1024 * 1024, 260 * 1024 * 1024))
     resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
     if sys.platform != "darwin":

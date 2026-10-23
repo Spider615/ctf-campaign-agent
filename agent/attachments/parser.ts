@@ -68,7 +68,8 @@ async function parseInSandbox(input: string, output: string, name: string, signa
     let stderr = ""; let stdoutSize = 0; let ended = false; let timedOut = false; let memoryExceeded = false;
     const kill = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } } };
     const abort = () => { kill(); };
-    const timeout = setTimeout(() => { timedOut = true; kill(); }, 120000);
+    // 线上 2–4 核还要同时跑数据库、页面和 Agent，二十多 MB 的表格要解析一两分钟，上限给到 5 分钟。
+    const timeout = setTimeout(() => { timedOut = true; kill(); }, 300000);
     const memoryCheck = process.platform === "darwin" ? setInterval(() => {
       if (!child.pid || ended) return;
       const usage = spawnSync("/bin/ps", ["-axo", "pgid=,rss="], { encoding: "utf8", timeout: 1000 });
