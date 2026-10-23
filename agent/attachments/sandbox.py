@@ -119,8 +119,9 @@ try:
         raise RuntimeError("当前处理器缺少已验证的解析隔离配置")
     checked(libc.prctl(38, 1, 0, 0, 0), "禁止权限提升")
     abi = landlock_abi()
-    if abi in (-errno.ENOSYS, -errno.EPERM, -errno.EOPNOTSUPP) and os.geteuid() == 0:
-        print("Landlock 不可用，改用降权隔离", file=sys.stderr)
+    # 探测失败（ENOSYS / 被容器策略拦）或版本不够，只要还是 root 就走降权隔离。
+    if abi < 6 and os.geteuid() == 0:
+        print("Landlock 不可用（" + (os.strerror(-abi) if abi < 0 else "ABI " + str(abi)) + "），改用降权隔离", file=sys.stderr)
         sys.exit(run_as_nobody())
     if abi < 0:
         raise RuntimeError("Landlock 内核探测失败：" + os.strerror(-abi))

@@ -82,7 +82,12 @@ async function parseInSandbox(input: string, output: string, name: string, signa
     child.on("error", () => finish(new Error("无法启动文件解析隔离进程")));
     child.on("close", (code, processSignal) => {
       kill(); // 同组转换器不能在解析结束后继续驻留。
-      if (code !== 0) { try { writeFileSync(join(output, "parser-error.txt"), `code=${code}, signal=${processSignal}\n${stderr}`, { mode: 0o600 }); } catch { /* 诊断只保存在私有任务目录。 */ } }
+      if (code !== 0) {
+        try { writeFileSync(join(output, "parser-error.txt"), `code=${code}, signal=${processSignal}\n${stderr}`, { mode: 0o600 }); } catch { /* 诊断只保存在私有任务目录。 */ }
+        // 运行日志只打隔离层自己的一行原因（不含文件内容），线上排查不用进容器。
+        const reason = stderr.split("\n").find((line) => /隔离|Landlock|降权|禁网|文件解析失败/.test(line));
+        console.error(`[attachments] 解析进程退出 code=${code} signal=${processSignal}${reason ? `：${reason.slice(0, 200)}` : ""}`);
+      }
       if (signal.aborted) finish(new TurnCancelledError());
       else if (memoryExceeded) finish(new Error("文件解析超过 512 MiB 内存限额，请拆分文件后重试"));
       else if (timedOut) finish(new Error("文件解析超过单任务资源时限，可以缩小文件后重试"));
