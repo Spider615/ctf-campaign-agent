@@ -169,6 +169,62 @@ function WhatIf({ chart }: { chart: Extract<InsightChart, { kind: "whatif" }> })
   </div>;
 }
 
+// 两变量回归联动：拖一个，另一个按真实回归关系给建议值 + 波动范围（不是恒等式，是历史统计趋势）。
+// anchor 记录最后一次被用户拖动的是哪一侧；它是自变量，另一侧是回归算出来的因变量。两侧都没拖动过时 anchor 为 null，只显示基准值。
+function Linked({ chart }: { chart: Extract<InsightChart, { kind: "linked" }> }) {
+  const [anchor, setAnchor] = useState<"a" | "b" | null>(null);
+  const [aValue, setAValue] = useState(chart.a.base);
+  const [bValue, setBValue] = useState(chart.b.base);
+  const fmt2 = (v: number, d: number) => v.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const { slope, intercept, sigma } = chart.fit;
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+  const bSuggestFromA = (a: number) => clamp(Math.exp(intercept + slope * Math.log(a)), chart.b.min, chart.b.max);
+  // slope 接近 0 或反解结果会冲出 a 的物理范围时，回归关系在这个方向上不可靠：a 不随 b 变化，诚实地反映"这个方向没有稳定关系"，
+  // 而不是显示一个被钳制到边界、看似精确却是数学假象的数字（弱回归反解时 1/slope 放大误差，裁出离谱的值）。
+  const aSuggestFromB = (b: number) => {
+    if (Math.abs(slope) < 1e-6) return aValue;
+    const raw = Math.exp((Math.log(b) - intercept) / slope);
+    return clamp(raw, chart.a.min, chart.a.max);
+  };
+  const onDragA = (v: number) => { setAValue(v); setAnchor("a"); setBValue(bSuggestFromA(v)); };
+  const onDragB = (v: number) => { setBValue(v); setAnchor("b"); if (Math.abs(slope) >= 1e-6) setAValue(aSuggestFromB(v)); };
+  const sales = aValue * bValue;
+  const band = (suggestedBase: number): [number, number] => [suggestedBase * Math.exp(-sigma), suggestedBase * Math.exp(sigma)];
+  const id = useId();
+  const Slider = ({ side, f, value, onDrag, isSuggested }: { side: "a" | "b"; f: typeof chart.a; value: number; onDrag: (v: number) => void; isSuggested: boolean }) => {
+    const span = f.max - f.min; const at = (v: number) => `${Math.max(0, Math.min(100, (v - f.min) / span * 100))}%`;
+    const [lo, hi] = isSuggested ? band(value) : [0, 0];
+    return <div>
+      <div className="flex items-baseline justify-between text-[12.5px]">
+        <label htmlFor={`${id}-${side}`} className="font-medium text-[#0f172a]">{f.label}</label>
+        <span className="tabular-nums text-[#334155]">{fmt2(value, f.digits)}{f.unit}<span className={`ml-1.5 ${isSuggested ? "font-semibold text-[#2f6bff]" : "text-[#94a3b8]"}`}>{isSuggested ? "按历史关系建议" : anchor === side ? "手动" : ""}</span></span>
+      </div>
+      <div className="relative mt-1">
+        {isSuggested ? <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 rounded-full bg-[#dbe7ff]" style={{ left: at(Math.max(f.min, lo)), width: `${Math.max(0, (Math.min(f.max, hi) - Math.max(f.min, lo)) / span * 100)}%` }} /> : null}
+        <input id={`${id}-${side}`} type="range" min={f.min} max={f.max} step={(f.max - f.min) / 200 || 1} value={value}
+          onChange={(e) => onDrag(Number(e.target.value))}
+          aria-valuetext={`${f.label} ${fmt2(value, f.digits)}${f.unit}${isSuggested ? "，按历史关系给的建议值" : ""}`}
+          className="relative h-6 w-full cursor-pointer accent-[#2f6bff]" />
+      </div>
+      {isSuggested ? <p className="mt-1 text-[11px] leading-relaxed text-[#94a3b8]">历史上{side === "b" ? "日订单数" : "客单价"}在这个水平的门店，{f.label}大多落在 {fmt2(lo, f.digits)}–{fmt2(hi, f.digits)}{f.unit} 之间，不是精确预测。</p> : null}
+      <div className="mt-1 flex justify-between text-[10.5px] tabular-nums text-[#94a3b8]"><span>{fmt2(f.min, f.digits)}</span><span>{fmt2(f.max, f.digits)}</span></div>
+    </div>;
+  };
+  return <div className="space-y-3">
+    <div className="rounded-xl bg-[#f5f8ff] px-3 py-2.5" aria-live="polite">
+      <p className="text-[11.5px] text-[#64748b]">{chart.sales.label}</p>
+      <p className="mt-0.5 flex items-baseline gap-2 tabular-nums">
+        <b className="text-[22px] font-semibold leading-none tracking-tight text-[#0f172a]">{fmt2(sales, chart.sales.digits)}<small className="ml-0.5 text-[12px] font-medium text-[#64748b]">{chart.sales.unit}</small></b>
+        <span className="ml-auto text-[11.5px] text-[#94a3b8]">现在 {fmt2(chart.a.base * chart.b.base, chart.sales.digits)}{chart.sales.unit}</span>
+      </p>
+    </div>
+    <Slider side="a" f={chart.a} value={aValue} onDrag={onDragA} isSuggested={anchor === "b" && Math.abs(slope) >= 1e-6} />
+    <Slider side="b" f={chart.b} value={bValue} onDrag={onDragB} isSuggested={anchor === "a"} />
+    <button type="button" onClick={() => { setAnchor(null); setAValue(chart.a.base); setBValue(chart.b.base); }} disabled={anchor === null}
+      className="min-h-8 whitespace-nowrap rounded-lg border border-[#e4eaf2] px-2.5 text-[12px] text-[#334155] hover:bg-[#f8fafc] disabled:opacity-40">恢复</button>
+  </div>;
+}
+
 // 折线：几条线都是「第一个点的几倍」，同一根纵轴（不用双纵轴）。横轴可以是逐日，也可以是门店分档；悬停一个点显示各线原值。
 function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -223,7 +279,7 @@ function Lines({ chart }: { chart: Extract<InsightChart, { kind: "lines" }> }) {
 export function InsightChartView({ chart, plain = false }: { chart: InsightChart; plain?: boolean }) {
   return <figure className={plain ? "m-0" : "mt-1 rounded-lg border border-[#dbe5ff] bg-white/85 p-2.5"}>
     {plain ? null : <figcaption className="mb-2 text-[12px] font-semibold text-[#1e3a8a]">{chart.title}</figcaption>}
-    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : chart.kind === "compare" ? <Compare chart={chart} /> : chart.kind === "whatif" ? <WhatIf chart={chart} /> : <Scatter chart={chart} />}
+    {chart.kind === "bars" ? <Bars chart={chart} /> : chart.kind === "split" ? <Split chart={chart} /> : chart.kind === "columns" ? <Columns chart={chart} /> : chart.kind === "lines" ? <Lines chart={chart} /> : chart.kind === "compare" ? <Compare chart={chart} /> : chart.kind === "whatif" ? <WhatIf chart={chart} /> : chart.kind === "linked" ? <Linked chart={chart} /> : <Scatter chart={chart} />}
     {chart.legend && chart.kind !== "split" ? <Legend items={chart.legend} /> : null}
     {plain && chart.kind !== "whatif" ? <figcaption className="mt-1.5 text-[11.5px] leading-relaxed text-[#94a3b8]">{chart.title}{chart.kind === "compare" && chart.note ? `；${chart.note}` : ""}</figcaption> : null}
     {chart.note && !(plain && chart.kind === "compare") ? <p className="mt-2 text-[11.5px] leading-relaxed text-[#64748b]">{chart.note}</p> : null}
