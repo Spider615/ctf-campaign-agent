@@ -86,7 +86,8 @@ async function parseInSandbox(input: string, output: string, name: string, signa
       if (signal.aborted) finish(new TurnCancelledError());
       else if (memoryExceeded) finish(new Error("文件解析超过 512 MiB 内存限额，请拆分文件后重试"));
       else if (timedOut) finish(new Error("文件解析超过单任务资源时限，可以缩小文件后重试"));
-      else if (code !== 0) finish(new Error(/Operation not permitted|permission|bwrap|sandbox/i.test(stderr) ? "文件解析隔离器启动失败，请检查运行环境的隔离权限" : /No module named/.test(stderr) ? "文件解析依赖缺失，请运行 npm run install:attachments" : "文件解析进程未完成，文件可能损坏或超过资源限制"));
+      // sandbox.py 隔离器起不来时以 78 退出，报错是中文，按退出码认，不能当成文件损坏。
+      else if (code !== 0) finish(new Error(code === 78 || /隔离器启动失败|Operation not permitted|permission|bwrap|sandbox/i.test(stderr) ? "文件解析隔离器启动失败，请检查运行环境的隔离权限" : /No module named/.test(stderr) ? "文件解析依赖缺失，请运行 npm run install:attachments" : "文件解析进程未完成，文件可能损坏或超过资源限制"));
       else finish();
     });
     if (signal.aborted) abort();
