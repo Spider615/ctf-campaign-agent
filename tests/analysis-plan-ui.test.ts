@@ -58,12 +58,37 @@ test("正文只有结论、关键数据、发现、图、建议和不能下的�
   assert.doesNotMatch(html, /复核提示|样本偏少|需要你补充的业务信息|要看哪个月|口径待确认|同店口径待确认|分析步骤|汇总二月销售额/);
 });
 
-test("口径和分析步骤在出处面板里，步骤默认折叠", async (t) => {
+test("口径和分析步骤收进「给分析师看」，默认折叠；有待确认口径时业务版单独提醒", async (t) => {
   const answer = { ...simulatedPlanAnswer(), assumptions: ["同店口径待确认"], definitions: ["销售额按正金额汇总"], plan: [{ id: "n1", op: "measure", status: "completed", summary: "汇总二月销售额" }, { id: "n2", op: "scan", status: "unsupported", summary: "逐组扫描（缺少维度）" }] };
   const html = await renderPanel(t, answer);
-  assert.match(html, /口径[\s\S]*同店口径待确认[\s\S]*销售额按正金额汇总/);
-  assert.match(html, /<details[\s\S]*分析步骤<\/summary>[\s\S]*汇总二月销售额[\s\S]*逐组扫描（缺少维度）/);
+  const fold = html.indexOf("给分析师看");
+  assert.ok(fold > 0);
+  assert.match(html.slice(0, fold), /有 1 处口径还没和业务确认/);
+  assert.match(html.slice(fold), /口径[\s\S]*同店口径待确认[\s\S]*销售额按正金额汇总/);
+  assert.match(html.slice(fold), /分析步骤[\s\S]*汇总二月销售额[\s\S]*逐组扫描（缺少维度）/);
   assert.doesNotMatch(html, /<details[^>]*\sopen/); assert.match(html, /未能完成/);
+});
+
+test("业务版出处：对比的数字摊成两组各多少、差多少，范围名只写两组不同的部分", async (t) => {
+  const base = simulatedPlanAnswerV4();
+  const frame = base.evidence.frames[0];
+  const weekend = { ...frame, id: "fw", scope: { ...frame.scope, period: { start: "2025-08-01", end: "2025-08-31" }, filters: { dayTypes: ["周六", "周日"] } } };
+  const workday = { ...frame, id: "fd", scope: { ...frame.scope, period: { start: "2025-08-01", end: "2025-08-31" }, filters: { dayTypes: ["工作日"] } } };
+  const f = (id: string, frameId: string, metricId: string, label: string, value: number, unit: string, extra = {}) => ({ id, frameId, metricId, label, value, unit, definition: label, objectIds: [], operationId: "operation", limitations: [], comparisonKey: "p1", ...extra });
+  const evidence = { ...base.evidence, frames: [weekend, workday], facts: [
+    f("t", "fw", "amount_per_order", "目标 · 单均实收", 8594, "元"),
+    f("r", "fd", "amount_per_order", "参照 · 单均实收", 8730, "元"),
+    f("d", "fw", "amount_per_order.delta", "单均实收差额", -136, "元", { derivation: { op: "subtract", args: [{ factId: "t" }, { factId: "r" }] } }),
+    f("c", "fw", "amount_per_order.relative_change", "单均实收相对变化", -1.56, "%", { derivation: { op: "multiply", args: [{ constant: 100 }, { op: "divide", args: [{ factId: "d" }, { factId: "r" }] }] } }),
+  ] };
+  const { SourcePanel } = await loadReactComponent(t, "app/components/analytics/plan-answer.tsx");
+  const html = renderToStaticMarkup(provider(createElement(SourcePanel, { answer: { ...base, evidence }, factIds: ["c"] })));
+  const plain = html.slice(0, html.indexOf("给分析师看"));
+  assert.match(plain, /周六、周日比工作日，单均实收少 1\.56%/);
+  assert.match(plain, /周六、周日[\s\S]*8,594(?:\.00)?元[\s\S]*工作日[\s\S]*8,730(?:\.00)?元[\s\S]*差多少[\s\S]*-136(?:\.00)?元/);
+  assert.match(plain, /数据来自[\s\S]*2025年8月/);
+  // 技术说法不在业务版里。
+  assert.doesNotMatch(plain, /口径|核对 [\d,]+ 条|两段时间或两组对象/);
 });
 
 test("关键数据表：对比给目标、参照和变化，负变化标红", async (t) => {

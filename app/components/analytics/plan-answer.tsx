@@ -61,6 +61,68 @@ function plainFactLabel(fact: AnalysisFact) {
 const SIGNED_METRIC = /\.(?:delta|relative_change|relative_deviation)$/;
 const defaultFactText = (fact: AnalysisFact) => `${formatValue(fact, SIGNED_METRIC.test(fact.metricId))}${fact.assumption ? "（假设）" : ""}`;
 
+// 范围的白话名字：只写和另一组不同的那部分（比如「周末」「工作日」），两组一样的部分放在下面一句里说。
+function rangeName(frame: AnalysisFrame, other?: AnalysisFrame) {
+  const parts: string[] = [];
+  if (!other || plainPeriod(frame) !== plainPeriod(other)) parts.push(plainPeriod(frame));
+  for (const [name, values] of Object.entries(frame.scope.filters)) {
+    if (!values?.length) continue;
+    const mine = [...values].sort().join("、"); const theirs = [...(other?.scope.filters[name as keyof typeof frame.scope.filters] ?? [])].sort().join("、");
+    if (!other || mine !== theirs) parts.push(values.length > 3 ? `${values.slice(0, 3).join("、")} 等 ${values.length} 个${filterLabels[name] ?? ""}` : values.join("、"));
+  }
+  return parts.join("，") || "全部";
+}
+const shortLabel = (label: string) => label.replace(/^汇总 · /, "").replace(/^(?:目标|参照)\s*·\s*/, "").replace(/^.*?·\s*/, "").replace(/(?:差额|相对变化)$/, "");
+const COMPARISON = /\.(?:delta|relative_change)$/;
+
+/**
+ * 业务版出处：先一句话说这个数是什么，再用一张小表把算式摊开（两组各多少、差多少），最后一句交代数据范围。
+ * 对比类的数字（差额、变化率）找到同一组比较里的「目标」和「参照」；其他数字直接列出来。
+ */
+function PlainSource({ evidence, factIds, formatFact }: { evidence: AnalysisEvidence; factIds: string[]; formatFact: (fact: AnalysisFact) => string }) {
+  const byId = new Map(evidence.facts.map((fact) => [fact.id, fact]));
+  const frameOf = (fact: AnalysisFact) => evidence.frames.find((frame) => frame.id === fact.frameId);
+  const cited = factIds.map((id) => byId.get(id)).filter((fact): fact is AnalysisFact => Boolean(fact));
+  // 对比：同一个 comparisonKey 里，派生关系里的两个父事实就是目标和参照。
+  const pairOf = (fact: AnalysisFact) => {
+    if (!COMPARISON.test(fact.metricId)) return null;
+    const delta = fact.metricId.endsWith(".delta") ? fact : evidence.facts.find((x) => x.comparisonKey && x.comparisonKey === fact.comparisonKey && x.metricId.endsWith(".delta"));
+    const formula = delta?.derivation;
+    if (!formula || !("op" in formula) || formula.args.length < 2 || !("factId" in formula.args[0]) || !("factId" in formula.args[1])) return null;
+    const target = byId.get(formula.args[0].factId); const reference = byId.get(formula.args[1].factId);
+    if (!target || !reference) return null;
+    const change = evidence.facts.find((x) => x.comparisonKey && x.comparisonKey === fact.comparisonKey && x.metricId.endsWith(".relative_change"));
+    return { target, reference, delta, change };
+  };
+  const pairs = cited.map(pairOf).filter((x): x is NonNullable<ReturnType<typeof pairOf>> => Boolean(x));
+  const singles = cited.filter((fact) => !COMPARISON.test(fact.metricId) || !pairOf(fact));
+  const frames = [...new Set(cited.flatMap((fact) => { const p = pairOf(fact); return p ? [p.target, p.reference] : [fact]; }).map(frameOf).filter((f): f is AnalysisFrame => Boolean(f)))];
+  const rows = evidence.methods.filter((method) => cited.some((fact) => fact.operationId === method.operationId)).reduce((total, method) => total + method.sampleRows, 0);
+  const shared = frames[0] ? `${plainPeriod(frames[0])}${frames.every((f) => plainPeriod(f) === plainPeriod(frames[0])) ? "" : "等"}${frames.every((f) => !Object.values(f.scope.filters).some((v) => v?.length)) ? "，全部门店和货品" : ""}` : "";
+  const source = frames.some((f) => f.provenance === "sample") ? "模拟数据" : frames.some((f) => f.mode === "database") ? "销售系统的历史销售明细" : "上传的销售数据";
+  return <div data-plain-source className="space-y-3">
+    {pairs.map(({ target, reference, delta, change }, index) => {
+      const tf = frameOf(target); const rf = frameOf(reference); const what = shortLabel(target.label) || shortLabel(delta.label);
+      const tName = tf ? rangeName(tf, rf) : "这一组"; const rName = rf ? rangeName(rf, tf) : "对照组";
+      const up = (delta.value ?? 0) >= 0;
+      const changeText = change?.value != null ? `${up ? "多" : "少"} ${formatFact({ ...change, value: Math.abs(change.value) }).replace(/^[+-]/, "")}` : `${up ? "多" : "少"} ${formatFact({ ...delta, value: Math.abs(delta.value ?? 0) }).replace(/^[+-]/, "")}`;
+      return <section key={index} className="space-y-2">
+        <p className="text-[15px] font-semibold leading-7 text-foreground">{tName}比{rName}，{what}{changeText}</p>
+        <div className="overflow-hidden rounded-xl border border-[#dce6f0]"><table className="w-full border-collapse text-[13px] leading-6">
+          <caption className="sr-only">{what}对比</caption>
+          <tbody>
+            <tr className="border-b border-[#eef2f7]"><th scope="row" className="px-3 py-2 text-left font-normal text-[#425873]">{tName}</th><td className="px-3 py-2 text-right font-semibold tabular-nums">{formatFact(target)}</td></tr>
+            <tr className="border-b border-[#eef2f7]"><th scope="row" className="px-3 py-2 text-left font-normal text-[#425873]">{rName}</th><td className="px-3 py-2 text-right tabular-nums">{formatFact(reference)}</td></tr>
+            <tr className="bg-[#f5f8fc]"><th scope="row" className="px-3 py-2 text-left font-medium text-foreground">差多少</th><td className={`px-3 py-2 text-right font-semibold tabular-nums ${up ? "text-[#2f7a55]" : "text-[#b4543a]"}`}>{formatFact(delta)}{change?.value != null ? `（${formatFact(change)}）` : ""}</td></tr>
+          </tbody>
+        </table></div>
+      </section>;
+    })}
+    {singles.length ? <ul className="space-y-1 rounded-xl bg-secondary/45 px-3.5 py-2.5 text-[13px] leading-6">{singles.slice(0, 8).map((fact) => <li key={fact.id} className="flex items-baseline justify-between gap-4"><span className="min-w-0 break-words text-[#425873]">{plainFactLabel(fact)}</span><span className="shrink-0 font-semibold tabular-nums">{formatFact(fact)}</span></li>)}</ul> : null}
+    {frames.length ? <p className="text-xs leading-6 text-muted-foreground">数据来自{source}，{shared}{rows ? `，共 ${rows.toLocaleString("zh-CN")} 条销售记录` : ""}。数字由系统按数据直接算出，不是模型估的。</p> : null}
+  </div>;
+}
+
 /**
  * 出处面板。给 factIds 时只列这些事实及其推导来源；不给就列全部。
  * methodIds、objectIds、formatFact 供旧版回答的适配器传入，保证只有一份实现；新版回答不需要。
@@ -155,15 +217,24 @@ function Figures({ figures }: { figures: NonNullable<PlanAnswer["figures"]> }) {
 }
 
 // 出处面板：这条结论用到的数据，加本次的口径说明、待确认口径和分析步骤。
+// 业务看上面三块（一句话、算式小表、数据范围）；口径定义、分析步骤、逐项事实收进「给分析师看」，默认收起。
+// 有待确认的口径时在业务版下面单独提醒一句，不让它藏在折叠里。
 export function SourcePanel({ answer, factIds }: { answer: PlanAnswer | PlanAnswerV4; factIds: string[] }) {
   return <div className="space-y-4">
-    <AnalysisSourceData evidence={answer.evidence} factIds={factIds} />
-    {answer.assumptions.length || answer.definitions.length ? <section className="text-xs leading-6 text-muted-foreground"><h4 className="mb-1 font-medium text-foreground">口径</h4>
-      <ul className="list-disc space-y-1 pl-4">{[...answer.assumptions, ...answer.definitions].map((item, index) => <li key={index} className="break-words">{item}</li>)}</ul>
-    </section> : null}
-    {answer.plan.length ? <details className="text-xs leading-6 text-muted-foreground"><summary className="min-h-8 cursor-pointer py-1.5 font-medium text-foreground">分析步骤</summary>
-      <ol className="list-decimal space-y-1 pl-4">{answer.plan.map((step, index) => <li key={`${step.id}:${index}`} className="break-words">{step.summary}{step.status !== "completed" ? <span className="ml-1 text-amber-700">（{STEP_STATUS[step.status] ?? "未知状态"}）</span> : null}</li>)}</ol>
-    </details> : null}
+    {factIds.length ? <PlainSource evidence={answer.evidence} factIds={factIds} formatFact={defaultFactText} /> : null}
+    {answer.assumptions.length ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-6 text-amber-800">有 {answer.assumptions.length} 处口径还没和业务确认，数字先作参考。</p> : null}
+    <details className="group border-t border-border pt-2 text-xs leading-6 text-muted-foreground">
+      <summary className="min-h-8 cursor-pointer py-1.5 font-medium text-foreground">给分析师看（口径、分析步骤、全部数字）</summary>
+      <div className="mt-2 space-y-4">
+        <AnalysisSourceData evidence={answer.evidence} factIds={factIds} />
+        {answer.assumptions.length || answer.definitions.length ? <section><h4 className="mb-1 font-medium text-foreground">口径</h4>
+          <ul className="list-disc space-y-1 pl-4">{[...answer.assumptions, ...answer.definitions].map((item, index) => <li key={index} className="break-words">{item}</li>)}</ul>
+        </section> : null}
+        {answer.plan.length ? <section><h4 className="mb-1 font-medium text-foreground">分析步骤</h4>
+          <ol className="list-decimal space-y-1 pl-4">{answer.plan.map((step, index) => <li key={`${step.id}:${index}`} className="break-words">{step.summary}{step.status !== "completed" ? <span className="ml-1 text-amber-700">（{STEP_STATUS[step.status] ?? "未知状态"}）</span> : null}</li>)}</ol>
+        </section> : null}
+      </div>
+    </details>
   </div>;
 }
 
