@@ -58,15 +58,11 @@ test("正文只有结论、关键数据、发现、图、建议和不能下的�
   assert.doesNotMatch(html, /复核提示|样本偏少|需要你补充的业务信息|要看哪个月|口径待确认|同店口径待确认|分析步骤|汇总二月销售额/);
 });
 
-test("口径和分析步骤收进「给分析师看」，默认折叠；有待确认口径时业务版单独提醒", async (t) => {
+test("出处面板只给业务看：不展示口径定义和分析步骤；有待确认口径时提醒一句", async (t) => {
   const answer = { ...simulatedPlanAnswer(), assumptions: ["同店口径待确认"], definitions: ["销售额按正金额汇总"], plan: [{ id: "n1", op: "measure", status: "completed", summary: "汇总二月销售额" }, { id: "n2", op: "scan", status: "unsupported", summary: "逐组扫描（缺少维度）" }] };
   const html = await renderPanel(t, answer);
-  const fold = html.indexOf("给分析师看");
-  assert.ok(fold > 0);
-  assert.match(html.slice(0, fold), /有 1 处口径还没和业务确认/);
-  assert.match(html.slice(fold), /口径[\s\S]*同店口径待确认[\s\S]*销售额按正金额汇总/);
-  assert.match(html.slice(fold), /分析步骤[\s\S]*汇总二月销售额[\s\S]*逐组扫描（缺少维度）/);
-  assert.doesNotMatch(html, /<details[^>]*\sopen/); assert.match(html, /未能完成/);
+  assert.match(html, /有 1 处口径还没和业务确认/);
+  assert.doesNotMatch(html, /给分析师看|同店口径待确认|销售额按正金额汇总|分析步骤|汇总二月销售额|逐组扫描/);
 });
 
 test("业务版出处：对比的数字摊成两组各多少、差多少，范围名只写两组不同的部分", async (t) => {
@@ -83,7 +79,7 @@ test("业务版出处：对比的数字摊成两组各多少、差多少，范�
   ] };
   const { SourcePanel } = await loadReactComponent(t, "app/components/analytics/plan-answer.tsx");
   const html = renderToStaticMarkup(provider(createElement(SourcePanel, { answer: { ...base, evidence }, factIds: ["c"] })));
-  const plain = html.slice(0, html.indexOf("给分析师看"));
+  const plain = html;
   assert.match(plain, /周六、周日比工作日，单均实收少 1\.56%/);
   assert.match(plain, /周六、周日[\s\S]*8,594(?:\.00)?元[\s\S]*工作日[\s\S]*8,730(?:\.00)?元[\s\S]*差多少[\s\S]*-136(?:\.00)?元/);
   assert.match(plain, /数据来自[\s\S]*2025年8月/);
@@ -200,11 +196,12 @@ test("v4：没有重点数字时不渲染放大区，HTML 按文字转义", asyn
   assert.doesNotMatch(html, /data-plan-key-figure/); assert.doesNotMatch(html, /<script|<img/); assert.match(html, /&lt;script&gt;/);
 });
 
-test("v4：出处面板保留口径和分析步骤", async (t) => {
+test("v4：出处面板列出引用的数字，不展示口径和分析步骤", async (t) => {
   const answer = { ...simulatedPlanAnswerV4(), assumptions: ["同店口径待确认"], plan: [{ id: "n1", op: "measure", status: "completed", summary: "汇总二月销售额" }] };
   const { SourcePanel } = await loadReactComponent(t, "app/components/analytics/plan-answer.tsx");
   const html = renderToStaticMarkup(provider(createElement(SourcePanel, { answer, factIds: ["amount"] })));
-  assert.match(html, /口径[\s\S]*同店口径待确认/); assert.match(html, /分析步骤[\s\S]*汇总二月销售额/); assert.match(html, /1,234\.56元/);
+  assert.match(html, /1,234\.56元/); assert.match(html, /有 1 处口径还没和业务确认/);
+  assert.doesNotMatch(html, /分析步骤|汇总二月销售额|同店口径待确认/);
 });
 
 test("历史消息和报告按 schema 选组件：v4 用 PlanAnswerV4View", async (t) => {

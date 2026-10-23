@@ -182,7 +182,6 @@ export function AnalysisSourceData({ evidence, factIds, methodIds, objectIds, fo
   </div>;
 }
 
-const STEP_STATUS: Record<string, string> = { unsupported: "未能完成", failed: "未完成", dropped: "已舍弃" };
 const bodyClass = "break-words text-[15px] leading-7 text-[#425873]";
 const sectionTitle = "mb-1.5 text-sm font-medium text-foreground";
 
@@ -217,24 +216,12 @@ function Figures({ figures }: { figures: NonNullable<PlanAnswer["figures"]> }) {
 }
 
 // 出处面板：这条结论用到的数据，加本次的口径说明、待确认口径和分析步骤。
-// 业务看上面三块（一句话、算式小表、数据范围）；口径定义、分析步骤、逐项事实收进「给分析师看」，默认收起。
+// 只给业务看：一句话、算式小表、数据范围。口径定义、分析步骤、逐项事实先不在页面上展示（数据仍在答案里，问答和复制都还用得到）。
 // 有待确认的口径时在业务版下面单独提醒一句，不让它藏在折叠里。
 export function SourcePanel({ answer, factIds }: { answer: PlanAnswer | PlanAnswerV4; factIds: string[] }) {
   return <div className="space-y-4">
     {factIds.length ? <PlainSource evidence={answer.evidence} factIds={factIds} formatFact={defaultFactText} /> : null}
     {answer.assumptions.length ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-6 text-amber-800">有 {answer.assumptions.length} 处口径还没和业务确认，数字先作参考。</p> : null}
-    <details className="group border-t border-border pt-2 text-xs leading-6 text-muted-foreground">
-      <summary className="min-h-8 cursor-pointer py-1.5 font-medium text-foreground">给分析师看（口径、分析步骤、全部数字）</summary>
-      <div className="mt-2 space-y-4">
-        <AnalysisSourceData evidence={answer.evidence} factIds={factIds} />
-        {answer.assumptions.length || answer.definitions.length ? <section><h4 className="mb-1 font-medium text-foreground">口径</h4>
-          <ul className="list-disc space-y-1 pl-4">{[...answer.assumptions, ...answer.definitions].map((item, index) => <li key={index} className="break-words">{item}</li>)}</ul>
-        </section> : null}
-        {answer.plan.length ? <section><h4 className="mb-1 font-medium text-foreground">分析步骤</h4>
-          <ol className="list-decimal space-y-1 pl-4">{answer.plan.map((step, index) => <li key={`${step.id}:${index}`} className="break-words">{step.summary}{step.status !== "completed" ? <span className="ml-1 text-amber-700">（{STEP_STATUS[step.status] ?? "未知状态"}）</span> : null}</li>)}</ol>
-        </section> : null}
-      </div>
-    </details>
   </div>;
 }
 
