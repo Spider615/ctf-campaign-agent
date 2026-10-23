@@ -100,8 +100,9 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   // 滑块的可拖动范围是各自变量日均口径的 2%–98% 分位（样本实际分布），不是回归线算出来的建议值区间。
   const quantile = (values: readonly number[], p: number) => { const s = [...values].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.round(p * (s.length - 1))))] ?? 0; };
   const midStore = [...full].sort((a, b) => a.orders / a.days - b.orders / b.days)[Math.floor(full.length / 2)];
-  // 样本太少（拟合退化成全 0）或没有中位数店时，这段关系算不出来，不挂图——不展示一条没有信息量、拖起来是常数的联动。
-  const ordersAovChart: InsightChart | undefined = midStore && ordersToAov.r2 > 0 ? { kind: "linked", title: "订单数、客单价按历史数据联动",
+  // 样本太少、两个方向共线退化、或没有中位数店时，这段关系算不出来，不挂图——不展示一条没有信息量、拖起来是常数或除零的联动。
+  const ordersAovUsable = full.length >= 2 && ordersToAov.r2 > 1e-6 && aovToOrders.r2 > 1e-6;
+  const ordersAovChart: InsightChart | undefined = midStore && ordersAovUsable ? { kind: "linked", title: "订单数、客单价按历史数据联动",
     a: { label: "订单数", unit: "单", digits: 0, base: midStore.orders / midStore.days, min: quantile(dailyOrders, 0.02), max: quantile(dailyOrders, 0.98) },
     b: { label: "客单价", unit: "元", digits: 0, base: midStore.sales / midStore.orders, min: quantile(dailyAov, 0.02), max: quantile(dailyAov, 0.98) },
     aToB: ordersToAov, bToA: aovToOrders, sales: { label: "销售额", unit: "元", digits: 0 } } : undefined;

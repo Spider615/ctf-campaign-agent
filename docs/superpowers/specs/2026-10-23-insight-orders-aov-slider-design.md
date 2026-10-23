@@ -25,11 +25,13 @@
 
 ## 3. 回归口径
 
-- 用**门店间横截面**：同一天内，不同门店的订单数、客单价关系。跟现有 `storeSplit`（`drivers.ts` 里 `logSplit(sales, orders)` 算门店间方差拆分）口径一致，不混入同店逐日的时间序列关系。
-- 在对数尺度上回归：`log(客单价) = intercept + slope × log(订单数)`，普通最小二乘，门店月度汇总（跟 `storeSplit` 用的是同一份 `full`/`panel` 聚合）。
-- 同时算残差标准差 `sigma`（对数尺度上，回归残差的标准差），用来画波动范围。
+- 用**门店间横截面**：不同门店之间比，不是同一家店不同天之间比（不混入同店逐日的时间序列关系）。跟现有 `storeSplit`（`drivers.ts` 里 `logSplit(sales, orders)` 算门店间方差拆分）用的是同一组门店（`full`，开满 20 天、月度聚合后的横截面）。
+- 回归和滑块展示用同一个口径：门店的日均订单数、日均客单价（`orders/days`、`sales/orders`），不是月度总量。每家店开的天数不同，不是公共常数，若在月度口径上拟合再套到日均基准值展示，截距会系统性偏离（已验证：偏差可达 30% 以上）。
+- 在对数尺度上回归：`log(客单价) = intercept + slope × log(订单数)`，普通最小二乘。
+- 订单数→客单价和客单价→订单数两个方向**各自独立回归**，不是把一个方向的系数代数反解。两条回归线的斜率乘积等于 r²，不是互为倒数；混用会在弱相关（r² 小）时把反解结果放大到离谱（已验证：代数反解比正确值偏差 4 倍以上）。
+- 同时算残差标准差 `sigma`（对数尺度上，回归残差的标准差），用来画波动范围，两个方向各自的 sigma 不同。
 
-新增一个统计函数（`stats.ts`），输入订单数和客单价两个数组，输出 `{ slope, intercept, sigma, r2 }`。`logSplit` 不改，两者并存——`logSplit` 答「差异里多少来自订单数/客单价」，新函数答「订单数变了，客单价大概怎么变」。
+新增一个统计函数（`stats.ts`），输入两个数组（谁是 x 谁是 y 由调用方决定），输出 `{ slope, intercept, sigma, r2 }`。两个方向各调用一次。`logSplit` 不改，两者并存——`logSplit` 答「差异里多少来自订单数/客单价」，新函数答「订单数变了，客单价大概怎么变」。
 
 ## 4. 交互模型
 
@@ -47,11 +49,13 @@ R²、回归强度不需要展示具体数字，用波动范围的宽窄本身�
 
 ## 6. 实现落点
 
-- `app/lib/insight/stats.ts`：新增回归函数（暂定名 `logLinearFit`），输入两个数组，输出 slope/intercept/sigma/r2。
-- `app/lib/insight/types.ts`：`InsightChart` 新增一个 `kind`（暂定 `"linked"`），区别于现有 `"whatif"`（`"whatif"` 是多个独立乘数相乘，这里是两个变量互相回归联动）。字段大致是两个 factor（label/unit/digits/base/range）+ 回归系数（slope/intercept/sigma，对数尺度）+ 销售额展示信息。
-- `app/components/insight/insight-chart.tsx`：新增渲染这个 `kind` 的组件，两个 `<input type="range">`，拖动时各自算新值、互相触发对方的建议值和波动范围、销售额联动刷新。
-- `app/lib/insight/drivers.ts`：挂在 `orders`、`aov` 两个节点的 `node.chart` 上（目前是空的，不会打掉现有图）。节点自己 `card.sim`/`card.chart` 里的其他图（比如好店对比的 `imageOrders`/`expChart`）不受影响，继续挂在 `card` 上。`orders>sales`、`aov>sales` 两条边现有的 `lines` 图（`salesByOrders`/`salesByAov`）不动。
-- **滑块初始基准值**：全局中位数门店的日均订单数、客单价（跟图谱其余地方「一家店一天」的口径一致，不是月度总量）。回归本身仍在月度对数尺度上算（§3，跟 `storeSplit` 口径一致），月度斜率换算到日均口径展示时斜率不变（对数线性关系的斜率与是否除以常数天数无关），只是 `factor.base`/`unit`/`digits` 按「一天 X 单」「客单 Y 元」的日均数展示，不展示月度总量。
+- `app/lib/insight/stats.ts`：新增回归函数 `logLinearFit`，输入两个数组（x、y），输出 `{slope, intercept, sigma, r2}`。样本不足 2 个或全部非正数时返回全 0，不崩不产生 NaN。
+- `app/lib/insight/types.ts`：`InsightChart` 新增 `kind: "linked"`，区别于现有 `"whatif"`（`"whatif"` 是多个独立乘数相乘，这里是两个变量互相回归联动）。字段：两个 factor（label/unit/digits/base/min/max）+ 两个方向各自的回归系数 `aToB`/`bToA`（各自 `{slope, intercept, sigma}`，不是共享一套系数代数反解）+ 销售额展示信息。
+- `app/components/insight/insight-chart.tsx`：新增渲染组件，两个 `<input type="range">`。拖动时按「相对变化」算另一侧的建议值（`b' = b0 × (a'/a0)^slope`，从 anchor 刚切换时两侧的当前值 `a0`/`b0` 出发，不是直接取回归线在新值处的绝对值——基准值不在回归线上，取绝对值会在第一次拖动时跳变）；建议值裁剪到对方的 min/max 作为兜底。销售额联动刷新。
+- `app/lib/insight/drivers.ts`：挂在 `orders`、`aov` 两个节点的 `card.sim` 上——**不是 `node.chart`**：实测 `node.chart` 这个字段在 `insight-side-panel.tsx` 的渲染路径里从未被读取（节点详情只读 `card.chart`/`card.sim`），且这两个节点的 `node.chart` 已经被 `ordersChart`/`aovChart`（商圈对比、活动力度对比）占用，不是空的。`card.sim` 是这两个节点原本没用到的"第二张图"插槽，不打掉任何现有内容。
+- 回归和滑块展示用同一份日均口径数据（`full.map(s => s.orders/s.days)`、`full.map(s => s.sales/s.orders)`），两个方向（订单数→客单价、客单价→订单数）各自单独调用 `logLinearFit` 一次，不共享系数。
+- **滑块初始基准值**：全局中位数门店（按日均订单数排序取中位数）的日均订单数、客单价。可拖动范围（min/max）是各自变量日均分布的 2%–98% 分位，是样本的物理范围，不是回归建议值的范围。
+- 样本太少（`full.length < 2`）或两个方向回归退化（r² 接近 0，比如所有店订单数相同导致共线）时不生成这张图。
 
 ## 7. 不做的
 
