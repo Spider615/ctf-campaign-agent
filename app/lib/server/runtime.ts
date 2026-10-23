@@ -9,6 +9,7 @@ import type { AgentTraceEvent, ToolTraceTiming } from "../tool-trace.ts";
 import { createD1Store } from "./session-store.ts";
 import type { AnalyticsExplainRequest } from "../analytics/types.ts";
 import type { DatabaseExplainRequest, DatabaseSummary } from "../analytics/database.ts";
+import { withKeepAlive } from "./keep-alive.ts";
 import { consumeAnalyticsStream, normalizeAnalyticsAnswerSchema, validateAnalyticsAnswerResult, type AnalyticsProgressEvent } from "../analytics/stream.ts";
 import { TurnError, type AgentTransientEvent, type TurnDeps } from "./turns.ts";
 import type { ConversationRequest } from "../attachments/types.ts";
@@ -35,8 +36,9 @@ export async function forwardAttachmentRequest(request: Request, owner: string, 
   const query = body ? `?conversationId=${encodeURIComponent(body.conversationId)}` : url.search;
   const response = await fetch(`${base}/attachments${suffix}${query}`, { method: body ? "POST" : request.method, headers, body: body ? JSON.stringify(body) : ["GET", "HEAD"].includes(request.method) ? undefined : request.body, signal: request.signal });
   const outgoing = new Headers(response.headers); outgoing.set("cache-control", "no-store"); outgoing.set("x-content-type-options", "nosniff");
-  return new Response(response.body, { status: response.status, headers: outgoing });
+  return new Response(body && response.ok && response.body ? withKeepAlive(response.body) : response.body, { status: response.status, headers: outgoing });
 }
+
 
 async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest | DatabaseExplainRequest, accept?: string, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string): Promise<Response> {
   try {
