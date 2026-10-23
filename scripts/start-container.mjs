@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { startContainerMysql } from "./container-mysql.mjs";
 import { projectRoot } from "./sites-env.mjs";
@@ -14,6 +14,8 @@ const WRANGLER = path.join(projectRoot, "node_modules/wrangler/bin/wrangler.js")
 const SERVER_DIR = path.join(projectRoot, "dist/server");
 
 mkdirSync(PERSIST_DIR, { recursive: true });
+// 解析上传文件的进程在内核没有 Landlock 时降为 nobody 运行：持久卷只给 root 进，它读不到会话、数据库和附件。
+try { chmodSync("/data", 0o700); } catch { /* 本机调试时没有 /data。 */ }
 
 // 迁移沿用构建产物的 wrangler 配置，只补上 migrations_dir，保证和页面读写的是同一个本地 D1；已应用的迁移会跳过。
 const config = JSON.parse(readFileSync(path.join(SERVER_DIR, "wrangler.json"), "utf8"));

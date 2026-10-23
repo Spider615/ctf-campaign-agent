@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
@@ -70,7 +70,7 @@ FLUSH PRIVILEGES;`;
 // 返回 mysqld 子进程和应用该用的连接环境变量；没配数据仓库口令时返回 null。
 export async function startContainerMysql() {
   if (!process.env.CTF_DATA_REPO_TOKEN) { log("没配 CTF_DATA_REPO_TOKEN，不启动内置数据库"); return null; }
-  mkdirSync(DATA_DIR, { recursive: true }); mkdirSync(path.dirname(SOCKET), { recursive: true });
+  mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 }); mkdirSync(path.dirname(SOCKET), { recursive: true, mode: 0o700 }); chmodSync(path.dirname(SOCKET), 0o700);
   const fresh = !existsSync(path.join(DATA_DIR, "mysql"));
   if (fresh) { log("初始化数据目录"); run("mysqld", ["--initialize-insecure", "--user=root", `--datadir=${DATA_DIR}`, "--secure-file-priv=NULL"]); }
   // 内存给得保守：容器里还跑着页面和 Agent。
