@@ -65,8 +65,11 @@ async function importDump(work) {
 // 先建到临时名再改名，中途被打断也不会留下半张表给应用查。
 function buildWide() {
   log("把明细视图物化成宽表（约 4 分钟，只在第一次）");
-  const sql = `DROP TABLE IF EXISTS \`${WIDE}_building\`;
-CREATE TABLE \`${WIDE}_building\` ENGINE=InnoDB AS SELECT * FROM \`${VIEW}\`;
+  // 宽表 157 列、很多是 varchar(255)，按 utf8mb4 算理论行宽超过 InnoDB 8KB 上限，严格模式下建表直接报错；
+  // 实际数据远小于上限，DYNAMIC 行格式会把长字段放到页外，关掉本会话的严格检查即可。
+  const sql = `SET SESSION innodb_strict_mode = 0;
+DROP TABLE IF EXISTS \`${WIDE}_building\`;
+CREATE TABLE \`${WIDE}_building\` ENGINE=InnoDB ROW_FORMAT=DYNAMIC AS SELECT * FROM \`${VIEW}\`;
 DROP TABLE IF EXISTS \`${WIDE}\`;
 RENAME TABLE \`${WIDE}_building\` TO \`${WIDE}\`;`;
   run("mysql", ["--socket", SOCKET, "-uroot", "--default-character-set=utf8mb4", DATABASE, "-e", sql]);

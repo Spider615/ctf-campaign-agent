@@ -547,3 +547,12 @@ test("计划复核提示：按原则 A 只算事实的计划，不要求补相�
   assert.match(text, /不要以「回答不了原问题」为由退回/);
 });
 
+test("要方案时先给方案、缺数据放最后：正文和复核提示都写明，不许说给不出方案", async () => {
+  const { answerPrompt, answerReviewPrompt } = await import("../app/lib/analytics/plan/prompt.ts");
+  const body = answerPrompt("我想为2026年12月双旦设计一个全国营销活动，给我规划方案", "（结果）");
+  assert.match(body, /用户要方案、规划、怎么做/); assert.match(body, /先把方案给出来/); assert.match(body, /数据缺口统一放在最后一段/);
+  assert.match(body, /不适用于要方案的问题/);
+  const review = answerReviewPrompt("直接给完整方案", [], "现有数据给不出完整方案，只能给候选方向。", []);
+  assert.match(review, /该给方案没给/);
+});
+
