@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dummies, etaSquared, leastSquares, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayFit } from "../app/lib/insight/stats.ts";
+import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayFit } from "../app/lib/insight/stats.ts";
 import { edgeKey, highlightOf, reach, routes, routesThrough } from "../app/lib/insight/paths.ts";
 import { INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL } from "../app/lib/insight/types.ts";
 import { fakeGraph } from "./helpers/insight-fixture.ts";
@@ -40,6 +40,32 @@ test("订单数 × 客单价：客单不变时全部是订单数", () => {
   const out = logSplit([100, 200, 400], [1, 2, 4]);
   assert.ok(out.orders > 99 && out.aov < 1);
   assert.equal(strengthOf(12), "strong"); assert.equal(strengthOf(3), "med"); assert.equal(strengthOf(0.5), "weak");
+});
+
+test("对数线性回归：还原已知斜率和截距", () => {
+  const xs = [1, 2, 4, 8, 16, 32];
+  const trueSlope = 0.3; const trueIntercept = Math.log(50);
+  const ys = xs.map((x) => Math.exp(trueIntercept + trueSlope * Math.log(x)));
+  const fit = logLinearFit(xs, ys);
+  assert.ok(Math.abs(fit.slope - trueSlope) < 1e-6);
+  assert.ok(Math.abs(fit.intercept - trueIntercept) < 1e-6);
+  assert.ok(fit.sigma < 1e-6); // 完全拟合，残差几乎为 0
+  assert.ok(fit.r2 > 0.999);
+});
+
+test("对数线性回归：加噪声后 sigma 和 r2 反映离散程度", () => {
+  const xs = [1, 2, 4, 8, 16, 32, 64, 128];
+  const ys = xs.map((x, i) => Math.exp(0.3 * Math.log(x) + (i % 2 === 0 ? 0.1 : -0.1)));
+  const fit = logLinearFit(xs, ys);
+  assert.ok(fit.sigma > 0 && fit.sigma < 1);
+  assert.ok(fit.r2 >= 0 && fit.r2 <= 1);
+});
+
+test("对数线性回归：样本太少或含非正数时不崩", () => {
+  assert.doesNotThrow(() => logLinearFit([1], [10]));
+  assert.doesNotThrow(() => logLinearFit([], []));
+  const fit = logLinearFit([1, -2], [10, 20]);
+  assert.ok(Number.isFinite(fit.slope) && Number.isFinite(fit.intercept) && Number.isFinite(fit.sigma));
 });
 
 test("图谱：节点齐全、名字固定，每条线两端都在图上，依据里的数字由代码填", () => {

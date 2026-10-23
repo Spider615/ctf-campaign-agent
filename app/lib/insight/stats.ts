@@ -116,3 +116,17 @@ export function median(values: readonly number[]): number | null {
 
 // 强弱档由解释度（%）换算：≥ 10 为强，2–10 为中，< 2 为弱。图上显示解释度本身，档位只决定颜色。
 export const strengthOf = (share: number) => share >= 10 ? "strong" as const : share >= 2 ? "med" as const : "weak" as const;
+
+// log(ys) = intercept + slope * log(xs) 的一元回归；sigma 是对数尺度残差的标准差（除以 n）。
+// xs/ys 里非正数的那一行先丢弃；丢弃后样本不足 2 个时返回全 0（不崩、不产生 NaN），调用方据此判断这段关系算不出来。
+export function logLinearFit(xs: readonly number[], ys: readonly number[]): { slope: number; intercept: number; sigma: number; r2: number } {
+  const pairs: Array<[number, number]> = []; for (let i = 0; i < Math.min(xs.length, ys.length); i++) if (xs[i] > 0 && ys[i] > 0) pairs.push([xs[i], ys[i]]);
+  if (pairs.length < 2) return { slope: 0, intercept: 0, sigma: 0, r2: 0 };
+  const lx = Float64Array.from(pairs, ([x]) => Math.log(x)); const ly = Float64Array.from(pairs, ([, y]) => Math.log(y));
+  const ones = new Float64Array(pairs.length).fill(1);
+  const [intercept, slope] = leastSquares([ones, lx], ly);
+  const n = pairs.length; let ss = 0; for (let i = 0; i < n; i++) ss += (ly[i] - (intercept + slope * lx[i])) ** 2;
+  const sigma = Math.sqrt(ss / n);
+  const r2 = rSquared([ones, lx], ly);
+  return { slope, intercept, sigma, r2 };
+}
