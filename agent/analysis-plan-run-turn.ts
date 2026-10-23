@@ -172,6 +172,13 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
     const businessDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai" }).format(new Date());
     const systemPrompt = buildPlanSystemPrompt(businessDate);
     let modelCalls = 0;
+    // 耗时写进运行日志（只有阶段名和毫秒数，不含问题和数据），线上排查慢在哪一步。
+    const turnStarted = Date.now(); let queryCount = 0;
+    const logTiming = (label: string, started: number) => console.log(`[analysis ${runId.slice(0, 8)}] ${label} ${Date.now() - started}ms`);
+    const timedSession = (inner: AnalysisDataSession): AnalysisDataSession => {
+      const wrap = <A extends unknown[], R>(name: string, fn?: (...args: A) => Promise<R>) => fn && (async (...args: A) => { const started = Date.now(); queryCount++; try { return await fn.apply(inner, args); } finally { logTiming(`查库 ${name}`, started); } });
+      return { ...inner, aggregate: wrap("aggregate", inner.aggregate)!, aggregateWithOrderIds: wrap("aggregateWithOrderIds", inner.aggregateWithOrderIds), orderDistribution: wrap("orderDistribution", inner.orderDistribution), scenario: wrap("scenario", inner.scenario), close: () => inner.close(), assertActive: inner.assertActive && (() => inner.assertActive!()) };
+    };
     // 结构上限：计划 ≤2、计划复核 1、补充计划 1、正文 1、正文复核 1；正文漏交时的补交只在还有余量时发生。
     const MAX_MODEL_CALLS = 6;
 
@@ -179,7 +186,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
     // 返回模型在这一步直接输出的文字（不经工具）；正文步骤在模型没调用工具时拿它当提交。
     const runStep = async (options: { name: PlanAnalyticsToolName; description: string; shape: z.ZodRawShape; prompt: string; thinking: boolean; handle: (input: Record<string, unknown>) => unknown; done: () => boolean }): Promise<string> => {
       let spoken = "";
-      throwIfTurnCancelled(controller.signal); modelCalls++;
+      throwIfTurnCancelled(controller.signal); modelCalls++; const stepStarted = Date.now();
       // 模型想的时候就亮出这一步，不等它调用工具；被退回后的再次提交仍在调用时才记。
       let pending: AgentTraceEvent | undefined = begin(options.name, "model");
       const submit = tool(options.name, options.description, options.shape, async (input: Record<string, unknown>) => {
@@ -222,6 +229,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
         stepController.abort(); stop(); if (iterator.return) void iterator.return().catch(() => {});
         // 没等到提交的那一步收尾，不留一直转圈的步骤。
         if (pending && !controller.signal.aborted) end(pending, "warning", "没有调用提交工具");
+        logTiming(`模型 ${options.name}${options.thinking ? "（思考）" : ""}`, stepStarted);
       }
       throwIfTurnCancelled(controller.signal);
       return spoken;
@@ -231,7 +239,9 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
     try {
       emit({ type: "phase", phase: "analyzing", at: Date.now() });
       audit("question", { question: request.question, context });
-      session = await provider.open(controller.signal); throwIfTurnCancelled(controller.signal);
+      const openStarted = Date.now();
+      session = timedSession(await provider.open(controller.signal)); throwIfTurnCancelled(controller.signal);
+      logTiming("打开数据快照", openStarted);
       const capabilities: AnalysisCapabilities = session.capabilities;
       const constraints: AnalysisConstraints = { filters: {} };
       const brief = capabilityBrief(capabilities);
@@ -283,7 +293,9 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       // 执行：每个节点一条轨迹，节点开始前登记、执行完按状态结束。
       const runNodes = async (nodes: PlanNode[], registry: ReturnType<typeof createEvidenceRegistry>, prior?: PlanExecution["results"]) => {
         const events = new Map(nodes.map((node) => [node.id, begin("run_plan_node", "orchestrator", `${PLAN_ANALYTICS_TOOL_LABELS.run_plan_node} ${node.id}`)]));
+        const executeStarted = Date.now();
         const execution = await executePlan(nodes, session!, constraints, registry, controller.signal, prior);
+        logTiming(`执行计划 ${nodes.length} 个节点`, executeStarted);
         for (const [id, event] of events) {
           const result = execution.results.get(id);
           end(event, result?.status === "completed" ? "completed" : "warning", result?.status === "completed" ? "已完成计算" : result?.message ? `未完成：${result.message.slice(0, 120)}` : "未完成");
@@ -393,6 +405,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
       const timing = harnessTimingSummary(performance.now() - monotonic, completed.map((step) => ({ offsetMs: Math.max(0, step.startedAt - started), durationMs: step.durationMs ?? 0 })));
       const final = validatePlanAnswerV4({ ...answer, ...(completed.length ? { trace: { status: answer.status === "answered" ? "completed" : "warning", durationMs: timing.totalMs, timing, steps: completed } } : {}) });
       audit("final", { status: final.status, modelCalls, body: planAnswerV4Text(final).slice(0, 200) });
+      logTiming(`全部完成，模型 ${modelCalls} 次、查库 ${queryCount} 次`, turnStarted);
       return final;
     } catch (error) {
       if (controller.signal.aborted) throw new TurnCancelledError();

@@ -95,7 +95,11 @@ export async function startContainerMysql() {
     "--innodb-buffer-pool-size=768M", "--tmp-table-size=128M", "--max-heap-table-size=128M", "--skip-log-bin", "--mysqlx=OFF",
     "--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--secure-file-priv=NULL",
     // 导入时 redo 日志太小会让检查点追不上写入，导入明显变慢；只读库不在乎崩溃时丢最后一秒。
-    "--innodb-redo-log-capacity=1G", "--innodb-flush-log-at-trx-commit=2"], { stdio: ["ignore", "inherit", "inherit"] });
+    "--innodb-redo-log-capacity=1G", "--innodb-flush-log-at-trx-commit=2"], { stdio: ["ignore", "inherit", "pipe"] });
+  // 容器不让 mysqld 调 mbind，它每次分配内存都往 stderr 打一行「mbind: Operation not permitted」，
+  // 平台只留日志最后 8000 字，全被这行刷掉。过滤掉这一行，其余原样输出。
+  let pendingErr = "";
+  mysqld.stderr.on("data", (chunk) => { pendingErr += chunk.toString("utf8"); const lines = pendingErr.split("\n"); pendingErr = lines.pop() ?? ""; for (const line of lines) if (line && !line.startsWith("mbind:")) process.stderr.write(line + "\n"); });
   const password = process.env.CTF_MYSQL_READER_PASSWORD || createHash("sha256").update(`${process.env.CTF_DATA_REPO_TOKEN}:reader`).digest("hex").slice(0, 32);
   // 导入中途失败就停掉 mysqld，交给平台重启；没写完成标记，下次重新导入（导出里带 DROP TABLE IF EXISTS）。
   try {
