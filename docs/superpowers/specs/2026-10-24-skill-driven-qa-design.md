@@ -47,11 +47,14 @@
 - `quickAnalyticsReply`：寒暄、致谢、能力介绍直接返回写死的回复；
 - `quickMonthlySalesQuery`：「X 年 X 月销售额是多少」走单独的快速查询。
 
-一并删掉的引用：
-- `agent/analysis-plan-run-turn.ts:148-149`；
-- `agent/http-handler.ts:129`：没连数据库时给寒暄放行。改为没连数据库就统一报「历史数据库尚未启用」；
-- `app/lib/analytics/explain.ts:87` 的固定回复校验；
-- `app/lib/analytics/intent.ts:18` 的路由判断，删掉这个条件，其余路由逻辑不动，见第 4 节。
+一并改掉的地方：
+- 新运行器不调用这两个函数；
+- `agent/http-handler.ts:129`：没连数据库时给寒暄放行。改为没连数据库就统一报「历史数据库尚未启用」。
+
+保留不动的（实施前核对过）：
+- `app/lib/analytics/explain.ts:87`：这是读旧会话时校验已存的寒暄回答，删了旧消息会显示不出来，不产生新的固定回复；
+- `app/lib/analytics/intent.ts:18`：只决定一句话分到智能问答还是活动创建，不产生回复，属于第 4 节的第二个子项目；
+- 两个函数本身留给旧运行器，第 5 节清理时一起删。
 
 简单问候怎么回、要不要查数，写进 `ctf-qa`。代价是问候也要等一次模型调用（几秒）。
 
@@ -64,17 +67,17 @@
 | `inspect_dataset` | 无 | 能力目录：维度（含 parent 层级）、指标、可选取值、日期范围、对照基线 | `session.capabilities` → `capabilityBrief` |
 | `analyze` | `method`（aggregate / compare / decompose / scan / robustness）、`scope`、`metrics`、`by`、`reference`、`breakdown`、`check`、`alternative`、`purpose` | `resultId`，加上按分组列出的指标值（文字表格，带样本行数和口径） | `createAnalysisOperations(session).execute`，结果进 `createEvidenceRegistry` |
 | `simulate_scenario` | `baselineResultId`、`adjustment`、`netVolumeChanges`、`reason` | `resultId` + 情景测算值 | `simulatePlanScenario` |
-| `draw_chart` | `resultId`、`metric`、`kind`（bar / line / compare）、`by`、`top`、`title` | `chartId`，或说明这份结果画不了的原因 | 从 `plan/chart.ts` 的 `planChart` 改成按 `resultId` 取数 |
+| `draw_chart` | `resultId`、`metric`、`kind`（bar / line）、`by`、`top`、`title` | `chartId`，或说明这份结果画不了的原因 | 新写 `app/lib/analytics/qa/chart.ts`，按 `resultId` 取数；对比结果自动画成目标、参照两组柱 |
 | `submit_answer` | `body`（Markdown，`[[chart:编号]]` 放图） | 已收到 | 不做数字核对；只检查 chartId 存在，不存在的占位删掉 |
 
 - 工具入参错误（维度不存在、缺 reference 等）沿用现有中文错误，以 `isError` 返回给模型自己改，不算失败。
-- `analyze` 返回给模型的分组不截成「偏离最大 8 组」；单次返回超过约 200 行时按第一个指标排序截断，并注明总组数和截断规则。
-- `submit_answer` 只交一次。模型没调它就结束时，取最后一段文字当正文。
+- `analyze` 返回给模型的分组不截成「偏离最大 8 组」；单次返回超过 300 行时只列前 300 行，注明总行数，提示加筛选或换分组。
+- `submit_answer` 可以交多次，以最后一次为准。模型没调它就结束时，取最后一段文字当正文。
 
 ### 3.2 查库提速
 
 - 连接池：`AnalysisDataSession` 从一条快照连接改成 4 条只读连接的池，`analyze` 并发调用时并行执行。现有数据是静态导入的（只有一份数据版本），不需要跨连接共享同一快照；数据版本号在开会话时取一次，所有结果都标这个版本。
-- 结果缓存：按（数据版本，规范化后的请求）落盘，目录 `CTF_ANALYSIS_CACHE_DIR`，默认 `~/Library/Application Support/ctf-campaign-agent/analysis-cache`。同一查询再问时直接读盘。数据版本变了自动失效。
+- 结果缓存：按（数据版本，查询）落盘。MySQL 会话的 `datasetVersion` 每次打开都是随机值，不能当缓存键；会话新增 `dataKey`（库名.表名:行数:起止日期，和现有维度取值缓存同一口径）作稳定版本。缓存 `aggregate`、`orderDistribution`、`scenario` 三类查询，目录 `CTF_ANALYSIS_CACHE_DIR`，默认 `~/Library/Application Support/ctf-campaign-agent/analysis-cache`。同一查询再问时直接读盘。数据版本变了自动失效。
 
 ### 3.3 Skill（`agent/analytics-plugin/skills/`）
 
@@ -99,17 +102,18 @@
   - 参考价格侵蚀。
 
   另附「现有数据做不了」清单：RFM、CLV、复购、客流转化、真实 ROI、剥离金价。出处必须逐条核实后再写，调研时搜索工具不可用，现有出处凭记忆。
-- 删除 `ctf-marketing-advisor`、`analysis-review`；`validateAnalyticsSkills` 和相关测试同步改。
+- 从原正文提示词（`plan/prompt.ts` 的 `answerPrompt`）沿用的回答要求，作为思路写进 `ctf-qa`，不写成固定板块：第一句直接回答问题；要方案时先给方案、缺口放最后；缺维度时先说答不了的部分和原因，再给能确定的事实，再说补什么数据；用户纠正过的口径以最新为准。
+- 旧的 `ctf-marketing-advisor`、`analysis-review` 还被旧运行器和它的测试读取，第 5 节清理时再删。新运行器用 SDK 的 `skills` 选项只开放 `ctf-qa`、`marketing-theory` 两份，模型看不到旧的。
 
 ### 3.4 回答组装
 
 `PlanAnswerV4` 结构不变，页面 `PlanAnswerV4View` 照常渲染：
 
-- `body`：正文按 `[[chart:编号]]` 切成 markdown 块和 chart 块。markdown 块 `refs: []`。不再生成 table 块，表格由模型直接写 Markdown 表格。
+- `body`：正文按 `[[chart:编号]]` 切成 markdown 块和 chart 块，markdown 块 `refs: []`。模型写的 Markdown 表格转成 table 块，用页面现有的表格样式显示（聊天 Markdown 渲染器不支持表格）。`validatePlanAnswerV4` 的上限放宽：正文 20000 字、图 12 张、表 50 张、每表 200 行。
 - `plan`：改为本轮调过的每次 `analyze` / `simulate_scenario`（id、方法、状态、`purpose`），页面的「分析步骤」照常显示。
-- `evidence`：registry 里的全部结果，出处面板照常可查。
+- `evidence`：全部范围和方法、图上用到的事实（连同推出它们的父事实），以及每个范围每个维度留一个对象（「在洞察图上看」只需要知道用到了哪些维度）。不放全部事实，免得一次回答带几千条事实撑爆会话存储。
 - `review.notes`：空数组。`assumptions`、`definitions`：从用到的结果的口径和局限汇总。
-- 人设清洗：正文经过现有的模型 / 厂商名字清洗（`reply-stream.ts` 同一套规则）后再组装。
+- 人设清洗：正文经过 `reply-stream.ts` 里删模型 / 厂商名字的那一段（`withoutUnderlyingModel`）再组装。不用 `sanitizeAgentReply`：它会截到 800 字，还会删「提升 X%」，问答里真实的涨幅数据要保留。
 
 ### 3.5 执行过程展示（两边统一）
 
@@ -134,11 +138,12 @@
 新运行器验收通过后，单独一步删除（删之前和用户确认）：
 
 - `agent/analysis-plan-run-turn.ts`；
+- `agent/analytics-plugin/skills/ctf-marketing-advisor`、`analysis-review`，连同 `validateAnalyticsSkills`；
 - `app/lib/analytics/plan/` 下只服务计划式流程的部分（`prompt.ts`、`validate.ts`、`refs.ts`、计划执行）；
 - 旧运行器 `agent/analytics-run-turn.ts`；
 - 对应测试。
 
-`chart.ts`、`scenario.ts`、`answer.ts` 里新流程用到的函数保留并改造。
+新流程会用到的 `plan/bind.ts`（数字格式）、`plan/body-markdown.ts`（页面渲染）、`plan/scenario.ts`（情景测算）、`plan/answer.ts`（v4 校验和旧答案显示）保留。
 
 ## 6. 风险
 
@@ -158,7 +163,7 @@
   - 缓存命中与按数据版本失效；
   - 假 `query` 按脚本调真实工具跑完一整轮（沿用 `tests/conversation.test.ts` 的模式）；
   - 活动时间线的 Skill 合并行。
-- Skill 校验：`tests/skills.test.ts` 同类检查覆盖新的两份 Skill（frontmatter 只有 name、description，`[S#]` 出处可定位）。
+- Skill 校验：新运行器启动前检查两份 Skill 的格式（插件名 analytics、frontmatter 只有 name 和 description、有 H1 标题），格式不对直接报错、不调模型。不套用活动 Skill 的六节加 `[S#]` 格式：理论出处是书和论文，不是仓库文件。
 - 真实模型回归：用审计记录里最近 15 个问题跑新流程，按难度分组报告：
   - 耗时，简单问题目标 60 秒内；
   - 回答结构是否随问题变化；
