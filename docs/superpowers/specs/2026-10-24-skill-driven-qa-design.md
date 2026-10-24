@@ -43,6 +43,18 @@
 
 连续对话：请求里的 `history`（近期问答）和 `context`（用户前面说过、仍然有效的范围和口径）原样写进这一轮的用户提示词，由模型判断追问指的是什么、哪些范围沿用。代码不再替模型拼「沿用上一轮范围」的规则。
 
+不走固定回复：删掉问答入口前的两条正则捷径，所有问题都进模型，包括打招呼、致谢、问「你是谁」。
+- `quickAnalyticsReply`：寒暄、致谢、能力介绍直接返回写死的回复；
+- `quickMonthlySalesQuery`：「X 年 X 月销售额是多少」走单独的快速查询。
+
+一并删掉的引用：
+- `agent/analysis-plan-run-turn.ts:148-149`；
+- `agent/http-handler.ts:129`：没连数据库时给寒暄放行。改为没连数据库就统一报「历史数据库尚未启用」；
+- `app/lib/analytics/explain.ts:87` 的固定回复校验；
+- `app/lib/analytics/intent.ts:18` 的路由判断，删掉这个条件，其余路由逻辑不动，见第 4 节。
+
+简单问候怎么回、要不要查数，写进 `ctf-qa`。代价是问候也要等一次模型调用（几秒）。
+
 洞察联动：从洞察图跳来的 `focusContext` 照常写进提示词；回答的 `evidence` 仍带 objects 和 frames，`locateAnswer` 的「在洞察图上看」不受影响。
 
 ### 3.1 工具（MCP server `analytics`）
@@ -115,6 +127,7 @@
 
   CLAUDE.md「必须守住的约束」里的事实守卫保留。
 - 活动工作台右栏（酒红色、衬线标题）和左侧浅蓝风格不一致，这次不改。
+- 页面入口的分流 `app/lib/analytics/intent.ts` 的 `conversationRoute`：前端用十几条正则判断一句话该进智能问答还是进活动创建。这也是写死的流程，但牵涉活动创建入口，归入第二个子项目。
 
 ## 5. 不再使用的代码
 
