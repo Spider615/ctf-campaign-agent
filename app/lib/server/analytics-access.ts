@@ -26,10 +26,12 @@ export function analyticsAccess(request: Request, bootstrap = false) {
     if (origin && !sameHost(origin, url)) throw new AnalyticsError("数据写入必须来自同源页面", 403);
   }
   const owner = /(?:^|;\s*)ctf_analytics_owner=([0-9a-f-]{36})(?:;|$)/.exec(request.headers.get("cookie") ?? "")?.[1];
-  if (owner && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(owner)) return { owner, cookie: null };
+  const issue = (id: string) => `ctf_analytics_owner=${id}; Path=/api/analytics; HttpOnly; SameSite=Lax; Max-Age=31536000${url.protocol === "https:" ? "; Secure" : ""}`;
+  // 对话记录挂在这个标识上：打开页面（bootstrap 读取）时续期，常用的浏览器不会因为过期丢记录。
+  if (owner && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(owner)) return { owner, cookie: bootstrap ? issue(owner) : null };
   if (!bootstrap) throw new AnalyticsError("请先打开或刷新营销分析工作台，初始化访问标识", 401);
   const generated = crypto.randomUUID();
-  return { owner: generated, cookie: `ctf_analytics_owner=${generated}; Path=/api/analytics; HttpOnly; SameSite=Lax; Max-Age=2592000${url.protocol === "https:" ? "; Secure" : ""}` };
+  return { owner: generated, cookie: issue(generated) };
 }
 
 export async function readAnalyticsJson(request: Request): Promise<unknown> {

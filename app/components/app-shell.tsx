@@ -160,7 +160,7 @@ function WorkspaceShell({ children, marketing }: { children: React.ReactNode; ma
     }
   };
 
-  // 删除营销对话：只删本浏览器保存的记录；正在回答的先停掉，免得回答写回已删除的对话。
+  // 删除营销对话：连同服务端记录一起删；正在回答的先停掉，免得回答写回已删除的对话。
   const removeConversation = (id: string, title: string) => {
     if (!window.confirm(`删除对话「${title}」？删掉后找不回来。`)) return;
     analysisTurns.abort(id); fileTurns.abort(id);

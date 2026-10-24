@@ -9,6 +9,9 @@ export type AnalyticsStore = {
   listReports(owner: string): Promise<ReportSummary[]>;
   loadReport(owner: string, id: string): Promise<AnalysisReport | null>;
   saveReport(owner: string, report: AnalysisReport): Promise<void>;
+  listConversations(owner: string, scope: string): Promise<unknown[]>;
+  saveConversation(owner: string, scope: string, id: string, thread: unknown, updatedAt: string): Promise<void>;
+  deleteConversation(owner: string, id: string): Promise<void>;
 };
 
 export class AnalyticsError extends Error {
@@ -44,6 +47,19 @@ export function createAnalyticsStore(db: D1Database): AnalyticsStore {
       const { id, createdAt, datasetId, datasetVersion, datasetName, provenance, query } = report;
       await db.prepare("INSERT INTO analytics_report (id, owner_id, dataset_id, summary_json, report_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(id, owner, datasetId, JSON.stringify({ id, createdAt, datasetId, datasetVersion, datasetName, provenance, query }), JSON.stringify(report), createdAt).run();
+    },
+    // 取最近更新的 100 条，再按建立先后（rowid，覆盖写不改 rowid）排，和浏览器里的列表顺序一致。
+    async listConversations(owner, scope) {
+      const rows = await db.prepare("SELECT thread_json FROM (SELECT rowid AS r, thread_json FROM conversation_thread WHERE owner_id = ? AND scope = ? ORDER BY updated_at DESC LIMIT 100) ORDER BY r").bind(owner, scope).all<{ thread_json: string }>();
+      return rows.results.map((r) => JSON.parse(r.thread_json) as unknown);
+    },
+    // 整条覆盖写；同一标识已属于别的范围时不改它。
+    async saveConversation(owner, scope, id, thread, updatedAt) {
+      await db.prepare("INSERT INTO conversation_thread (id, owner_id, scope, thread_json, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (owner_id, id) DO UPDATE SET thread_json = excluded.thread_json, updated_at = excluded.updated_at WHERE conversation_thread.scope = excluded.scope")
+        .bind(id, owner, scope, JSON.stringify(thread), updatedAt).run();
+    },
+    async deleteConversation(owner, id) {
+      await db.prepare("DELETE FROM conversation_thread WHERE owner_id = ? AND id = ?").bind(owner, id).run();
     },
   };
 }

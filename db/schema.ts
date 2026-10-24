@@ -103,3 +103,12 @@ export const analyticsReports = sqliteTable("analytics_report", {
   reportJson: text("report_json").notNull(),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_analytics_report_owner").on(table.ownerId, table.createdAt)]);
+
+// 营销对话（智能问答、活动里的文件问答）按访问标识存整条对话；scope 区分对话列表和各活动的文件问答。
+export const conversationThreads = sqliteTable("conversation_thread", {
+  id: text("id").notNull(),
+  ownerId: text("owner_id").notNull(),
+  scope: text("scope").notNull(),
+  threadJson: text("thread_json").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.ownerId, table.id] }), index("idx_conversation_thread_scope").on(table.ownerId, table.scope, table.updatedAt)]);

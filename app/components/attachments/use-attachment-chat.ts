@@ -2,7 +2,7 @@
 
 import { useCallback, useState, useSyncExternalStore } from "react";
 import { attachmentReferences, postAttachmentStream, retryConversationAttachments, UnavailableAttachmentsError } from "../../lib/client/attachments";
-import { createHistoryConversationStore, historyMessageContext, replaceHistoryAttachment, type HistoryMessage } from "../../lib/client/history-conversation";
+import { createHistoryConversationStore, remoteThreads, historyMessageContext, replaceHistoryAttachment, type HistoryMessage } from "../../lib/client/history-conversation";
 import type { AttachmentReference, ConversationRequest } from "../../lib/attachments/types";
 import { reduceVisualizationProgress } from "../../lib/analytics/visualization-progress.ts";
 import { analyticsAnswerText } from "../../lib/analytics/stream";
@@ -17,13 +17,13 @@ const stores = new Map<string, ReturnType<typeof createHistoryConversationStore>
 function storeOf(conversationId: string) {
   let store = stores.get(conversationId);
   if (!store) {
-    store = createHistoryConversationStore({ getItem: (key) => typeof window === "undefined" ? null : window.sessionStorage.getItem(`ctf:campaign-files:${conversationId}:${key}`), setItem: (key, value) => { window.sessionStorage.setItem(`ctf:campaign-files:${conversationId}:${key}`, value); } });
+    store = createHistoryConversationStore({ getItem: (key) => typeof window === "undefined" ? null : window.sessionStorage.getItem(`ctf:campaign-files:${conversationId}:${key}`), setItem: (key, value) => { window.sessionStorage.setItem(`ctf:campaign-files:${conversationId}:${key}`, value); } }, remoteThreads(`campaign-files:${conversationId}`));
     stores.set(conversationId, store);
   }
   return store;
 }
 
-// 旧活动直达入口使用独立的浏览器会话记录，不改变 Campaign 的持久化事实。
+// 活动里的文件问答按活动存到服务端（scope campaign-files:<活动 id>），不改变 Campaign 的持久化事实。
 export function useAttachmentChat(conversationId: string) {
   const [store] = useState(() => storeOf(conversationId));
   const messages = useSyncExternalStore(store.subscribe, store.snapshot, store.serverSnapshot);
