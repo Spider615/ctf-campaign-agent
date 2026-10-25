@@ -4,10 +4,10 @@ import { createHistoryConversationStore, historyMessageContext, remoteThreads, t
 import { readAnalyticsJson } from "../app/lib/server/analytics-access.ts";
 import { parseConversationWrite } from "../app/lib/server/conversation-threads.ts";
 import { planAnswerV4Text } from "../app/lib/analytics/plan/answer.ts";
-import { simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
+import { simulatedPlanAnswer, simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
 import { storeChartEvidence } from "./helpers/analysis-v2-answer.ts";
 import { resolveAnalysisVisualization } from "../app/lib/analytics/visualization.ts";
-import { isPlanAnswerV4 } from "../app/lib/analytics/stream.ts";
+import { analyticsAnswerText, isPlanAnswerV4 } from "../app/lib/analytics/stream.ts";
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
@@ -16,6 +16,17 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const message = (text = "长答案", status: HistoryMessage["status"] = "done"): HistoryMessage => ({ id: "answer", role: "assistant", text, status, createdAt: "2026-10-25T06:00:00Z" });
 const thread = (id = "thread", text = "长答案"): Parameters<RemoteThreads["save"]>[0] => ({ id, title: "长答案", messages: [message(text)], context: [], campaignId: null, updatedAt: "2026-10-25T06:00:00Z" });
 const bodyOf = (value: ReturnType<typeof thread>, scope = "analysis") => JSON.stringify({ scope, thread: value });
+
+for (const makeAnswer of [simulatedPlanAnswer, simulatedPlanAnswerV4]) {
+  test(`${makeAnswer().schema}追问只传一次相同的已保存正文，保留不同的旧摘要`, () => {
+    const answer = makeAnswer(); const canonical = analyticsAnswerText(answer);
+    const saved = { ...message(canonical), answer };
+    assert.equal(historyMessageContext(saved), canonical.trim());
+    assert.equal(historyMessageContext({ ...saved, text: `\n${canonical}\n` }), canonical.trim());
+    assert.equal(historyMessageContext({ ...saved, text: "旧会话额外摘要" }), `旧会话额外摘要\n${canonical}`.trim());
+    assert.equal(saved.text, canonical, "只调整追问编码，不改写服务端或复制正文");
+  });
+}
 function sizedThread(size: number, scope = "analysis") {
   const value = thread(); value.messages[0].text = "";
   const room = size - bytes(bodyOf(value, scope));
@@ -134,7 +145,7 @@ test("长 v4 答案保存、清空缓存恢复、复制及追问上下文保留�
   t.diagnostic(`完整保存请求 ${bytes(written)} UTF-8 字节；正文 ${body.length} 字符、200 行表、12 张图、4002 条事实。`);
   const refreshed = createHistoryConversationStore(memory(), remoteThreads("analysis")); refreshed.activeId(); await tick(); await tick();
   const restored = refreshed.snapshot().at(-1)!; assert.ok(restored.answer && isPlanAnswerV4(restored.answer)); assert.equal(restored.text, copyText);
-  assert.equal(restored.answer.body.length, 14); assert.deepEqual(restored.answer.evidence, answer.evidence); assert.ok(historyMessageContext(restored).includes(copyText));
+  assert.equal(restored.answer.body.length, 14); assert.deepEqual(restored.answer.evidence, answer.evidence); assert.equal(historyMessageContext(restored), copyText);
   assert.equal(refreshed.saveState(id).status, "saved"); refreshed.update((items) => [...items, { id: "follow", role: "user", text: "沿用上次范围继续看", createdAt: "2026-10-25T06:01:00Z" }], id);
   assert.equal(refreshed.snapshot()[1].answer, restored.answer); assert.equal(refreshed.context().at(-1), "沿用上次范围继续看");
 });

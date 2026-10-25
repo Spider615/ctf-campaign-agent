@@ -92,7 +92,11 @@ const restoreMessages = (messages: HistoryMessage[]) => finishPending(messages).
 export function historyMessageContext(message: HistoryMessage): string {
   if (!message.answer) return message.text;
   if (isConversationAnswer(message.answer)) return `以下为用户上传资料的问答，不等同于已核验经营数据或执行事实：${message.answer.blocks.map((block) => block.text).join("\n\n")}`;
-  if (isPlanAnswer(message.answer)) return `${message.text}\n${analyticsAnswerText(message.answer)}`.trim();
+  if (isPlanAnswer(message.answer)) {
+    const answerText = analyticsAnswerText(message.answer);
+    // 保存时正文已由答案生成；相同内容不重复送入模型，不同的旧摘要继续保留。
+    return message.text.trim() === answerText.trim() ? answerText.trim() : `${message.text}\n${answerText}`.trim();
+  }
   return `${message.text}\n${message.answer.sources?.map((source) => `已查询范围：${source.scope}；口径：${source.definition}`).join("\n") ?? ""}`.trim();
 }
 
