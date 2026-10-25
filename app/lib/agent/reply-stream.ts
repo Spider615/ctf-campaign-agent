@@ -14,6 +14,20 @@ export function mentionsUnderlyingModel(text: string): boolean {
   return UNDERLYING_MODEL.test(text);
 }
 
+export function removeUnderlyingIdentity(text: string): string {
+  // 新问答只删除身份泄漏语句；不使用活动回复的固定介绍、涨幅过滤和长度裁剪。
+  const names = new RegExp(`${UNDERLYING_MODEL.source}|langchain|langgraph|llamaindex|autogen|crewai|codex|(?:我是|基于|由)\\s*cursor`, "i");
+  if (!names.test(text)) return text;
+  const lines: string[] = [];
+  for (const line of text.split("\n")) {
+    const sentences = line.match(/.+?(?:[。！？!?；;]|\.(?=\s|$)|$)/g) ?? [];
+    const kept = sentences.filter((sentence) => !names.test(sentence));
+    if (kept.length === sentences.length) lines.push(line);
+    else if (kept.length) lines.push(kept.join("").trimStart());
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function withoutUnderlyingModel(text: string): string {
   if (!UNDERLYING_MODEL.test(text)) return text;
   let introducedItself = false;

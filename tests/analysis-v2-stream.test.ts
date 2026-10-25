@@ -9,6 +9,7 @@ import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { TurnCancelledError } from "../app/lib/cancellation.ts";
 import { largeSimulatedPlanAnswer, simulatedPlanAnswer, simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
 import { createAgentHttpHandler } from "../agent/http-handler.ts";
+import { httpAnalyticsDatabase } from "./helpers/analytics-http.ts";
 
 const request = { mode: "database" as const, question: "先核对哪些门店？", history: [] };
 const progress = { type: "phase", phase: "analyzing", at: 1 };
@@ -158,8 +159,8 @@ async function historyRouteScript(upstream: string) {
 async function historyWorker(upstream: string) { return new Miniflare({ modules: true, compatibilityDate: "2026-05-15", compatibilityFlags: ["nodejs_compat", "enable_request_signal"], script: await historyRouteScript(upstream) }); }
 const routeHeaders = { "content-type": "application/json", accept: "application/x-ndjson", cookie: "ctf_analytics_owner=11111111-1111-4111-8111-111111111111" };
 test("真实 Node 到 Workers 再到客户端的大答案分块完整通过两次边界核验", { timeout: 10000 }, async () => {
-  const answer = largeSimulatedPlanAnswer();
-  const server = createServer(createAgentHttpHandler({ token: "", model: "test", runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runPlanAnalyticsTurn: async (_request, _signal, emit) => { emit?.({ type: "phase", phase: "writing", at: 1 }); return answer; } }));
+  const answer = { ...simulatedPlanAnswerV4(), evidence: largeSimulatedPlanAnswer().evidence };
+  const server = createServer(createAgentHttpHandler({ token: "", model: "test", database: httpAnalyticsDatabase(), runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runPlanAnalyticsTurn: async (_request, _signal, emit) => { emit?.({ type: "phase", phase: "writing", at: 1 }); return answer; } }));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); assert.ok(address && typeof address === "object");
   const worker = await historyWorker(`http://127.0.0.1:${address.port}`);
   try {
@@ -170,9 +171,9 @@ test("真实 Node 到 Workers 再到客户端的大答案分块完整通过两�
   } finally { await worker.dispose(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });
 
-test("可视化能力头经 Workers 转发时不影响 v3 答案，计划运行器不收到图表预览能力", { timeout: 10000 }, async () => {
-  const answer = simulatedPlanAnswer(); let calls = 0; let forwardedVisuals: string | undefined;
-  const handler = createAgentHttpHandler({ token: "", model: "test", runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runPlanAnalyticsTurn: async (...args) => { calls++; assert.equal(args.length <= 3, true); return answer; } });
+test("可视化能力头经 Workers 转发时保留 v4 答案，新运行器不收到图表预览能力", { timeout: 10000 }, async () => {
+  const answer = simulatedPlanAnswerV4(); let calls = 0; let forwardedVisuals: string | undefined;
+  const handler = createAgentHttpHandler({ token: "", model: "test", database: httpAnalyticsDatabase(), runAgentTurn: async () => { throw new Error("不能调用执行 Agent"); }, runPlanAnalyticsTurn: async (...args) => { calls++; assert.equal(args.length <= 3, true); return answer; } });
   const server = createServer((req, res) => { forwardedVisuals = req.headers["x-analytics-visuals"] as string | undefined; return handler(req, res); });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const address = server.address(); assert.ok(address && typeof address === "object");
   const worker = await historyWorker(`http://127.0.0.1:${address.port}`);

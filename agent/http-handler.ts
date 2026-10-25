@@ -8,22 +8,18 @@ import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, type AgentTrac
 import type { AgentTurnRunner } from "./run-turn.ts";
 import { isAnalyticsExplainRequest } from "../app/lib/analytics/explain.ts";
 import type { AnalyticsRunner } from "./analytics-run-turn.ts";
-import type { PlanAnalyticsRunner } from "./analysis-plan-run-turn.ts";
-import type { PlanAnswer } from "../app/lib/analytics/analysis-v2-types.ts";
+import type { AnalyticsSkillRunner } from "./analytics-runner-types.ts";
 import { isDatabaseExplainRequest, type AnalyticsDatabase } from "../app/lib/analytics/database.ts";
-import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
 import type { InsightGraphService } from "./insight-graph.ts";
 import type { InsightAskRunner } from "./insight-ask.ts";
 import { parseAskBody } from "../app/lib/insight/ask.ts";
 
-// 处理器只转发计划式答案，不关心版本：运行器现在回 v4，旧的 v3 运行器（测试替身）照样转发。
-type PlanRunnerLike = (...args: Parameters<PlanAnalyticsRunner>) => Promise<Awaited<ReturnType<PlanAnalyticsRunner>> | PlanAnswer>;
-
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
   runAnalyticsTurn?: AnalyticsRunner;
-  runPlanAnalyticsTurn?: PlanRunnerLike;
+  // 保留注入属性名，直接问答的合同由中性类型定义，实际运行器统一返回 v4。
+  runPlanAnalyticsTurn?: AnalyticsSkillRunner;
   database?: AnalyticsDatabase;
   token: string;
   model: string;
@@ -55,7 +51,7 @@ function publicError(message: string): string {
   return mentionsUnderlyingModel(message) ? "Agent 执行出错" : message;
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk }: AgentHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
     const isTurn = request.method === "POST" && request.url === "/turn";
@@ -119,14 +115,13 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlan
       if (requestController.signal.aborted) return;
       if (isAnalytics || isDatabase || isDatabaseStream) {
         const schema = request.headers["x-analytics-answer-schema"];
-        if (schema === "analysis-answer/v2") return send(response, 400, { error: "页面版本已更新，请刷新页面后重试" });
-        // v3、v4 请求头都走计划式运行器（回答是 v4）；页面改发 v4 之前旧请求头仍可用。
-        const planSchema = schema === "analysis-answer/v3" || schema === "analysis-answer/v4";
-        if (schema !== undefined && !planSchema) return send(response, 400, { error: "不支持这个分析回答版本" });
-        const runner: PlanRunnerLike | AnalyticsRunner | undefined = planSchema ? runPlanAnalyticsTurn : runAnalyticsTurn;
+        if (schema === undefined || schema === "analysis-answer/v2") return send(response, 400, { error: "页面版本已更新，请刷新页面后重试" });
+        // 新请求仅接受 v3/v4，均使用 Skill 问答运行器；旧消息的读取由原校验器兼容。
+        if (schema !== "analysis-answer/v3" && schema !== "analysis-answer/v4") return send(response, 400, { error: "不支持这个分析回答版本" });
+        const runner = runPlanAnalyticsTurn;
         if (!(isDatabase || isDatabaseStream ? isDatabaseExplainRequest(body) : isAnalyticsExplainRequest(body))) return send(response, 400, { error: "分析请求内容不完整" });
-        const analyticsRequest = body as Parameters<AnalyticsRunner>[0];
-        if ((isDatabase || isDatabaseStream) && !database && !quickAnalyticsReply(analyticsRequest.question)) return send(response, 503, { error: "历史数据库尚未启用" });
+        const analyticsRequest = body as Parameters<AnalyticsSkillRunner>[0];
+        if ((isDatabase || isDatabaseStream) && !database) return send(response, 503, { error: "历史数据库尚未启用" });
         if (!runner) return send(response, 503, { error: "营销分析解读服务尚未启动" });
         const started = performance.now();
         if (isDatabaseStream) {
@@ -140,7 +135,7 @@ export function createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlan
             if (!requestController.signal.aborted && !isTurnCancelled(error)) {
               const detail = error instanceof Error ? error.message : "本次分析暂未完成";
               logger.error(`[analytics] 回答失败（${Math.round(performance.now() - started)}ms）：${publicError(detail)}`);
-              emit({ type: "error", error: /格式|候选|模型不能|证据生成/.test(detail) ? "这次回答未通过数据核验，你的问题已保留，可以重试。" : publicError(detail) }); response.end();
+              emit({ type: "error", error: publicError(detail) }); response.end();
             }
           }
           return;

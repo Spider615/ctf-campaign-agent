@@ -1,6 +1,7 @@
 import { normalizeDate } from "./import.ts";
 import type { Period, AdvisorSource } from "./types.ts";
-import type { AnalysisDataSession } from "./analysis-v2-types.ts";
+import type { AnalysisCapabilities, AnalysisDataSession, AnalysisDimensionValuesPage, AnalysisDimensionValuesQuery } from "./analysis-v2-types.ts";
+import { analysisArgumentsInvalid, normalizeAnalysisAggregateQuery } from "./analysis-v2-operations.ts";
 
 export const HISTORY_DIMENSIONS = {
   overall: "整体", day: "日期", region: "大区", district: "分区", store: "门店", category: "业务小类", material: "材料", offer: "开单优惠名称",
@@ -14,6 +15,49 @@ export type DatabaseSummary = { available: boolean; name: string; minDate?: stri
 export type DatabaseExplainRequest = { mode: "database"; question: string; history: Array<{ role: "user" | "assistant"; text: string }>; context?: string[] };
 export type AnalyticsDatabase = { inspect(signal?: AbortSignal): Promise<DatabaseSummary>; query(input: unknown, signal?: AbortSignal): Promise<AdvisorSource[]>; openAnalysisSession?(signal?: AbortSignal): Promise<AnalysisDataSession> };
 const object = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+
+export function normalizeAnalysisDimensionValuesQuery(input: AnalysisDimensionValuesQuery, capabilities: AnalysisCapabilities) {
+  if (!object(input) || Object.keys(input).some((key) => !["dimension", "scope", "cursor", "pageSize"].includes(key))) throw analysisArgumentsInvalid("维度取值分页参数不正确");
+  if (!capabilities.dimensions.includes(input.dimension)) throw analysisArgumentsInvalid("当前数据没有这个取值维度");
+  let scope: AnalysisDimensionValuesQuery["scope"];
+  try { scope = normalizeAnalysisAggregateQuery({ scope: input.scope, by: [input.dimension], metrics: ["rows"] }, capabilities).scope; }
+  catch (error) {
+    // 仅转换无 I/O 的输入校验错误；已有错误码继续传播，不将资源读取错误降级为参数错误。
+    if (error instanceof Error && "code" in error) throw error;
+    throw analysisArgumentsInvalid(error instanceof Error ? error.message : "维度取值范围参数不正确");
+  }
+  const pageSize = input.pageSize === undefined ? 100 : input.pageSize;
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) throw analysisArgumentsInvalid("维度取值分页大小应为 1 至 100 的整数");
+  return { dimension: input.dimension, scope, pageSize };
+}
+
+// 游标只存于当前会话，绑定快照、版本、维度与规范化范围；不允许用偏移量猜测或跨会话续读。
+export function createAnalysisDimensionValuePages(session: Pick<AnalysisDataSession, "snapshotId" | "datasetVersion" | "capabilities">) {
+  const cursors = new Map<string, { key: string; after: string }>();
+  const issued = new Map<string, string>();
+  return {
+    request(input: AnalysisDimensionValuesQuery) {
+      const query = normalizeAnalysisDimensionValuesQuery(input, session.capabilities);
+      const key = JSON.stringify({ snapshotId: session.snapshotId, datasetVersion: session.datasetVersion, dimension: query.dimension, scope: query.scope });
+      let after: string | undefined;
+      if (input.cursor !== undefined) {
+        const saved = typeof input.cursor === "string" ? cursors.get(input.cursor) : undefined;
+        if (!saved || saved.key !== key) throw analysisArgumentsInvalid("维度取值游标已失效或不属于当前版本与范围");
+        after = saved.after;
+      }
+      return { query, key, after, cacheKey: JSON.stringify({ key, after, pageSize: query.pageSize }) };
+    },
+    page(request: { key: string; query: { pageSize: number } }, source: string[]): AnalysisDimensionValuesPage {
+      const values = source.slice(0, request.query.pageSize);
+      if (source.length <= values.length) return { values };
+      const after = values[values.length - 1]; const position = JSON.stringify({ key: request.key, after });
+      let nextCursor = issued.get(position);
+      if (!nextCursor) { nextCursor = crypto.randomUUID(); issued.set(position, nextCursor); cursors.set(nextCursor, { key: request.key, after }); }
+      return { values, nextCursor };
+    },
+    clear() { cursors.clear(); issued.clear(); },
+  };
+}
 
 export function isDatabaseExplainRequest(value: unknown): value is DatabaseExplainRequest {
   return object(value) && Object.keys(value).every((key) => ["mode", "question", "history", "context"].includes(key)) && (value.context === undefined || Array.isArray(value.context) && value.context.length <= 200 && value.context.every((text) => typeof text === "string" && text.length <= 500)) && value.mode === "database" && typeof value.question === "string" && Boolean(value.question.trim()) && value.question.length <= 500 &&

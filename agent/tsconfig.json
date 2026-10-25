@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["server.ts", "run-turn.ts", "skills.ts", "skill-smoke.ts", "analytics-evaluation.ts"]
+  "include": ["server.ts", "run-turn.ts", "skills.ts", "skill-smoke.ts", "analytics-evaluation.ts", "analytics-skill-run-turn.ts", "analytics-skill-evaluation.ts"]
 }

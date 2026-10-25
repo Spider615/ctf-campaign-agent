@@ -20,6 +20,7 @@ CTF_MYSQL_DATABASE=
 CTF_MYSQL_TABLE=
 # 查询证据保存在仓库外的私有目录
 CTF_MYSQL_EVIDENCE_DIR=
+# 分析问答仅复用当前只读事务的查询结果；源修订尚未可靠确认，跨会话缓存和多连接读取保持关闭。
 # 用户附件与解析产物必须存放仓库之外；留空使用用户应用数据目录
 ATTACHMENTS_DIR=
 # 可选：解析 Python；npm run install:attachments 安装后自动选用

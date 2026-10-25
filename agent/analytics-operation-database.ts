@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import mysql from "mysql2/promise";
 import { TurnCancelledError, throwIfTurnCancelled } from "../app/lib/cancellation.ts";
@@ -9,6 +9,8 @@ import type { AnalysisAggregateCell, AnalysisAggregateQuery, AnalysisCapabilitie
 import type { HistoryConnection } from "./analytics-database.ts";
 import type { AnalysisScenarioAggregate, AnalysisScenarioQuery } from "../app/lib/analytics/analysis-v2-types.ts";
 import { normalizeScenarioQuery } from "../app/lib/analytics/analysis-v2-scenarios.ts";
+import { createAnalysisDimensionValuePages, normalizeAnalysisDimensionValuesQuery } from "../app/lib/analytics/database.ts";
+import type { AnalysisDimensionValuesPage, AnalysisDimensionValuesQuery } from "../app/lib/analytics/analysis-v2-types.ts";
 import { ANALYSIS_DIMENSIONS, ANALYSIS_FILTER_DIMENSIONS, SEMANTIC_BASELINES, SEMANTIC_DATABASE_LIMITATIONS, SEMANTIC_DIMENSIONS, semanticDimensionCatalog, semanticFields, type SemanticFilterKey } from "../app/lib/analytics/semantic/model.ts";
 
 export type MysqlAnalysisConfig = { host: string; port: number; user: string; password: string; database: string; table: string; evidenceDir: string };
@@ -17,7 +19,7 @@ export type MysqlAnalysisConfig = { host: string; port: number; user: string; pa
 export const ANALYSIS_DATABASE_QUERY_TIMEOUT_MS = 180000;
 const ANALYSIS_DATABASE_IO_TIMEOUT_MS = ANALYSIS_DATABASE_QUERY_TIMEOUT_MS + 5000;
 
-type Dependencies = { connect: () => Promise<HistoryConnection>; pruneSource?: (connection: HistoryConnection, table: string, columns: readonly string[]) => Promise<string>; queryTimeoutMs?: number };
+type Dependencies = { connect: () => Promise<HistoryConnection>; pruneSource?: (connection: HistoryConnection, table: string, columns: readonly string[]) => Promise<string>; queryTimeoutMs?: number; onQueueWait?: (milliseconds: number) => void };
 // 维度来源来自语义层；这里只负责把来源编译成 SQL 表达式和所需列。
 export { sourceColumns } from "../app/lib/analytics/semantic/columns.ts";
 import { sourceColumns } from "../app/lib/analytics/semantic/columns.ts";
@@ -39,25 +41,6 @@ export function dimensionExpression(dimension: AnalysisDimension, lengths: Group
   return `CASE WHEN ${quoted(source.workday)} = 'Y' THEN '工作日' WHEN ${quoted(source.sunday)} = 'Y' THEN '周日' WHEN ${quoted(source.weekend)} = 'Y' THEN '周六' ELSE NULL END`;
 }
 const lengthMeasurable = (dimension: AnalysisDimension) => sourceOf(dimension)?.kind === "column";
-// 会话打开时列出全部取值的维度：取值有限、模型常写错的业务分类。日期、门店、商场、SKU 等不列。
-const DIMENSION_VALUE_LISTS: readonly AnalysisDimension[] = ["dayType", "festival", "region", "area", "district", "cityTier", "storeType", "storeGroup", "sameStore", "shopType", "storeComposition", "imageLevel", "salesLevel", "storeLevel", "retailExperience", "storeArea", "storeAge", "category", "productGroup", "material", "materialGroup", "priceBand", "seriesGroup", "keySeries", "campaignType", "memberFlag", "offer"];
-const MAX_DIMENSION_VALUES = 600;
-const dimensionValueCache = new Map<string, Map<string, string[]>>();
-// 维度取值的磁盘缓存：放在证据目录旁（同级的「目录名-dimension-values」），不混进证据文件；文件名是数据版本的哈希。读写失败都当没有缓存。
-const dimensionValueFile = (evidenceDir: string, key: string) => join(dirname(evidenceDir), `${basename(evidenceDir)}-dimension-values`, `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.json`);
-export const clearDimensionValueCacheForTest = () => dimensionValueCache.clear();
-async function readDimensionValues(evidenceDir: string, key: string): Promise<Map<string, string[]> | undefined> {
-  try {
-    const saved = JSON.parse(await readFile(dimensionValueFile(evidenceDir, key), "utf8")) as { key?: unknown; values?: unknown };
-    if (saved.key !== key || !saved.values || typeof saved.values !== "object") return undefined;
-    const entries = Object.entries(saved.values as Record<string, unknown>).filter((e): e is [string, string[]] => Array.isArray(e[1]) && e[1].every((v) => typeof v === "string"));
-    return new Map(entries);
-  } catch { return undefined; }
-}
-async function writeDimensionValues(evidenceDir: string, key: string, values: Map<string, string[]>): Promise<void> {
-  const file = dimensionValueFile(evidenceDir, key);
-  try { await mkdir(dirname(file), { recursive: true, mode: 0o700 }); await writeFile(`${file}.${process.pid}.tmp`, JSON.stringify({ key, values: Object.fromEntries(values) }), { mode: 0o600 }); await rename(`${file}.${process.pid}.tmp`, file); } catch { /* 写不了就下次再查 */ }
-}
 const metricColumns = { amount: "实际销售金额", quantity: "销售件数", grams: "销售金重", profit: "零售毛利", tag_amount: "销售牌仔价" } as const;
 type GroupDimension = AnalysisAggregateQuery["by"][number];
 type LengthField = GroupDimension | "saleNo";
@@ -139,6 +122,18 @@ export function buildAnalysisAggregateQuery(table: string, input: AnalysisAggreg
   return { sql, params, query, requiredColumns: [...requiredColumns] };
 }
 
+export function buildAnalysisDimensionValuesQuery(table: string, input: AnalysisDimensionValuesQuery, columns: readonly string[], after?: string) {
+  const capabilities = availableCapabilities(columns, "原币", normalizeAnalysisPeriod(input.scope.period));
+  const query = normalizeAnalysisDimensionValuesQuery(input, capabilities);
+  const base = buildAnalysisAggregateQuery(table, { scope: query.scope, by: [query.dimension], metrics: ["rows"] }, columns);
+  const dimension = query.dimension;
+  const expression = dimension === "day" ? "CONCAT(LEFT(`交易日期wid`, 4), '-', SUBSTRING(`交易日期wid`, 5, 2), '-', RIGHT(`交易日期wid`, 2))" : dimensionExpression(dimension);
+  const value = `CAST(CAST(${expression} AS CHAR) AS BINARY)`;
+  const where = base.sql.slice(base.sql.indexOf(" WHERE "), base.sql.indexOf(" GROUP BY "));
+  const sql = `SELECT /*+ MAX_EXECUTION_TIME(${ANALYSIS_DATABASE_QUERY_TIMEOUT_MS}) */ DISTINCT ${value} AS dimension_value FROM ${quoted(table)}${where} AND NULLIF(TRIM(CAST(${expression} AS CHAR)), '') IS NOT NULL${after === undefined ? "" : ` AND ${value} > CAST(? AS BINARY)`} ORDER BY dimension_value LIMIT ${query.pageSize + 1}`;
+  return { sql, params: [...base.params, ...(after === undefined ? [] : [after])], query, requiredColumns: base.requiredColumns };
+}
+
 export function buildAnalysisScenarioQuery(table: string, input: AnalysisScenarioQuery, columns: readonly string[], groupLengths: GroupLengths = {}) {
   const base = buildAnalysisAggregateQuery(table, { scope: input.scope, by: [], metrics: ["amount"] }, columns);
   const query = normalizeScenarioQuery(input, availableCapabilities(columns, "CNY", base.query.scope.period)); const rule = query.adjustment;
@@ -199,10 +194,16 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
     let connection: HistoryConnection | undefined; let active = true; let destroyed = false; let failureMessage: string | undefined; let terminationError: Error | undefined; const lifecycle = new AbortController();
     const cache = new Map<string, Promise<AnalysisAggregateCell[]>>(); const orderSetCache = new Map<string, Promise<AnalysisAggregateCell[] | null>>(); const identityCounts = new Map<string, Promise<number>>(); const distributionCache = new Map<string, Promise<AnalysisOrderDistribution>>(); let queue: Promise<unknown> = Promise.resolve();
     const scenarioCache = new Map<string, Promise<AnalysisScenarioAggregate>>();
+    const dimensionCache = new Map<string, Promise<AnalysisDimensionValuesPage>>();
+    let dimensionPages: ReturnType<typeof createAnalysisDimensionValuePages> | undefined;
     const variableColumns = new Set<string>(); const groupLengths = new Map<LengthField, number | undefined>();
     const destroy = () => { if (connection && !destroyed) { destroyed = true; connection.destroy(); } };
-    const invalidate = (message?: string, error?: Error) => { active = false; failureMessage = message ?? failureMessage; terminationError = error ?? terminationError ?? analysisSessionExpired(failureMessage); cache.clear(); orderSetCache.clear(); identityCounts.clear(); distributionCache.clear(); scenarioCache.clear(); destroy(); signal?.removeEventListener("abort", aborted); if (!lifecycle.signal.aborted) lifecycle.abort(); };
+    const invalidate = (message?: string, error?: Error) => { active = false; failureMessage = message ?? failureMessage; terminationError = error ?? terminationError ?? analysisSessionExpired(failureMessage); cache.clear(); orderSetCache.clear(); identityCounts.clear(); distributionCache.clear(); scenarioCache.clear(); dimensionCache.clear(); dimensionPages?.clear(); destroy(); signal?.removeEventListener("abort", aborted); if (!lifecycle.signal.aborted) lifecycle.abort(); };
     const assertActive = () => { if (!active) throw analysisSessionExpired(failureMessage); };
+    const observeQueueWait = (queuedAt: number) => {
+      try { dependencies.onQueueWait?.(performance.now() - queuedAt); }
+      catch { /* 观测失败不能改变查询、缓存或取消行为。 */ }
+    };
     const aborted = () => invalidate(undefined, new TurnCancelledError()); signal?.addEventListener("abort", aborted, { once: true });
     const resource = async <T>(job: () => Promise<T>, querySignal?: AbortSignal, deadline = true): Promise<T> => {
       throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive(); let timer: ReturnType<typeof setTimeout> | undefined; let onAbort = () => {};
@@ -219,7 +220,7 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
         invalidate(undefined, safe); throw safe;
       } finally { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", onAbort); querySignal?.removeEventListener("abort", onAbort); lifecycle.signal.removeEventListener("abort", onAbort); }
     };
-    const capture = async (sql: string, params: string[], result: unknown, query?: AnalysisAggregateQuery | AnalysisOrderDistributionQuery | AnalysisScenarioQuery) => {
+    const capture = async (sql: string, params: string[], result: unknown, query?: AnalysisAggregateQuery | AnalysisOrderDistributionQuery | AnalysisScenarioQuery | AnalysisDimensionValuesQuery) => {
       assertActive(); throwIfTurnCancelled(signal); const recordId = `Q-${randomUUID()}`;
       try { await writeFile(join(config.evidenceDir, `${recordId}.json`), JSON.stringify({ schema: "ctf-mysql-evidence/v2", recordId, snapshotId, datasetVersion, capturedAt: new Date().toISOString(), sql, params, rows: result, ...(query ? { query } : {}) }, null, 2), { flag: "wx", mode: 0o600 }); }
       catch { throw safeReadError("分析查询证据未能保存，本次结果不用于回答"); }
@@ -242,32 +243,11 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
         if (!record || !numeric(record.rows_count) || numeric(record.rows_count) !== numeric(record.unique_rows) || !/^\d{8}$/.test(String(record.min_day)) || !/^\d{8}$/.test(String(record.max_day))) throw safeReadError("分析源行身份或日期异常，不能作为证据");
         if (numeric(record.currencies) !== 1 || numeric(record.missing_currency) !== 0 || typeof record.currency !== "string" || !record.currency.trim() || record.currency.length > 40) throw safeReadError("分析源币种混合或缺失，不能直接汇总");
         const date = (value: unknown) => String(value).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3"); const period = normalizeAnalysisPeriod({ start: date(record.min_day), end: date(record.max_day) });
-        await capture(sql, [], result); return { period, currency: record.currency, rows: numeric(record.rows_count) };
+        await capture(sql, [], result); return { period, currency: record.currency };
       });
       const capabilities = availableCapabilities(columns, coverage.currency, coverage.period);
-      // 取值不多的维度读出全部实际取值：模型写筛选值时照抄，校验时据此拦截写错的值。
-      // 只扫一遍源表：先按全部维度的组合去重（几万行），再在去重结果上逐维取值；分维度各扫一遍视图要 8 分钟。
-      // 同一张表同一行数在进程内只读一次，并按数据版本落盘，重启后不再查库。
-      const catalog = capabilities.dimensionCatalog ?? [];
-      const listed = catalog.filter((item) => DIMENSION_VALUE_LISTS.includes(item.id));
-      if (listed.length) {
-        const cacheKey = `${config.database}.${config.table}:${coverage.rows}:${coverage.period.start}:${coverage.period.end}`;
-        let cached = dimensionValueCache.get(cacheKey) ?? await readDimensionValues(config.evidenceDir, cacheKey);
-        if (!cached) {
-          const relation = dependencies.pruneSource ? await resource(() => dependencies.pruneSource!(connection!, config.table, listed.flatMap((item) => sourceColumns(sourceOf(item.id)!)))) : quoted(config.table);
-          // 超过上限的维度不列取值。
-          const columns = listed.map((item, index) => `CAST(${dimensionExpression(item.id)} AS CHAR) AS c${index}`);
-          const parts = listed.map((item, index) => `(SELECT '${item.id}' AS d, c${index} AS v FROM combos GROUP BY c${index} LIMIT ${MAX_DIMENSION_VALUES + 1})`);
-          const sql = `WITH combos AS (SELECT /*+ MAX_EXECUTION_TIME(${ANALYSIS_DATABASE_QUERY_TIMEOUT_MS}) */ ${columns.join(", ")} FROM ${relation} GROUP BY ${listed.map((_, index) => `c${index}`).join(", ")}) SELECT d, v FROM (${parts.join(" UNION ALL ")}) AS dimension_values`;
-          const [result] = await resource(() => connection!.execute(sql));
-          const found = new Map<string, string[]>();
-          for (const row of rows(result)) { const value = row.v; if (typeof value !== "string" || !value.trim()) continue; const list = found.get(String(row.d)) ?? []; list.push(value); found.set(String(row.d), list); }
-          cached = new Map([...found].filter(([, values]) => values.length <= MAX_DIMENSION_VALUES).map(([id, values]) => [id, values.sort()]));
-          await writeDimensionValues(config.evidenceDir, cacheKey, cached);
-        }
-        dimensionValueCache.set(cacheKey, cached);
-        for (const item of listed) { const values = cached.get(item.id); if (values) item.values = [...values]; }
-      }
+      const pages = createAnalysisDimensionValuePages({ snapshotId, datasetVersion, capabilities }); dimensionPages = pages;
+      // 尚无可靠的不可变源修订；取值按需在当前事务分页，只缓存本会话，避免启动时预扫全部分类。
       const prepareRelation = async (requiredColumns: readonly string[], by: GroupDimension[], querySignal?: AbortSignal) => {
         const currentRelation = dependencies.pruneSource ? await resource(() => dependencies.pruneSource!(connection!, config.table, requiredColumns), querySignal) : quoted(config.table);
         const lengthColumn = (field: LengthField) => { if (field === "saleNo") return "销售单号"; const source = sourceOf(field as AnalysisDimension); return source?.kind === "column" ? source.column : ""; };
@@ -291,13 +271,36 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
       };
       const lengths = () => Object.fromEntries([...groupLengths].filter(([, length]) => length !== undefined));
       const session: AnalysisDataSession = { snapshotId, datasetVersion, capabilities, assertActive,
+        async dimensionValues(input, querySignal) {
+          if (querySignal?.aborted) invalidate(undefined, new TurnCancelledError());
+          throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive();
+          const request = pages.request(input); const cached = dimensionCache.get(request.cacheKey);
+          if (cached) return structuredClone(await resource(() => cached, querySignal, false));
+          const queuedAt = performance.now();
+          const pending = queue.then(async () => {
+            assertActive(); observeQueueWait(queuedAt); const plan = buildAnalysisDimensionValuesQuery(config.table, request.query, columns, request.after);
+            const relation = dependencies.pruneSource ? await resource(() => dependencies.pruneSource!(connection!, config.table, plan.requiredColumns), querySignal) : quoted(config.table);
+            const sql = plan.sql.replace(`FROM ${quoted(config.table)} WHERE`, `FROM ${relation} WHERE`);
+            const [raw] = await resource(() => connection!.execute(sql, plan.params), querySignal);
+            const values = rows(raw).map((row) => {
+              const value = Buffer.isBuffer(row.dimension_value) ? row.dimension_value.toString("utf8") : row.dimension_value;
+              if (typeof value !== "string" || !value.trim()) throw safeReadError("分析维度取值格式不正确"); return value;
+            });
+            if (values.length > request.query.pageSize + 1 || values.some((value, index) => index > 0 && Buffer.compare(Buffer.from(values[index - 1]), Buffer.from(value)) >= 0 || request.after !== undefined && Buffer.compare(Buffer.from(request.after), Buffer.from(value)) >= 0)) throw safeReadError("分析维度取值排序或分页不完整");
+            await resource(() => capture(sql, plan.params, values, request.query), querySignal); assertActive();
+            return pages.page(request, values);
+          });
+          queue = pending.catch(() => undefined); dimensionCache.set(request.cacheKey, pending);
+          return structuredClone(await resource(() => pending, querySignal, false));
+        },
         async scenario(input, querySignal) {
           if (querySignal?.aborted) invalidate(undefined, new TurnCancelledError());
           throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive();
           const query = normalizeScenarioQuery(input, capabilities); const key = JSON.stringify(query); const cached = scenarioCache.get(key);
           if (cached) return structuredClone(await resource(() => cached, querySignal, false));
+          const queuedAt = performance.now();
           const pending = queue.then(async () => {
-            assertActive(); let plan = buildAnalysisScenarioQuery(config.table, query, columns);
+            assertActive(); observeQueueWait(queuedAt); let plan = buildAnalysisScenarioQuery(config.table, query, columns);
             const relation = await prepareRelation(plan.requiredColumns, plan.by, querySignal);
             plan = buildAnalysisScenarioQuery(config.table, query, columns, lengths());
             const sql = plan.sql.replace(`FROM ${quoted(config.table)} WHERE`, `FROM ${relation} WHERE`);
@@ -320,8 +323,9 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
           if (querySignal?.aborted) invalidate(undefined, new TurnCancelledError());
           throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive(); const query = normalizeAnalysisAggregateQuery(input, capabilities); const key = JSON.stringify(query); const cached = cache.get(key);
           if (cached) { const result = await resource(() => cached, querySignal, false); return structuredClone(result); }
+          const queuedAt = performance.now();
           const pending = queue.then(async () => {
-            throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive();
+            throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive(); observeQueueWait(queuedAt);
             let plan = buildAnalysisAggregateQuery(config.table, query, columns);
             const currentRelation = await prepareRelation(plan.requiredColumns, query.by, querySignal);
             plan = buildAnalysisAggregateQuery(config.table, query, columns, lengths());
@@ -390,8 +394,9 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
           const scope = normalizeAnalysisAggregateQuery({ scope: plan.query.scope, by: [] }, capabilities).scope;
           plan = buildAnalysisOrderDistributionQuery(config.table, { ...plan.query, scope }, columns); const key = JSON.stringify(plan.query); const cached = distributionCache.get(key);
           if (cached) return structuredClone(await resource(() => cached, querySignal, false));
+          const queuedAt = performance.now();
           const pending = queue.then(async () => {
-            assertActive(); const relation = await prepareRelation(plan.requiredColumns, [], querySignal);
+            assertActive(); observeQueueWait(queuedAt); const relation = await prepareRelation(plan.requiredColumns, [], querySignal);
             plan = buildAnalysisOrderDistributionQuery(config.table, plan.query, columns, lengths());
             const sql = plan.sql.replace(`FROM ${quoted(config.table)} WHERE`, `FROM ${relation} WHERE`);
             const [result] = await resource(() => connection!.execute(sql, plan.params), querySignal); const records = rows(result);

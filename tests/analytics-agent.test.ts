@@ -31,14 +31,14 @@ test("没有匹配证据与尚未解读不同，不能将空选择替换成全�
 });
 
 test("分析解读接口沿用鉴权并将上游错误返回，不能伪造成功", async (t) => {
-  const server = createServer(createAgentHttpHandler({ token: "secret", model: "test", runAgentTurn: async () => { throw new Error("不应进入活动执行"); }, runAnalyticsTurn: async () => { throw new Error("分析上游不可用"); } }));
+  const server = createServer(createAgentHttpHandler({ token: "secret", model: "test", runAgentTurn: async () => { throw new Error("不应进入活动执行"); }, runPlanAnalyticsTurn: async () => { throw new Error("分析上游不可用"); } }));
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => { server.closeAllConnections(); server.close(); });
   const addr = server.address(); assert.ok(addr && typeof addr !== "string");
   const url = `http://127.0.0.1:${addr.port}/analytics/explain`;
   const body = JSON.stringify({ report: report(), question: "会员效果差异" });
   assert.equal((await fetch(url, { method: "POST", body })).status, 401);
-  const res = await fetch(url, { method: "POST", body, headers: { authorization: "Bearer secret" } });
+  const res = await fetch(url, { method: "POST", body, headers: { authorization: "Bearer secret", "x-analytics-answer-schema": "analysis-answer/v4" } });
   assert.equal(res.status, 502);
   const errorBody = await res.json() as { error: string };
   assert.match(errorBody.error, /上游不可用/);

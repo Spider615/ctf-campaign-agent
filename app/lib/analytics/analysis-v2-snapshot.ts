@@ -3,6 +3,8 @@ import { ANALYSIS_FILTER_DIMENSIONS, analysisMetricDefinitions, analysisMoneyCen
 import type { AnalysisAggregateCell, AnalysisCapabilities, AnalysisDataProvider, AnalysisDataSession, AnalysisDimension, AnalysisMetric, AnalysisPopulation } from "./analysis-v2-types.ts";
 import type { AnalyticsDataset, SalesRow } from "./types.ts";
 import { aggregateScenarioRows, normalizeScenarioQuery } from "./analysis-v2-scenarios.ts";
+import { createAnalysisDimensionValuePages } from "./database.ts";
+import type { AnalysisDimensionValuesPage } from "./analysis-v2-types.ts";
 
 const snapshotDimensions: Partial<Record<AnalysisDimension, keyof SalesRow>> = { day: "date", store: "store", region: "region", category: "category", sku: "sku", memberSegment: "memberSegment", offer: "campaignId" };
 const dimensionValue = (row: SalesRow, dimension: AnalysisDimension): string | undefined => {
@@ -44,10 +46,25 @@ export function createSnapshotAnalysisProvider(source: AnalyticsDataset): Analys
     limitations: [...dataset.warnings, "观察数据上的算术比较不证明活动因果或最佳力度", "缺少门店开闭店与完整订单状态；共同观察门店不是正式同店", "导入快照没有材料、牌仔价或源零售毛利字段，不能重建这些指标", "订单仅指当前筛选内的成交部分；缺店号或单号记录不用于完整订单计算"] };
   return { async open(signal?: AbortSignal): Promise<AnalysisDataSession> {
     throwIfTurnCancelled(signal); let active = true; const cache = new Map<string, AnalysisAggregateCell[]>();
+    const snapshotId = `snapshot-${crypto.randomUUID()}`;
+    const pages = createAnalysisDimensionValuePages({ snapshotId, datasetVersion: dataset.version, capabilities });
+    const dimensionCache = new Map<string, AnalysisDimensionValuesPage>();
     const assertActive = () => { if (!active) throw analysisSessionExpired(); };
-    const invalidate = () => { active = false; cache.clear(); };
+    const invalidate = () => { active = false; cache.clear(); dimensionCache.clear(); pages.clear(); };
     signal?.addEventListener("abort", invalidate, { once: true });
-    const session: AnalysisDataSession = { snapshotId: `snapshot-${crypto.randomUUID()}`, datasetVersion: dataset.version, capabilities: structuredClone(capabilities), assertActive,
+    const session: AnalysisDataSession = { snapshotId, datasetVersion: dataset.version, capabilities: structuredClone(capabilities), assertActive,
+      async dimensionValues(input, querySignal) {
+        if (querySignal?.aborted || signal?.aborted) invalidate();
+        throwIfTurnCancelled(querySignal); throwIfTurnCancelled(signal); assertActive();
+        const request = pages.request(input); const cached = dimensionCache.get(request.cacheKey);
+        if (cached) return structuredClone(cached);
+        const { scope, dimension, pageSize } = request.query;
+        const rows = dataset.rows.filter((row) => row.date >= scope.period.start && row.date <= scope.period.end && participates(row, scope.population) &&
+          Object.entries(scope.filters).every(([key, values]) => values!.includes(dimensionValue(row, ANALYSIS_FILTER_DIMENSIONS[key as keyof typeof ANALYSIS_FILTER_DIMENSIONS]) ?? "")));
+        const values = [...new Set(rows.map((row) => dimensionValue(row, dimension)).filter((value): value is string => value !== undefined))].sort().filter((value) => request.after === undefined || value > request.after).slice(0, pageSize + 1);
+        throwIfTurnCancelled(querySignal); throwIfTurnCancelled(signal); assertActive();
+        const page = pages.page(request, values); dimensionCache.set(request.cacheKey, page); return structuredClone(page);
+      },
       async aggregate(input, querySignal) {
         if (querySignal?.aborted || signal?.aborted) invalidate();
         throwIfTurnCancelled(querySignal); throwIfTurnCancelled(signal); assertActive(); const query = normalizeAnalysisAggregateQuery(input, capabilities); const key = JSON.stringify(query); const cached = cache.get(key);

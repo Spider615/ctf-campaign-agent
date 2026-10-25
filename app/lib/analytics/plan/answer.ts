@@ -225,10 +225,10 @@ export function planAnswerText(answer: PlanAnswer): string {
 export type PlanAnswerV4Input = { runId: string; question: string; execution: PlanExecution; body: ResolvedBody; capabilities: AnalysisCapabilities; droppedNodes: Array<{ id: string; reason: string }>; reviewNotes: string[] };
 
 const EMPTY_BODY = "这次没能得出可以直接采用的结论。";
-const MAX_V4_BODY = 1200;
-const MAX_V4_TABLES = 3;
-const MAX_V4_CHARTS = 2;
-const MAX_V4_TABLE_ROWS = 8;
+const MAX_V4_BODY = 20000;
+const MAX_V4_TABLES = 50;
+const MAX_V4_CHARTS = 12;
+const MAX_V4_TABLE_ROWS = 200;
 
 export function assemblePlanAnswerV4(input: PlanAnswerV4Input): PlanAnswerV4 {
   const { execution, capabilities } = input;

@@ -118,5 +118,6 @@ test("转换层：上游错误保留状态码并转成 Anthropic 错误类型", 
   const response = await fetch(`${base}/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "m", messages: [] }) });
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "7");
+  assert.equal(response.headers.get("x-should-retry"), "false", "确定额度耗尽不能按短暂限流重复等待");
   assert.equal((await response.json() as { error: { type: string } }).error.type, "rate_limit_error");
 });

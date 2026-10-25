@@ -8,6 +8,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 业务实现依据是 `docs/superpowers/specs/2026-09-16-ics1811-sop-agent-design.md`，其中追问轮次和复述确认已被 `2026-09-16-conversational-build-design.md`（决策 D5 齐了直接建好、D6 人定项提议加点头）取代；浅色工作台和工具轨迹依据是 `docs/superpowers/specs/2026-09-16-light-ai-workspace-design.md`；文中「§」指 SOP 章节，「第 X 节」指业务设计文档章节。
 
+### 当前智能问答（2026-10-25）
+
+依据 `docs/superpowers/specs/2026-10-24-skill-driven-qa-design.md` 和 `docs/superpowers/plans/2026-10-24-skill-driven-qa.md`。直接数据库与报告问答由 `agent/analytics-skill-run-turn.ts` 的 `createAnalyticsSkillRunner` 处理，HTTP 注入类型来自 `agent/analytics-runner-types.ts` 的 `AnalyticsSkillRunner`。`/analytics/database/explain`、`/analytics/database/explain/stream` 与 `/analytics/explain` 的新请求只接受 `X-Analytics-Answer-Schema: analysis-answer/v3` 或 `analysis-answer/v4`，均返回 v4；无头、v2 和未知头明确返回 400，不回退旧模型。已保存的 v1/v3/v4 消息继续按原合同读取。
+
+每轮直接问答只启动一次 SDK `query()`，其中可包含多次模型 API 请求。模型自主选择是否加载 `analytics:ctf-qa`、`analytics:marketing-theory`，以及是否、按什么顺序调用 `inspect_dataset`、`analyze`、`simulate_scenario`、`draw_chart`、`submit_answer`；不强制 Skill、不固定业务步骤。你好、谢谢、身份介绍和明确月份总额都进入新模型，不调用 `quickAnalyticsReply` 或 `quickMonthlySalesQuery`。数据库入口未配置数据服务时统一返回 503，问候不特殊放行；已配置时按工具需求惰性打开数据会话。
+
+直接问答正文不再进行代码数字核对，也不固定独立复核或 `decisionQuality` 门禁；保留 v4 结构、图表真实数据绑定和对外身份清洗，错误不能误称为正文数字未通过核验。工具仍受真实数据授权、白名单参数化只读查询和金额计算合同约束，不开放 SQL、命令、任意文件或网络。数据版本授权不可扩大；收到的 `history`、`context` 和报告业务范围交给模型理解，不能把客户端裁剪后的内容宣称为完整历史。原报告不变；原始结果和审计记录在仓库外，不保存隐藏思维。直接问答不设应用层总时长或业务轮数上限，取消可打断挂起的 SDK next。NDJSON 传递真实公开过程和最终 v4 答案，过程流不等于正文逐字流式输出。
+
+附件及混合文件问答仍由 `agent/attachments/` 处理，在 `server.ts` 单独注入原 `createPlanAnalyticsRunner`，不注入新运行器；保留原外层 240 秒预算、至多三次历史分析调用、`conversation-answer/v1` 的逐段来源/数字合同和独立语义复核。直接问答的无总时长、无固定复核与正文放开不扩展到附件。
+
+旧分析合同仅供附件与历史兼容、测试对照：`agent/analytics-run-turn.ts`、`agent/general-analytics-run-turn.ts`、`agent/analysis-plan-run-turn.ts` 和旧 `ctf-marketing-advisor`、`analysis-review` Skill 保留，不作为直接问答的 HTTP 回退。旧版逐句数字核验、固定计划/复核、`calculate_analysis`、`simulate_analysis` 和 `decisionQuality` 要求不适用于新正文。旧合同见 `docs/superpowers/specs/2026-10-13-marketing-advisor-integration-design.md` 与 `docs/superpowers/specs/2026-10-13-general-analytics-agent-design.md`。活动执行的 runner、权限门禁及入口路由沿用活动章节。
+
 ## 命令
 
 需要 Node.js >= 22.13。测试和 Agent 服务都靠 `--experimental-strip-types` 直接跑 `.ts`，旧版 Node 会报 `bad option: --experimental-strip-types`。
@@ -32,7 +44,7 @@ npm run build
 - 端口被占：Agent 服务读 `.dev.vars` 里的 `AGENT_PORT`，同时把 `AGENT_SERVICE_URL` 改成对应地址；页面端口被占时 Vite 自动顺延，以终端打印的地址为准。
 - 只改 `agent/plugin/skills/*/SKILL.md`，下一次 Agent 回合会直接生效，不需要重启 `dev:agent`；Skill 格式不符合约定时，下一回合会明确报错，不会静默关闭业务知识。
 - 改 `agent/skills.ts`、`agent/server.ts`、`app/lib/agent/` 或 `app/lib/campaign/ics1811/`，仍要重启 `dev:agent`（页面侧会热更新）。
-- 没有有效 key 时 Agent 不会立刻报认证错误，而是等满单轮超时（120s）才报「Agent 超时了」。
+- 直接智能问答没有应用层总时长或业务轮数上限；附件保留上述外层预算。供应商或鉴权错误按真实上游错误反馈，持续挂起的回合可以主动停止。
 
 本地 D1 首次使用前，先 `npm run build`，再应用迁移：
 
@@ -134,6 +146,8 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 - 修改后运行 `node --test --experimental-strip-types tests/skills.test.ts`、`npx tsc --noEmit` 和 `npx tsc -p agent/tsconfig.json`，再通过 Git diff 和代码评审合入。
 
 `tests/skills.test.ts` 会调用 `validateSkillSources`，确认每个 `[S#]` 引用都能定位到仓库内的现有出处。
+
+当前智能问答只向模型公开 `analytics:ctf-qa` 与 `analytics:marketing-theory`，由 `agent/analytics-skill-catalog.ts` 校验插件名、name/description frontmatter 和 H1，不套用上述执行插件的六节与 `[S#]` 规则。旧分析 Skill 为附件/历史兼容和测试保留，不放宽执行插件校验。
 
 ### 界面 `app/components/`
 

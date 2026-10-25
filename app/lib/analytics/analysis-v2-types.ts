@@ -20,7 +20,7 @@ export type AnalysisScope = { period: Period; population: AnalysisPopulation; fi
 export type AnalysisConstraints = { period?: Period; filters: AnalysisFilters };
 
 export type AnalysisMetricDefinition = { id: string; label: string; unit: string; grain: "line" | "selected_order" | "group" | "unknown"; additive: boolean; allowedPopulations: AnalysisPopulation[]; requiredControls: AnalysisDimension[]; definition: string; basis?: "schema" | "data" | "business" | "assumption" };
-// values：取值不多的维度在会话打开时读出全部实际取值，供计划校验筛选值、提示模型写对原值。
+// values：兼容已有提供方的完整小目录；MySQL 与导入快照的实际取值按 scope 通过 dimensionValues 分页读取。
 export type AnalysisDimensionDefinition = { id: AnalysisDimension; label: string; filter: SemanticFilterKey; parent?: AnalysisDimension; scan: boolean; definition: string; basis: "schema" | "data" | "business" | "assumption"; values?: string[] };
 export type AnalysisBaselineDefinition = { id: string; label: string; how: string; definition: string; basis: "schema" | "data" | "business" | "assumption" };
 export type AnalysisCapabilities = { mode: "database" | "snapshot" | "historical"; name: string; coverage: Period; currency: string; provenance: "sample" | "imported"; dimensions: AnalysisDimension[]; dimensionCatalog?: AnalysisDimensionDefinition[]; metrics: AnalysisMetricDefinition[]; baselines?: AnalysisBaselineDefinition[]; methods: AnalysisMethod[]; scenarios?: AnalysisAdjustment["kind"][]; limitations: string[] };
@@ -35,12 +35,14 @@ export type AnalysisEvidence = { frames: AnalysisFrame[]; facts: AnalysisFact[];
 // 单元数据仅供确定性操作使用；逐单标识和底层查询不进入模型上下文。
 export type AnalysisAggregateCell = { dimensions: Partial<Record<AnalysisDimension | "order", string>>; rows: number; amount: number | null; quantity: number | null; grams: number | null; profit: number | null; orders: number | null; stores: number | null; tag_amount: number | null; orderMissingRows?: number | null; orderIds?: Array<string | null> };
 export type AnalysisAggregateQuery = { scope: AnalysisScope; by: Array<AnalysisDimension | "order">; metrics?: AnalysisMetric[]; excludeStores?: string[]; excludeOrders?: string[] };
+export type AnalysisDimensionValuesQuery = { dimension: AnalysisDimension; scope: AnalysisScope; cursor?: string; pageSize?: number };
+export type AnalysisDimensionValuesPage = { values: string[]; nextCursor?: string };
 export type AnalysisOrderDistributionQuery = { scope: AnalysisScope; metrics: AnalysisMetric[] };
 export type AnalysisOrderDistribution = { sampleRows: number; excludedRows: number; orderCount: number; quantiles: Partial<Record<AnalysisMetric, { p50: number | null; p90: number | null; p99: number | null }>> };
 export type AnalysisAdjustment = { kind: "per_gram" | "per_item" | "per_order"; amount: string } | { kind: "amount_rate"; rate: string } | { kind: "order_threshold"; threshold: string; amount: string };
 export type AnalysisScenarioQuery = { scope: AnalysisScope; adjustment: AnalysisAdjustment };
 export type AnalysisScenarioAggregate = { sampleRows: number; amountCents: number; lossCents: number | null; units: number | null; unit: "克" | "件" | "单" | "实收"; missingUnits: number; nonpositiveUnits: number; eligibleUnits: number };
-export type AnalysisDataSession = { snapshotId: string; datasetVersion: string; capabilities: AnalysisCapabilities; assertActive?(): void; aggregate(query: AnalysisAggregateQuery, signal?: AbortSignal): Promise<AnalysisAggregateCell[]>; aggregateWithOrderIds?(query: AnalysisAggregateQuery, signal?: AbortSignal): Promise<AnalysisAggregateCell[] | null>; orderDistribution?(query: AnalysisOrderDistributionQuery, signal?: AbortSignal): Promise<AnalysisOrderDistribution>; scenario?(query: AnalysisScenarioQuery, signal?: AbortSignal): Promise<AnalysisScenarioAggregate>; close(): Promise<void> };
+export type AnalysisDataSession = { snapshotId: string; datasetVersion: string; capabilities: AnalysisCapabilities; assertActive?(): void; dimensionValues?(query: AnalysisDimensionValuesQuery, signal?: AbortSignal): Promise<AnalysisDimensionValuesPage>; aggregate(query: AnalysisAggregateQuery, signal?: AbortSignal): Promise<AnalysisAggregateCell[]>; aggregateWithOrderIds?(query: AnalysisAggregateQuery, signal?: AbortSignal): Promise<AnalysisAggregateCell[] | null>; orderDistribution?(query: AnalysisOrderDistributionQuery, signal?: AbortSignal): Promise<AnalysisOrderDistribution>; scenario?(query: AnalysisScenarioQuery, signal?: AbortSignal): Promise<AnalysisScenarioAggregate>; close(): Promise<void> };
 export type AnalysisDataProvider = { open(signal?: AbortSignal): Promise<AnalysisDataSession> };
 
 export type AnalysisOperationRequest = {
@@ -77,7 +79,7 @@ export type PlanAnswer = {
   review: { notes: string[] }; evidence: AnalysisEvidence; trace?: ToolTrace;
 };
 
-// v4：正文由模型自由写成 Markdown，数字是引用替换出来的；refs 标出每个数字在 text 里的位置和对应事实。
+// v4兼容旧数字引用；新问答的自由正文refs为空，不表示逐句核验，图表仍绑定真实事实。
 export type PlanAnswerBlock =
   | { kind: "markdown"; text: string; refs: Array<{ start: number; end: number; factIds: string[] }> }
   | { kind: "table"; title: string; columns: string[]; rows: Array<{ cells: string[]; factIds: string[] }> }

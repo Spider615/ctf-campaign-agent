@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
 import { storeChartEvidence } from "./helpers/analysis-v2-answer.ts";
-import { simulatedPlanAnswer } from "./helpers/plan-answer.ts";
+import { simulatedPlanAnswer, simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
+import { httpAnalyticsDatabase } from "./helpers/analytics-http.ts";
 import { consumeAnalyticsStream, encodeAnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
 import { reduceVisualizationProgress, restoreVisualizationProgress } from "../app/lib/analytics/visualization-progress.ts";
 import type { VisualizationProgressEvent } from "../app/lib/analytics/visualization-types.ts";
@@ -39,16 +40,18 @@ test("阶段图表修订去重、冲突拒绝、证据撤回且旧代次不能�
   assert.equal(restoreVisualizationProgress(stored), undefined);
 });
 
-test("计划运行器只收到请求、取消信号与过程回调，可视化能力头不改变答案", async (t) => {
+test("新运行器只收到请求、取消信号与过程回调，可视化能力头不改变 v4 答案", async (t) => {
   const argCounts: number[] = [];
-  const server = createServer(createAgentHttpHandler({ token: "test", model: "test", runAgentTurn: async () => { throw new Error("不调用执行"); }, runPlanAnalyticsTurn: async (...args) => { argCounts.push(args.length); return simulatedPlanAnswer(); } }));
+  const server = createServer(createAgentHttpHandler({ token: "test", model: "test", database: httpAnalyticsDatabase(), runAgentTurn: async () => { throw new Error("不调用执行"); }, runPlanAnalyticsTurn: async (...args) => { argCounts.push(args.length); assert.ok(args[1] instanceof AbortSignal); return simulatedPlanAnswerV4(); } }));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); t.after(() => { server.closeAllConnections(); server.close(); });
   const address = server.address(); assert.ok(address && typeof address === "object"); const url = `http://127.0.0.1:${address.port}/analytics/database/explain/stream`;
-  for (const capability of [undefined, "future", "analysis-visualization/v1"]) {
-    const response = await fetch(url, { method: "POST", headers: { authorization: "Bearer test", "content-type": "application/json", "x-analytics-answer-schema": "analysis-answer/v3", ...(capability ? { "x-analytics-visuals": capability } : {}) }, body: JSON.stringify({ mode: "database", question: "你好", history: [] }) });
+  for (const schema of ["analysis-answer/v3", "analysis-answer/v4"]) for (const capability of [undefined, "future", "analysis-visualization/v1"]) {
+    const response = await fetch(url, { method: "POST", headers: { authorization: "Bearer test", "content-type": "application/json", "x-analytics-answer-schema": schema, ...(capability ? { "x-analytics-visuals": capability } : {}) }, body: JSON.stringify({ mode: "database", question: "你好", history: [] }) });
     assert.equal(response.status, 200); const text = await response.text(); assert.equal(text.includes('"type":"visualization"'), false);
+    const events = text.trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(events.at(-1).result, simulatedPlanAnswerV4());
   }
-  assert.deepEqual(argCounts, [3, 3, 3]);
+  assert.deepEqual(argCounts, [3, 3, 3, 3, 3, 3]);
 });
 
 test("浏览器历史分析请求声明可视化能力，不改变业务请求体", async (t) => {

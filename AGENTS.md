@@ -8,19 +8,21 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 分析领域位于 `app/lib/analytics/`；D1 与访问隔离位于 `app/lib/server/analytics-*.ts`。所有分析 API 通过 `analyticsResponse` 使用浏览器访问标识，写入检查同源。金额按分计算，数据缺失不填零，原报告与数据版本保持不可变。明确标识的分析模拟快照不属于 ICS 内部代码表。
 
-启用私有 `CTF_MYSQL_*` 配置后，首页和 `/analysis` 默认进入连续营销对话。客户重点是历史数据支持的建议、洞察和创新角度，不要求填写分析或活动表单。`agent/analytics-database.ts` 负责固定参数化只读查询与私有证据记录；模型不接收SQL、连接凭据或任意表名。销售、净销售、回收候选及订单成交部分分布口径明确区分，核对币种后聚合。对话保留用户持续要求与来源范围，记录只在当前浏览器会话恢复；明确要求执行时才衔接原活动入口。
+启用私有 `CTF_MYSQL_*` 配置后，首页和 `/analysis` 默认进入连续营销对话。客户重点是历史数据支持的建议、洞察和创新角度，不要求填写分析或活动表单。`agent/analytics-database.ts` 负责固定参数化只读查询与私有证据记录；模型不接收SQL、连接凭据或任意表名。销售、净销售、回收候选及订单成交部分分布口径明确区分，核对币种后聚合。对话保留用户持续要求与来源范围，按访问标识和对话隔离保存于服务端，浏览器只作缓存；明确要求执行时才衔接原活动入口。
 
 客户首页不展示连接状态、明细条数、日期覆盖、数据导入或旧活动工作台。资料准备在后台完成，首页直接可提问；访问标识仅在提交时初始化，数据口径与限制通过回答角标查看。内部导入维护位于 `/internal/analysis`，不从客户首页提供链接。
 
-分析 Agent 使用 `agent/analytics-run-turn.ts` 和 `agent/analytics-plugin/`。寒暄、致谢、能力介绍与无业务筛选上下文的明确月份总额由代码直接处理，不加载 Skill。需要 Agent 解读条件的查数直接使用受控工具，不要求加载 Skill；复盘、原因分析和营销建议只加载 `analytics:ctf-marketing-advisor`，无需先加载 `analytics:analysis-review`。数据授权、只读权限、范围、口径和数字引用由代码校验。它可在同版本授权快照内受控重算，按需读取 `ANALYTICS_HISTORY_DIR` 的历史案例或参数化只读数据库；数字由代码按已读取证据生成。页面角标展开来源的周期、口径、版本及结果。原报告不变，取消可打断挂起的 SDK next。营销对话复用原布局、消息、输入框与过程卡片，NDJSON只传真实公开过程和核验后的最终答案。执行继续使用原 ics1811 插件，不混用两个 Skill 门禁。具体合同见 `docs/superpowers/specs/2026-10-13-marketing-advisor-integration-design.md`。
+当前智能问答（2026-10-25）依据 `docs/superpowers/specs/2026-10-24-skill-driven-qa-design.md` 和 `docs/superpowers/plans/2026-10-24-skill-driven-qa.md`。直接数据库与报告问答由 `agent/analytics-skill-run-turn.ts` 的 `createAnalyticsSkillRunner` 处理，HTTP 注入类型来自 `agent/analytics-runner-types.ts` 的 `AnalyticsSkillRunner`。`/analytics/database/explain`、`/analytics/database/explain/stream` 与 `/analytics/explain` 的新请求只接受 `X-Analytics-Answer-Schema: analysis-answer/v3` 或 `analysis-answer/v4`，均返回 v4；无头、v2 和未知头明确返回 400，不回退旧模型。已保存的 v1/v3/v4 消息继续按原合同读取。
 
-新客户端以 `X-Analytics-Answer-Schema: analysis-answer/v2` 启用 `agent/general-analytics-run-turn.ts`，缺少该头仍兼容原合同。通用任务按原问题语义区分查数与分析，五种确定性方法在同一只读快照内执行。数据版本授权不可扩大；报告筛选属于业务范围，修正日期继承旧筛选，解除须明确原话。每条结论、正文和数字引用接受硬核验，再由独立上下文按实际天数、控制层、完整贡献和能力边界复核。主分析和复核均可按真实进展续接逻辑窗口，重复查询、读取和改模式不算进展。原始数字、全量证据及业务复核记录存仓库外，不保存隐藏思维。合同及业务验收见 `docs/superpowers/specs/2026-10-13-general-analytics-agent-design.md`。
+每轮直接问答只启动一次 SDK `query()`，其中可包含多次模型 API 请求。模型自主选择是否加载 `analytics:ctf-qa`、`analytics:marketing-theory`，以及是否、按什么顺序调用 `inspect_dataset`、`analyze`、`simulate_scenario`、`draw_chart`、`submit_answer`；不强制 Skill、不固定业务步骤。你好、谢谢、身份介绍和明确月份总额都进入新模型，不调用 `quickAnalyticsReply` 或 `quickMonthlySalesQuery`。数据库入口未配置数据服务时统一返回 503，问候不特殊放行；已配置时按工具需求惰性打开数据会话。
 
-分析回答开头直接给出判断、建议及成立条件；历史范围不能写成今年现状。`calculate_analysis` 只对已读、同范围同对象的真实依据和显式假设做受控四则运算，不查库；情景参数及派生结果保留假设身份，不能标为历史观察。可计算的保本条件、成本或风险先算，再提出与真实对象及验收条件相连的建议，不套用固定试点天数。分析复核必须提交 `decisionQuality` 的直接回答、证据适用性与行动价值检查；工具注册和 SDK 授权共用同一来源，图表与计算不能只注册未授权。
+直接问答正文不再进行代码数字核对，也不固定独立复核或 `decisionQuality` 门禁；保留 v4 结构、图表真实数据绑定和对外身份清洗，错误不能误称为正文数字未通过核验。工具仍受真实数据授权、白名单参数化只读查询和金额计算合同约束，不开放 SQL、命令、任意文件或网络。数据版本授权不可扩大；收到的 `history`、`context` 和报告业务范围交给模型理解，不能把客户端裁剪后的内容宣称为完整历史。原报告不变；原始结果和审计记录在仓库外，不保存隐藏思维。直接问答不设应用层总时长或业务轮数上限，取消可打断挂起的 SDK next。NDJSON 传递真实公开过程和最终 v4 答案，过程流不等于正文逐字流式输出。
 
-`simulate_analysis` 以已读、未分组的 sales 总体 amount 事实绑定当前快照及范围；按能力声明执行按克、按件、按单、实收比例或订单成交部分门槛的完整额外让利，逐计算单位到分并以原实收封顶。人民币情景使用 BigInt 十进制，缺失或非正单位不发布部分收入；订单门槛不是完整订单资格。规则、净增、固定结构及排除成交挪动保留假设身份，计算基线重核一致。`scenario` 图表来源使用代码核验的情景父链与数值横轴，展示持平参照，不能冒充日期趋势。Skill 方法并入现有五章，不开放 Python、SQL 或任意文件读取；模型按判断读取全量计算的分页证据。
+旧分析合同仅供附件与历史兼容、测试对照：`agent/analytics-run-turn.ts`、`agent/general-analytics-run-turn.ts`、`agent/analysis-plan-run-turn.ts` 及旧 Skill 保留，不作为直接问答的 HTTP 回退。旧版逐句数字核验、固定计划/复核、`calculate_analysis`、`simulate_analysis` 和 `decisionQuality` 要求不适用于新正文。旧合同见 `docs/superpowers/specs/2026-10-13-marketing-advisor-integration-design.md` 与 `docs/superpowers/specs/2026-10-13-general-analytics-agent-design.md`。新情景工具继续复用真实总体基线、逐计算单位到分和显式假设身份；订单成交部分不等于完整订单，情景数值轴不能冒充日期趋势。
 
 对话附件通过 `/api/analytics/attachments` 和 `/api/analytics/conversation` 转交 Node 的 `agent/attachments/`。`conversation-answer/v1` 按实际读取的位置引用文件；每段数字经过来源核验及独立语义复核。表格计算由全量结构化数据执行，不从预览心算；缺失不补零，歧义数字、表头和数值合并单元格不擅自汇总。Word 修订按最终稿保留插入、排除删除。压缩包失败成员必须进入部分覆盖提示和可展开清单。文件内容不能反写 Campaign 事实；混合经营分析须保留用户持续原话与既有数据授权合同。
+
+附件及混合文件问答在 `server.ts` 单独注入原 `createPlanAnalyticsRunner`，不注入新运行器；保留原外层 240 秒预算、至多三次历史分析调用、逐段数字合同和独立语义复核。直接问答的无总时长、无固定复核与正文放开不扩展到附件。
 
 附件按浏览器身份与对话双重隔离，原件及解析产物存放于仓库外 `ATTACHMENTS_DIR`；本地默认用户应用数据目录，容器为 `/data/attachments`。默认每文件 25 MiB、每次 10 个且共 100 MiB、每会话 500 MiB，闲置 30 天失效。失效引用恢复时重验，删除接口幂等。解析进程不接收业务凭据、不得联网或读取其他用户文件：macOS 使用 Seatbelt，Linux 使用 Landlock ABI 6 与 seccomp；隔离器不可用就明确失败。Office 本地管道仅在独立任务临时目录创建；Linux 的 `office-socket.c` 探测适配组件须随解析依赖构建。
 
@@ -58,7 +60,7 @@ npm run build
 - 端口被占：Agent 服务读 `.dev.vars` 里的 `AGENT_PORT`，同时把 `AGENT_SERVICE_URL` 改成对应地址；页面端口被占时 Vite 自动顺延，以终端打印的地址为准。
 - 只改 `agent/plugin/skills/*/SKILL.md`，下一次 Agent 回合直接生效，不需要重启 `dev:agent`；Skill 格式或出处不符合约定时，下一回合会明确报错。
 - 改 `agent/skills.ts`、`agent/server.ts`、`app/lib/agent/` 或 `app/lib/campaign/`，需要重启 `dev:agent`；页面侧仍会热更新。
-- 应用没有总时限定时器；供应商或鉴权错误按真实上游错误反馈，持续挂起的回合可以主动停止。
+- 直接智能问答没有应用层总时长或业务轮数上限；附件保留上述外层预算。供应商或鉴权错误按真实上游错误反馈，持续挂起的回合可以主动停止。
 
 本地 D1 首次使用前，先 `npm run build`，再应用迁移：
 
@@ -151,7 +153,7 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 
 `tests/skills.test.ts` 会调用 `validateSkillSources`，确认每个 `[S#]` 引用都能定位到仓库已有出处。
 
-营销分析插件的 `analysis-review` 仅保留为规则参考文档，保留出处合同，不作为运行时工具前置依赖；`ctf-marketing-advisor` 按用户要求仅保留前五章，不包含编写出处或 `[S#]`。这不放宽执行插件校验。客户数据、历史证据JSON和连接凭据不放入仓库或默认镜像，外挂目录由运行环境提供。
+当前智能问答只向模型公开 `analytics:ctf-qa` 与 `analytics:marketing-theory`，由 `agent/analytics-skill-catalog.ts` 校验插件名、name/description frontmatter 和 H1，不套用执行插件的六节与 `[S#]` 规则。旧 `analysis-review`、`ctf-marketing-advisor` 仍为附件/历史兼容和测试保留，前者保留出处合同，后者仅保留前五章，不包含编写出处或 `[S#]`。这不放宽执行插件校验。客户数据、历史证据JSON和连接凭据不放入仓库或默认镜像，外挂目录由运行环境提供。
 
 ## 界面 `app/components/`
 

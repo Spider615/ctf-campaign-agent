@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { createAgentHttpHandler } from "./http-handler.ts";
 import { createAgentRunner } from "./run-turn.ts";
-import { createAnalyticsRunner } from "./analytics-run-turn.ts";
+import { createAnalyticsSkillRunner } from "./analytics-skill-run-turn.ts";
 import { createPlanAnalyticsRunner } from "./analysis-plan-run-turn.ts";
 import { createMysqlAnalyticsDatabase } from "./analytics-database.ts";
 import { createAttachmentStore } from "./attachments/store.ts";
@@ -42,19 +42,20 @@ const runAgentTurn = createAgentRunner({
 });
 
 const database = process.env.CTF_MYSQL_HOST ? createMysqlAnalyticsDatabase({ host: process.env.CTF_MYSQL_HOST, port: Number(process.env.CTF_MYSQL_PORT || 3306), user: process.env.CTF_MYSQL_USER || "root", password: process.env.CTF_MYSQL_PASSWORD || "", database: process.env.CTF_MYSQL_DATABASE || "ctf_sales_202508", table: process.env.CTF_MYSQL_TABLE || "sales_detail_202508", evidenceDir: process.env.CTF_MYSQL_EVIDENCE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/mysql-evidence") }) : undefined;
-const runAnalyticsTurn = createAnalyticsRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR,
-  pluginDir: fileURLToPath(new URL("./analytics-plugin/", import.meta.url)), historyDirectory: process.env.ANALYTICS_HISTORY_DIR || undefined, database });
-const runPlanAnalyticsTurn = createPlanAnalyticsRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR,
-  pluginDir: fileURLToPath(new URL("./analytics-plugin/", import.meta.url)), auditDirectory: process.env.ANALYTICS_AUDIT_DIR || undefined, database });
+const analyticsConfig = { model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR,
+  pluginDir: fileURLToPath(new URL("./analytics-plugin/", import.meta.url)), auditDirectory: process.env.ANALYTICS_AUDIT_DIR || undefined, database };
+const runPlanAnalyticsTurn = createAnalyticsSkillRunner(analyticsConfig);
+// 文件问答保留原计划式运行器及外层预算、复核和数字合同。
+const runAttachmentAnalyticsTurn = createPlanAnalyticsRunner(analyticsConfig);
 const installedAttachmentPython = join(homedir(), "Library/Application Support/ctf-campaign-agent/attachment-python/bin/python3");
 const attachmentStore = createAttachmentStore({ directory: process.env.ATTACHMENTS_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/attachments"), python: process.env.ATTACHMENTS_PYTHON || (existsSync(installedAttachmentPython) ? installedAttachmentPython : "python3") });
-const runConversation = createConversationRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR, pluginDir: PLUGIN_DIR, store: attachmentStore, runAnalytics: runPlanAnalyticsTurn, visionModel: process.env.ATTACHMENTS_VISION_MODEL });
+const runConversation = createConversationRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR, pluginDir: PLUGIN_DIR, store: attachmentStore, runAnalytics: runAttachmentAnalyticsTurn, visionModel: process.env.ATTACHMENTS_VISION_MODEL });
 // 洞察图谱默认读源表：问答用的投影表没有回收金标识和 sku 年龄。
 const insight = process.env.CTF_MYSQL_HOST ? createInsightGraphService({ table: process.env.CTF_INSIGHT_TABLE || "sales_detail_202508", evidenceDir: process.env.CTF_MYSQL_EVIDENCE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/mysql-evidence"),
   cacheDir: process.env.CTF_INSIGHT_CACHE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/insight-cache"),
   connect: () => mysql.createConnection({ host: process.env.CTF_MYSQL_HOST, port: Number(process.env.CTF_MYSQL_PORT || 3306), user: process.env.CTF_MYSQL_USER || "root", password: process.env.CTF_MYSQL_PASSWORD || "", database: process.env.CTF_MYSQL_DATABASE || "ctf_sales_202508", charset: "utf8mb4", connectTimeout: 5000, supportBigNumbers: true, bigNumberStrings: true }) }) : undefined;
 const insightAsk = createInsightAskRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR });
-const server = createServer(createAgentHttpHandler({ runAgentTurn, runAnalyticsTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation }), insight, insightAsk }));
+const server = createServer(createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation }), insight, insightAsk }));
 
 if (!API_KEY) {
   console.error("缺少 JUZI_MODELS_KEY（公司模型网关 key）：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。");

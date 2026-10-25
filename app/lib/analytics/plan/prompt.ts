@@ -1,41 +1,7 @@
-import type { AnalysisCapabilities } from "../analysis-v2-types.ts";
 import type { PlanGoal, PlanIntent, PlanKind, PlanNode } from "./types.ts";
-import { SEMANTIC_DIMENSIONS, type SemanticDimensionId } from "../semantic/model.ts";
+export { capabilityBrief } from "../qa/capabilities.ts";
 
-// 计划即程序的分步提示词：模型只写计划、正文和复核意见，数字由代码按引用从执行结果填入。
-const cut = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}…` : text;
-// 维度取值超过这个数只给示例。
-const MAX_LISTED_VALUES = 60;
-const BASIS: Record<string, string> = { schema: "字段", data: "数据", business: "业务", assumption: "待确认" };
-
-// 能力目录压缩成每行一项，真实 36 维目录控制在 6000 字以内。
-export function capabilityBrief(capabilities: AnalysisCapabilities): string {
-  const lines: string[] = [`数据：${capabilities.name}；覆盖 ${capabilities.coverage.start} 至 ${capabilities.coverage.end}；币种 ${capabilities.currency}`];
-  lines.push("维度（id|名称|筛选键|上级|参与扫描|取值）：筛选值必须照抄下面列出的原值。");
-  const catalog = capabilities.dimensionCatalog ?? capabilities.dimensions.map((id) => {
-    const item = SEMANTIC_DIMENSIONS[id as SemanticDimensionId];
-    return { id, label: item?.label ?? id, filter: item?.filter ?? id, parent: item?.parent && capabilities.dimensions.includes(item.parent) ? item.parent : undefined, scan: item?.scan ?? false };
-  });
-  for (const item of catalog) {
-    const values = "values" in item && Array.isArray(item.values) ? item.values : undefined;
-    // 取值少的全列出，模型照抄原值；多的只给个数和示例，写错时由校验给出最接近的值。
-    const listed = !values ? "" : values.length <= MAX_LISTED_VALUES ? `|取值：${values.join("、")}` : `|共 ${values.length} 个取值，例如：${values.slice(0, 5).join("、")}`;
-    lines.push(`${item.id}|${item.label}|${item.filter}|${item.parent ?? ""}|${item.scan ? "是" : "否"}${listed}`);
-  }
-  lines.push("指标（id|名称|口径|定义）：");
-  for (const metric of capabilities.metrics) {
-    const controls = metric.requiredControls.length ? `；须控制 ${metric.requiredControls.join("、")}` : "";
-    lines.push(`${metric.id}|${metric.label}|${metric.allowedPopulations.join("/")}${metric.basis ? `，${BASIS[metric.basis] ?? metric.basis}` : ""}|${cut(metric.definition, 60)}${controls}`);
-  }
-  if (capabilities.baselines?.length) {
-    lines.push("基线：");
-    for (const baseline of capabilities.baselines) lines.push(`${baseline.id}|${baseline.label}|${cut(baseline.how, 60)}`);
-  }
-  if (capabilities.scenarios?.length) lines.push(`情景规则：${capabilities.scenarios.join("、")}`);
-  if (capabilities.limitations.length) lines.push(`数据限制：${capabilities.limitations.map((item) => cut(item, 60)).join("；")}`);
-  return lines.join("\n");
-}
-
+// 旧计划提示词仅供附件与历史合同兼容，新问答直接使用共享工具目录。
 const SCOPE_EXAMPLE = `{"period":{"start":"2025-08-23","end":"2025-08-29"},"population":"sales","filters":{"regions":["华南"]}}`;
 const OPERATORS = [
   `measure：读一个范围的指标，可按维度分组。{"id":"m1","op":"measure","scope":${SCOPE_EXAMPLE},"metrics":["amount","orders"],"by":["category"]}`,

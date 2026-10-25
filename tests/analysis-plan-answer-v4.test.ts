@@ -162,10 +162,23 @@ test("validatePlanAnswerV4 往返通过，拒绝越界 refs、不存在的事实
   const kind = copy(); kind.body[0].kind = "html"; assert.throws(() => validatePlanAnswerV4(kind), /类型/);
   const empty = copy(); empty.body = []; assert.throws(() => validatePlanAnswerV4(empty), /正文/);
   const cells = copy(); cells.body[1].rows[0].cells = ["东区"]; assert.throws(() => validatePlanAnswerV4(cells), /单元格数与列数不一致/);
-  const long = copy(); long.body[0].text = "长".repeat(1201); long.body[0].refs = []; assert.throws(() => validatePlanAnswerV4(long), /正文最多 1200 个字符/);
-  const split = copy(); split.body = [{ kind: "markdown", text: "甲".repeat(700), refs: [] }, { kind: "markdown", text: "乙".repeat(501), refs: [] }]; assert.throws(() => validatePlanAnswerV4(split), /正文最多 1200 个字符/);
-  const exact = copy(); exact.body = [{ kind: "markdown", text: "甲".repeat(1200), refs: [] }]; exact.keyFigure = undefined; validatePlanAnswerV4(exact);
+  const long = copy(); long.body[0].text = "长".repeat(20001); long.body[0].refs = []; assert.throws(() => validatePlanAnswerV4(long), /正文最多 20000 个字符/);
+  const split = copy(); split.body = [{ kind: "markdown", text: "甲".repeat(10000), refs: [] }, { kind: "markdown", text: "乙".repeat(10001), refs: [] }]; assert.throws(() => validatePlanAnswerV4(split), /正文最多 20000 个字符/);
+  const exact = copy(); exact.body = [{ kind: "markdown", text: "甲".repeat(20000), refs: [] }]; exact.keyFigure = undefined; validatePlanAnswerV4(exact);
   const figure = copy(); figure.keyFigure = { value: "1", factId: "nope" }; assert.throws(() => validatePlanAnswerV4(figure), /重点数字/);
+});
+
+test("v4容量仅放宽序列化边界：12图、50表、每表200行，超出仍明确拒绝", () => {
+  const answer = assemblePlanAnswerV4(input(resolved("日均 {{m.amount_per_day}}。\n::: table m orders by district\n::: chart m amount_per_day by district")));
+  const table = answer.body.find((item) => item.kind === "table")!;
+  const chart = answer.body.find((item) => item.kind === "chart")!;
+  if (table.kind !== "table") return;
+  const tableWith = (rows: number) => ({ ...table, rows: Array.from({ length: rows }, () => structuredClone(table.rows[0])) });
+  validatePlanAnswerV4({ ...answer, body: Array.from({ length: 50 }, () => tableWith(200)) });
+  assert.throws(() => validatePlanAnswerV4({ ...answer, body: [tableWith(201)] }), /200 行/);
+  assert.throws(() => validatePlanAnswerV4({ ...answer, body: Array.from({ length: 51 }, () => tableWith(1)) }), /50/);
+  validatePlanAnswerV4({ ...answer, body: Array.from({ length: 12 }, () => chart) });
+  assert.throws(() => validatePlanAnswerV4({ ...answer, body: Array.from({ length: 13 }, () => chart) }), /12/);
 });
 
 test("planAnswerV4Text：Markdown 原文、表格转成竖线分隔、图写标题", () => {

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMysqlAnalyticsDatabase, HISTORY_COLUMNS, type HistoryConnection } from "../agent/analytics-database.ts";
@@ -211,6 +212,55 @@ test("同连接并发工具排队执行，重复规范化查询不增加 SQL", a
   await session.close();
 });
 
+test("排队等待只在四类查询真正开始时观测毫秒，缓存命中和取消的排队请求不增加事件", async (t) => {
+  const f = fixture(t); const observations: unknown[][] = []; let failObserver = false;
+  const session = await createMysqlAnalysisProvider(f.config, { ...f.dependencies, onQueueWait(...args: unknown[]) { observations.push(args); if (failObserver) throw new Error("观测写入失败"); } }).open();
+  assert.ok(session.dimensionValues && session.scenario && session.orderDistribution);
+  assert.equal(observations.length, 0, "打开快照不是查询入队事件");
+  let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void; const started = new Promise<void>((resolve) => { entered = resolve; });
+  t.after(async () => { release(); await session.close(); });
+  const original = f.connection.execute; let reads = 0;
+  f.connection.execute = async (sql, params) => {
+    reads++; if (reads === 1) { entered(); await gate; }
+    if (/\bAS dimension_value\b/.test(sql)) { f.statements.push(sql); return [[{ dimension_value: Buffer.from("A") }], []]; }
+    if (sql.includes("AS loss_cents")) { f.statements.push(sql); return [[{ sample_rows: 2, amount_cents: 302, loss_cents: 30, units: 2, missing_units: 0, nonpositive_units: 0, eligible_units: 2 }], []]; }
+    if (sql.includes("ranked_orders")) { f.statements.push(sql); return [[{ sample_rows: 2, excluded_rows: 0, order_count: 1, q_amount_p50: "3.02", q_amount_p90: "3.02", q_amount_p99: "3.02" }], []]; }
+    return original(sql, params);
+  };
+  const first = session.aggregate(query); void first.catch(() => undefined); await started;
+  assert.equal(observations.length, 1);
+  const grouped = { ...query, by: ["category" as const] };
+  const dimension = { dimension: "store" as const, scope: query.scope };
+  const scenario = { scope: query.scope, adjustment: { kind: "amount_rate" as const, rate: "0.1" } };
+  const distribution = { scope: query.scope, metrics: ["amount" as const] };
+  const pending = [session.aggregate(grouped), session.aggregate(grouped), session.dimensionValues(dimension), session.dimensionValues(dimension), session.scenario(scenario), session.scenario(scenario), session.orderDistribution(distribution), session.orderDistribution(distribution)];
+  const all = Promise.all([first, ...pending]); void all.catch(() => undefined);
+  const enqueued = performance.now(); await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1); assert.equal(observations.length, 1, "排队中的请求不能提前报已执行");
+  const minimumWait = performance.now() - enqueued; release(); await all;
+  assert.equal(reads, 5); assert.equal(observations.length, 5, "四类查询各执行一次，重复请求复用同一挂起结果");
+  for (const [index, args] of observations.entries()) {
+    assert.equal(args.length, 1, "观测不携带 SQL、参数或查询标识");
+    assert.ok(typeof args[0] === "number" && Number.isFinite(args[0]) && args[0] >= (index ? minimumWait : 0), "观测值应包含真实挂起期间的单调等待毫秒");
+  }
+  await Promise.all([session.aggregate(query), session.aggregate(grouped), session.dimensionValues(dimension), session.scenario(scenario), session.orderDistribution(distribution)]);
+  assert.equal(reads, 5); assert.equal(observations.length, 5, "已完成缓存命中不能重新排队或发出事件");
+
+  let releaseAgain!: () => void; const gateAgain = new Promise<void>((resolve) => { releaseAgain = resolve; });
+  let enteredAgain!: () => void; const startedAgain = new Promise<void>((resolve) => { enteredAgain = resolve; });
+  t.after(() => releaseAgain()); failObserver = true;
+  f.connection.execute = async (sql, params) => { enteredAgain(); await gateAgain; return original(sql, params); };
+  const blocked = session.aggregate({ ...query, by: [] }); void blocked.catch(() => undefined); await startedAgain;
+  assert.equal(observations.length, 6, "观测回调失败也不能阻止实际查询开始");
+  const controller = new AbortController();
+  const cancelled = session.dimensionValues({ ...dimension, scope: { ...query.scope, filters: { stores: ["A"] } } }, controller.signal);
+  controller.abort();
+  await Promise.all([assert.rejects(blocked, (error: Error) => error.name === "AbortError"), assert.rejects(cancelled, (error: Error) => error.name === "AbortError")]);
+  releaseAgain(); await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(observations.length, 6, "取消后尚未执行的排队请求不能发事件，迟到返回也不能补发");
+});
+
 test("停止挂起查询立即销毁整个快照，迟到结果不得复用", async (t) => {
   const f = fixture(t); const { createMysqlAnalysisProvider } = await provider(); const session = await createMysqlAnalysisProvider(f.config, f.dependencies).open();
   let entered!: () => void; let finish!: (value: [unknown, unknown]) => void; const started = new Promise<void>((resolve) => { entered = resolve; });
@@ -278,34 +328,78 @@ test("连接函数同步失败也不会泄露私有凭据", async (t) => {
   await assert.rejects(createMysqlAnalysisProvider(f.config, { connect: () => { throw new Error("private-user private-password"); } }).open(), (error: unknown) => error instanceof Error && !error.message.includes("private-"));
 });
 
-test("维度取值只扫一遍源表，按数据版本落盘，换进程直接读盘", async () => {
+test("随机数据版本只在会话内缓存取值，关闭后等行数更新和磁盘目录改写不复用", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "ctf-dimension-values-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const statements: string[] = [];
   const columns = ["_import_id", "交易日期wid", "实际销售金额", "销售件数", "币种描述", "实体分店店号", "销售单号", "大区描述", "优惠小类"];
-  const connection: HistoryConnection = {
-    async query(sql) { statements.push(sql); return [sql.startsWith("SHOW COLUMNS") ? columns.map((Field) => ({ Field, Type: "varchar(64)" })) : [], []]; },
-    async execute(sql) {
-      statements.push(sql);
-      if (sql.includes("min_day")) return [[{ rows_count: 4, unique_rows: 4, min_day: "20250801", max_day: "20250831", currencies: 1, currency: "人民币", missing_currency: 0 }], []];
-      if (sql.includes("dimension_values")) return [[{ d: "region", v: "北区" }, { d: "region", v: "东区" }, { d: "offer", v: "一般開單" }], []];
-      return [[], []];
-    },
-    destroy() {},
+  let regions = ["北区", "东区", "北区", "东区"]; let connections = 0; let destroyed = 0;
+  const connect = async (): Promise<HistoryConnection> => {
+    connections++; const snapshot = [...regions];
+    return {
+      async query(sql) { statements.push(sql); return [sql.startsWith("SHOW COLUMNS") ? columns.map((Field) => ({ Field, Type: "varchar(64)" })) : [], []]; },
+      async execute(sql) {
+        statements.push(sql);
+        if (sql.includes("min_day")) return [[{ rows_count: snapshot.length, unique_rows: snapshot.length, min_day: "20250801", max_day: "20250831", currencies: 1, currency: "人民币", missing_currency: 0 }], []];
+        if (/\bAS dimension_value\b/.test(sql)) return [[...new Set(snapshot)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map((value) => ({ dimension_value: Buffer.from(value) })), []];
+        throw new Error("测试出现未预期的数据库读取");
+      },
+      destroy() { destroyed++; },
+    };
   };
-  const config = { host: "h", port: 3306, user: "u", password: "p", database: "db", table: "sales", evidenceDir: dir };
-  const open = async () => { const session = await createMysqlAnalysisProvider(config, { connect: async () => connection }).open(); const catalog = session.capabilities.dimensionCatalog ?? []; await session.close(); return catalog; };
-  try {
-    const first = await open();
-    const sql = statements.find((s) => s.includes("dimension_values"))!;
-    assert.match(sql, /^WITH combos AS \(SELECT .* FROM `sales` GROUP BY c0/);
-    assert.equal(sql.split("FROM `sales`").length - 1, 1, "源表只扫一遍");
-    assert.deepEqual(first.find((d) => d.id === "region")?.values, ["东区", "北区"]);
-    // 模拟重启：清掉进程内缓存后再开，不再发取值查询。
-    const { clearDimensionValueCacheForTest } = await import("../agent/analytics-operation-database.ts");
-    clearDimensionValueCacheForTest();
-    statements.length = 0;
-    const second = await open();
-    assert.equal(statements.filter((s) => s.includes("dimension_values")).length, 0);
-    assert.deepEqual(second.find((d) => d.id === "offer")?.values, ["一般開單"]);
-  } finally { await rm(dir, { recursive: true, force: true }); await rm(`${dir}-dimension-values`, { recursive: true, force: true }); }
+  const config = { host: "h", port: 3306, user: "u", password: "p", database: "db", table: "sales", evidenceDir: join(dir, "evidence") };
+  const provider = createMysqlAnalysisProvider(config, { connect }); const input = { dimension: "region" as const, scope: query.scope };
+  const reads = () => statements.filter((sql) => /\bAS dimension_value\b/.test(sql)).length;
+  const first = await provider.open(); t.after(() => first.close()); assert.ok(first.dimensionValues);
+  const original = await first.dimensionValues(input); assert.deepEqual(original.values, ["东区", "北区"]);
+  original.values[0] = "调用方改写";
+  assert.deepEqual((await first.dimensionValues(input)).values, ["东区", "北区"]); assert.equal(reads(), 1, "同一会话复用已完成页，返回副本不能修改缓存");
+  await first.close(); await assert.rejects(first.dimensionValues(input), /失效|快照/);
+
+  // 与旧缓存相同的库表、行数和日期，但磁盘值与新源值均已改变。
+  const legacyDir = join(dir, "evidence-dimension-values"); await mkdir(legacyDir);
+  const legacyKey = "db.sales:4:2025-08-01:2025-08-31";
+  const legacyFile = join(legacyDir, `${createHash("sha256").update(legacyKey).digest("hex").slice(0, 32)}.json`);
+  const stale = JSON.stringify({ key: legacyKey, values: { region: ["伪造磁盘目录"] } }); await writeFile(legacyFile, stale);
+  regions = ["南区", "西区", "南区", "西区"];
+  const second = await provider.open(); t.after(() => second.close()); assert.ok(second.dimensionValues);
+  assert.notEqual(second.datasetVersion, first.datasetVersion); assert.notEqual(second.snapshotId, first.snapshotId);
+  assert.deepEqual(second.capabilities.coverage, first.capabilities.coverage); assert.equal(second.capabilities.currency, "人民币");
+  assert.deepEqual((await second.dimensionValues(input)).values, ["南区", "西区"]); assert.equal(reads(), 2);
+  await second.close();
+
+  // 重建 provider 时也不读取旧文件；损坏缓存不能妨碍重新查询真实来源。
+  await writeFile(legacyFile, "损坏的旧缓存"); regions = ["新区", "新区", "新区", "新区"];
+  const third = await createMysqlAnalysisProvider(config, { connect }).open(); t.after(() => third.close()); assert.ok(third.dimensionValues);
+  assert.notEqual(third.datasetVersion, second.datasetVersion); assert.deepEqual((await third.dimensionValues(input)).values, ["新区"]); assert.equal(reads(), 3);
+  assert.equal(await readFile(legacyFile, "utf8"), "损坏的旧缓存"); assert.equal((await readdir(legacyDir)).length, 1, "不应读写旧目录缓存");
+  await third.close(); assert.equal(connections, 3); assert.equal(destroyed, 3);
+  for (const sql of ["SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ", "SET SESSION TRANSACTION READ ONLY", "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"]) assert.equal(statements.filter((statement) => statement === sql).length, 3);
+});
+
+test("维度页保留完整长字符串，100项120字符的普通取值可落在16000字符预算内", async (t) => {
+  const f = fixture(t); const original = f.connection.execute;
+  let values = Array.from({ length: 101 }, (_, i) => `${"门".repeat(116)}${String(i).padStart(4, "0")}`);
+  f.connection.execute = async (sql, params) => {
+    if (sql.includes("min_day")) { f.statements.push(sql); return [[{ rows_count: values.length, unique_rows: values.length, min_day: "20250801", max_day: "20250831", currencies: 1, currency: "人民币", missing_currency: 0 }], []]; }
+    if (/\bAS dimension_value\b/.test(sql)) { f.statements.push(sql); return [values.map((value) => ({ dimension_value: Buffer.from(value) })), []]; }
+    return original(sql, params);
+  };
+  const input = { dimension: "region" as const, scope: query.scope, pageSize: 100 };
+  const first = await createMysqlAnalysisProvider(f.config, f.dependencies).open(); t.after(() => first.close()); assert.ok(first.dimensionValues);
+  const ordinary = await first.dimensionValues(input);
+  assert.equal(ordinary.values.length, 100); assert.ok(ordinary.values.every((value) => value.length === 120)); assert.ok(ordinary.nextCursor);
+  assert.ok(JSON.stringify({ dimension: input.dimension, ...ordinary }).length <= 16000); await first.close();
+
+  values = Array.from({ length: 101 }, (_, i) => `${"长".repeat(300)}${String(i).padStart(4, "0")}`);
+  const second = await createMysqlAnalysisProvider(f.config, f.dependencies).open(); t.after(() => second.close()); assert.ok(second.dimensionValues);
+  const long = await second.dimensionValues(input);
+  assert.deepEqual(long.values, values.slice(0, 100)); assert.ok(long.nextCursor);
+  assert.ok(JSON.stringify({ dimension: input.dimension, ...long }).length > 16000, "长值由主适配器按字符预算续页，数据层不能截短实际字符串"); await second.close();
+
+  values = Array.from({ length: 101 }, (_, i) => `${'"'.repeat(116)}${String(i).padStart(4, "0")}`);
+  const third = await createMysqlAnalysisProvider(f.config, f.dependencies).open(); t.after(() => third.close()); assert.ok(third.dimensionValues);
+  const escaped = await third.dimensionValues(input);
+  assert.deepEqual(escaped.values, values.slice(0, 100)); assert.ok(escaped.values.every((value) => value.length === 120));
+  assert.ok(JSON.stringify({ dimension: input.dimension, ...escaped }).length > 16000, "含转义字符时也必须按实际序列化长度控制预算");
 });
