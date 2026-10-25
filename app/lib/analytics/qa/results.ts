@@ -1,6 +1,7 @@
 import type { AnalysisFact, AnalysisMethodReport, AnalysisOperationResult } from "../analysis-v2-types.ts";
 import { analysisArgumentsInvalid } from "../analysis-v2-operations.ts";
 import { formatValue } from "../plan/bind.ts";
+import { qaPresentationFacts } from "./observations.ts";
 
 type ResultFact = Pick<AnalysisFact, "id" | "frameId" | "metricId" | "label" | "value" | "unit"> & { formatted: string; assumption?: AnalysisFact["assumption"]; comparisonRole?: AnalysisFact["comparisonRole"] };
 type ResultCheck = AnalysisMethodReport["checks"][number] & { occurrences: number; methodId?: string };
@@ -20,6 +21,7 @@ export function createQaResult(resultId: string, result: AnalysisOperationResult
     cases.set(fact.id, value); cases.set(fact.scenario.rateFactId, value);
   }
   const groups = new Map<string, ResultGroup>();
+  const primary = new Set(qaPresentationFacts(result).map((fact) => fact.id));
   for (const fact of result.facts) {
     const key: Record<string, string> = {}, labels: Record<string, string> = {};
     for (const object of fact.objectIds.map((id) => objects.get(id)).filter((v) => v !== undefined).sort((a, b) => a.dimension.localeCompare(b.dimension))) {
@@ -37,12 +39,13 @@ export function createQaResult(resultId: string, result: AnalysisOperationResult
   const units = [...groups].sort(([a, x], [b, y]) => Number(Boolean(Object.keys(x.key).length)) - Number(Boolean(Object.keys(y.key).length)) || (a < b ? -1 : a > b ? 1 : 0)).flatMap(([signature, group]): ResultGroup[] => {
     if (signature.startsWith("comparison:")) return [group];
     const counts = new Map<string, number>();
-    for (const fact of group.facts) { const key = `${fact.frameId}:${fact.metricId}`; counts.set(key, (counts.get(key) ?? 0) + 1); }
+    for (const fact of group.facts) if (primary.has(fact.id)) { const key = `${fact.frameId}:${fact.metricId}`; counts.set(key, (counts.get(key) ?? 0) + 1); }
     // 无对象、或只有控制层的原始中间依据不等于同一个业务总体。
     // 不能把多个实际计算的同名指标挤成一个无限大的组；各自按真实factId续读。
     // 多指标扫描可能仅重复rows等辅助事实，唯一业务指标仍属于原业务组并可排序。
-    const unique = group.facts.filter((fact) => counts.get(`${fact.frameId}:${fact.metricId}`) === 1);
-    const repeated = group.facts.filter((fact) => counts.get(`${fact.frameId}:${fact.metricId}`)! > 1);
+    const unique = group.facts.filter((fact) => primary.has(fact.id) && counts.get(`${fact.frameId}:${fact.metricId}`) === 1);
+    const uniqueIds = new Set(unique.map((fact) => fact.id));
+    const repeated = group.facts.filter((fact) => !uniqueIds.has(fact.id));
     return [...(unique.length ? [{ ...group, facts: unique }] : []), ...repeated.map((fact): ResultGroup => ({ key: group.key, labels: group.labels, facts: [fact], kind: "supporting" }))];
   });
   const methods: ResultMethod[] = result.methods.map((method) => {

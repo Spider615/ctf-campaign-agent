@@ -4,6 +4,7 @@ import { analysisFactParents } from "../analysis-v2-fact-links.ts";
 import { displayUnit } from "../plan/bind.ts";
 import { resolveAnalysisVisualization } from "../visualization.ts";
 import type { ResolvedVisualization } from "../visualization-types.ts";
+import { qaPresentationFacts } from "./observations.ts";
 
 export type DrawQaChartInput = { resultId: string; metric: string; kind: "bar" | "line"; by?: string; top?: number; title?: string; frameIds?: string[] };
 
@@ -63,7 +64,7 @@ export function drawQaChart({ id, input, result, evidence }: { id: string; input
   if (!result || !Array.isArray(result.facts)) fail(`结果「${input.resultId}」不存在，请使用本轮结果编号`);
   if (result.status !== "completed") fail(`结果「${input.resultId}」未完成或不支持，不能出图`);
   const actual = new Map(evidence.facts.map((fact) => [fact.id, fact]));
-  const metricFacts = result.facts.filter((fact) => fact.operationId === result.operationId && fact.metricId === input.metric);
+  const metricFacts = qaPresentationFacts(result).filter((fact) => fact.operationId === result.operationId && fact.metricId === input.metric);
   let facts = metricFacts;
   if (!facts.length) fail(`结果「${input.resultId}」没有真实指标「${input.metric}」或结果为空`);
   if (input.frameIds?.some((frameId) => !facts.some((fact) => fact.frameId === frameId))) fail("frameIds 引用了不存在的指标范围");

@@ -82,7 +82,7 @@ export function createAnalyticsSkillTools(config: Config) {
 
   const handlers = {
     inspect_dataset: wrap("inspect_dataset", async (raw) => {
-      const input = z.object({ dimension: z.string().optional(), ...pageFields }).strict().parse(raw);
+      const input = z.object({ dimension: dimension.optional(), ...pageFields }).strict().parse(raw);
       const session = await config.ensureSession(); check(); session.assertActive?.();
       if (input.dimension) {
         if (!session.capabilities.dimensions.includes(input.dimension as AnalysisDimension)) throw analysisArgumentsInvalid("当前数据没有这个维度");
@@ -134,7 +134,7 @@ export function createAnalyticsSkillTools(config: Config) {
     }),
   };
   const server = createSdkMcpServer({ name: "analytics", version: "2.0.0", tools: [
-    tool("inspect_dataset", "按需读取当前授权数据的维度、指标定义、可用方法和限制；指定dimension后用cursor读取全部真实取值。无需先调用本工具才能查数。", { dimension: z.string().optional(), ...pageFields }, handlers.inspect_dataset, readonly),
+    tool("inspect_dataset", "按需读取当前授权数据的维度、指标定义、可用方法和限制；指定dimension后用cursor读取全部真实取值。无需先调用本工具才能查数。", { dimension: dimension.optional(), ...pageFields }, handlers.inspect_dataset, readonly),
     tool("analyze", "在同一只读快照执行aggregate汇总、compare对照、decompose变化拆解、scan分组份额/偏离、robustness敏感性检查。compare/decompose须reference；scan须by或breakdown；robustness须check，可选largest_store/largest_order/order_distribution/alternative_window。保留controls和commonStores。action=read_result只翻页，不重算。可用orderBy按真实metric排序完整结果，先看重点再续读其余，不重查或丢弃长尾；多范围时用orderBy.frameId选择。返回单元数不是实际门店/活动数。", analyzeFields, handlers.analyze, readonly),
     tool("simulate_scenario", "在实际已读的唯一sales总体实收上，按显式假设计算额外让利及收入情景；不是利润、需求或真实活动预测。逐行/逐单完整计算与到分舍入由代码执行。", scenarioFields, handlers.simulate_scenario, readonly),
     tool("draw_chart", "从本轮真实resultId画图，metric为结果真实metricId，不接受模型编写数据点。by是维度；多控制层可用frameIds明确选择。情景使用数值横轴。返回可放入正文的chartId。", chartFields, handlers.draw_chart),

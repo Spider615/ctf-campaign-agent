@@ -120,3 +120,20 @@ test("多指标扫描的重复辅助事实不阻止唯一业务指标排序", as
   assert.deepEqual(shares, expected.map((fact) => fact.id));
   assert.deepEqual([...seen].sort(), facts.map((fact) => fact.id).sort());
 });
+
+test("同时读取原值与比率仍可按原值排序画图，分子分母证据完整保留", async (t) => {
+  const { call, tools } = await setup(t);
+  const response = await call("analyze", { action: "query", request: { method: "aggregate", scope, metrics: ["amount", "orders", "amount_per_order"], by: ["store"], purpose: "同时对比门店实收、订单与客单价" }, orderBy: { metric: "amount", direction: "desc" } });
+  assert.equal(response.isError, undefined, JSON.stringify(response.value));
+  const stored = tools.results.get(response.value.resultId)!;
+  const primary = response.value.groups.filter((group: { kind?: string }) => !group.kind);
+  const amounts = primary.flatMap((group: { facts: Array<{ metricId: string; value: number }> }) => group.facts.filter((fact) => fact.metricId === "amount"));
+  assert.equal(amounts.length, 4);
+  assert.deepEqual(amounts.map((fact: { value: number }) => fact.value), [64820, 64820, 56238, 56238]);
+  assert.equal(response.value.groups.flatMap((group: { facts: unknown[] }) => group.facts).length, stored.result.facts.length);
+  assert.ok(stored.result.facts.filter((fact) => fact.metricId === "amount").length > 4, "完整依据保留原值和比率父链的各个事实身份");
+  const chart = await call("draw_chart", { resultId: response.value.resultId, metric: "amount", kind: "bar", by: "store" });
+  assert.equal(chart.isError, undefined, JSON.stringify(chart.value));
+  assert.equal(chart.value.categories, 4);
+  assert.deepEqual(tools.charts.get(chart.value.chartId)!.series[0].values.map((point) => point.value).sort((a, b) => b! - a!), [64820, 64820, 56238, 56238]);
+});
