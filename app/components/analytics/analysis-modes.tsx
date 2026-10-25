@@ -11,7 +11,7 @@ import { HistoryConversation } from "./history-conversation";
 
 export type AnalysisMode = "insight" | "qa";
 const MODES: Array<{ id: AnalysisMode; label: string; icon: typeof Network }> = [
-  { id: "insight", label: "智能洞察", icon: Network },
+  { id: "insight", label: "深度剖析", icon: Network },
   { id: "qa", label: "智能问答", icon: MessagesSquare },
 ];
 const noMessages = () => false;

@@ -36,7 +36,7 @@ const now = () => performance.now();
 const noCampaign = () => null;
 const noFocus = () => null;
 
-// 嵌在「智能洞察 / 智能问答」工作台里时，由洞察传入当前看的范围、建活动草稿话和「在图上看」的回调。
+// 嵌在「深度剖析 / 智能问答」工作台里时，由剖析传入当前看的范围、建活动草稿话和「在图上看」的回调。
 export type InsightLink = { draft?: { text: string; nonce: number } | null; onLocate?: (id: InsightNodeId) => void };
 
 export function HistoryConversation({ embedded = false, ...link }: InsightLink & { embedded?: boolean }) {
