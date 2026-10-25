@@ -119,9 +119,15 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
 
 export const DEFAULT_MODEL_GATEWAY_URL = "https://unified-kiro-gateway.juzibot.com/models/v1";
 export const DEFAULT_AGENT_MODEL = "claude-5.5-sonnet";
+export const DEEPSEEK_ANTHROPIC_URL = "https://api.deepseek.com/anthropic";
+export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash";
 
-// 按环境变量起转换层，返回各个 runner 要的模型配置。key 从 JUZI_MODELS_KEY 读，不写进代码。
+// 复用已选服务的官方接口；原公司网关配置独立保留，密钥只从环境读取。
 export async function modelConfigFromEnv(env: NodeJS.ProcessEnv = process.env) {
+  const provider = env.AGENT_PROVIDER?.trim() || "juzi";
+  if (provider === "deepseek") return { model: env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL, modelBaseUrl: DEEPSEEK_ANTHROPIC_URL,
+    apiKey: env.DEEPSEEK_API_KEY?.trim() ?? "", apiKeyEnvName: "DEEPSEEK_API_KEY", close: async () => {} };
+  if (provider !== "juzi") throw new Error(`不支持的 AGENT_PROVIDER：${provider}，请填写 juzi 或 deepseek`);
   const gateway = createModelGateway({ baseUrl: env.MODEL_GATEWAY_URL || DEFAULT_MODEL_GATEWAY_URL, maxOutputTokens: Number(env.MODEL_MAX_OUTPUT_TOKENS) || 8192 });
-  return { model: sdkModelName(env.AGENT_MODEL || DEFAULT_AGENT_MODEL), modelBaseUrl: await gateway.listen(), apiKey: env.JUZI_MODELS_KEY?.trim() ?? "", close: gateway.close };
+  return { model: sdkModelName(env.AGENT_MODEL || DEFAULT_AGENT_MODEL), modelBaseUrl: await gateway.listen(), apiKey: env.JUZI_MODELS_KEY?.trim() ?? "", apiKeyEnvName: "JUZI_MODELS_KEY", close: gateway.close };
 }

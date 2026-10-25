@@ -23,8 +23,8 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 const HOST = process.env.AGENT_HOST || "127.0.0.1";
 const PORT = Number(process.env.AGENT_PORT || 8788);
 const TOKEN = process.env.AGENT_SERVICE_TOKEN || "";
-// SDK 只会说 Anthropic 协议，公司模型网关是 OpenAI 兼容接口：本机回环起一个转换层，SDK 的 ANTHROPIC_BASE_URL 指向它。
-const { model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY } = await modelConfigFromEnv();
+// SDK使用Anthropic协议：公司网关模式走本机转换层，官方兼容模式直接连接所选接口。
+const { model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, apiKeyEnvName: API_KEY_ENV_NAME } = await modelConfigFromEnv();
 // AGENT_DEBUG=1 时打印每次工具调用的参数和结果；里面有活动内容，只在本地排查时打开。
 const DEBUG = process.env.AGENT_DEBUG === "1";
 // SDK 子进程的配置目录，和本机 ~/.claude 隔离：不读用户自己的设置、插件和钩子。
@@ -58,7 +58,7 @@ const insightAsk = createInsightAskRunner({ model: MODEL, modelBaseUrl: MODEL_BA
 const server = createServer(createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation }), insight, insightAsk }));
 
 if (!API_KEY) {
-  console.error("缺少 JUZI_MODELS_KEY（公司模型网关 key）：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。");
+  console.error(`缺少 ${API_KEY_ENV_NAME}：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。`);
   process.exit(1);
 }
 if (!TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST)) {

@@ -7,6 +7,7 @@ test("额度耗尽只展示中文管理员提示，不带内部预算或请求�
     'API Error: Request rejected (429) · {"error":{"budget":123,"currency":"CNY","message":"monthly budget exhausted; ask your admin to raise it","request_id":"private-request","type":"quota_exceeded"}}',
     '429 {"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}',
     'Your credit balance is too low to access the API',
+    'API Error: 402 {"error":{"message":"Insufficient Balance"}}',
     'insufficient_credits',
     '模型服务月度额度已耗尽',
     '问答服务额度不足，本次回答未完成；请联系服务管理员调整额度后重试',
