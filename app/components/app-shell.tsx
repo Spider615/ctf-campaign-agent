@@ -170,15 +170,16 @@ function WorkspaceShell({ children, marketing }: { children: React.ReactNode; ma
   return (
     <div className="min-h-screen text-[#17243a]">
       <header className="sticky top-0 z-40 flex h-16 items-center border-b border-[#d9e7f6] bg-white/85 px-4 shadow-[0_6px_20px_rgba(58,104,154,0.06)] backdrop-blur-xl md:hidden">
-        <button type="button" aria-label="打开导航" onClick={() => setMobileNav(true)} className="mr-3 grid size-11 place-items-center rounded-xl text-[#47617f] transition hover:bg-[#edf5ff] hover:text-[#247cff]">
+        <button type="button" aria-label="打开导航" aria-controls="workspace-navigation" aria-expanded={mobileNav} onClick={() => setMobileNav(true)} className="mr-3 grid size-11 place-items-center rounded-xl text-[#47617f] transition hover:bg-[#edf5ff] hover:text-[#247cff]">
           <Menu />
         </button>
         <Brand />
       </header>
 
-      <div className="grid min-h-screen grid-cols-[252px_minmax(0,1fr)] max-md:block">
+      <div className="grid min-h-[calc(100dvh-4rem)] grid-cols-[252px_minmax(0,1fr)] max-md:block md:min-h-screen">
         <aside
-          className={`fixed inset-y-0 left-0 z-50 flex w-[252px] flex-col border-r border-[#d9e7f6] bg-white/90 text-[#26364f] shadow-[18px_0_50px_rgba(49,93,143,0.07)] backdrop-blur-xl transition-transform md:sticky md:top-0 md:h-screen md:translate-x-0 ${mobileNav ? "translate-x-0" : "-translate-x-full"}`}
+          id="workspace-navigation"
+          className={`fixed inset-y-0 left-0 z-50 flex w-[252px] flex-col border-r border-[#d9e7f6] bg-white/90 text-[#26364f] shadow-[18px_0_50px_rgba(49,93,143,0.07)] backdrop-blur-xl transition-transform md:sticky md:top-0 md:visible md:h-screen md:translate-x-0 ${mobileNav ? "visible translate-x-0" : "invisible -translate-x-full"}`}
         >
           <div className="flex h-[76px] items-center justify-between border-b border-[#e4eef9] px-5">
             <Brand />
