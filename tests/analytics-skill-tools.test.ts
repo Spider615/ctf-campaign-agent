@@ -43,6 +43,62 @@ test("仅五个业务工具，查数不需要预先加载Skill或目录", async 
   assert.ok(tools.readFactIds().size);
 });
 
+test("维度取值页同时说明来源定义及实际授权范围，不把标签变成业务规则", async (t) => {
+  const session = await createSnapshotAnalysisProvider(dataset).open();
+  const definition = "导入文件中的原始标签，没有资格或审批规则";
+  session.capabilities.dimensionCatalog = [{ id: "offer", label: "优惠", filter: "offers", scan: true, definition, basis: "schema" }];
+  session.dimensionValues = async (query) => {
+    assert.equal(query.dimension, "offer");
+    assert.deepEqual(query.scope.period, session.capabilities.coverage);
+    return { values: ["标签A"], nextCursor: "next" };
+  };
+  const { call } = await setup(t, session);
+  const response = await call("inspect_dataset", { dimension: "offer" });
+  assert.equal(response.value.definition, definition);
+  assert.equal(response.value.basis, "schema");
+  assert.deepEqual(response.value.scope.period, session.capabilities.coverage);
+  assert.deepEqual(response.value.values, ["标签A"]);
+  assert.equal(response.value.nextCursor, "next");
+});
+
+test("维度目录提供真实去重计数，跳读尾页不冒称全量、重复页不重复累计", async (t) => {
+  const session = await createSnapshotAnalysisProvider(dataset).open();
+  session.dimensionValues = async ({ cursor }) => ({
+    first: { values: ["标签甲", "标签乙"], nextCursor: "second" },
+    second: { values: ["标签丙"], nextCursor: "last" },
+    last: { values: ["标签丁"] },
+  })[cursor ?? "first"]!;
+  const { call } = await setup(t, session);
+  const tail = (await call("inspect_dataset", { dimension: "offer", cursor: "last" })).value;
+  assert.equal(tail.pageValueCount, 1);
+  assert.equal(tail.readValueCount, 1);
+  assert.equal(tail.totalValueCount, null);
+  assert.equal(tail.catalogComplete, false);
+  const head = (await call("inspect_dataset", { dimension: "offer" })).value;
+  assert.equal(head.readValueCount, 3);
+  assert.equal(head.catalogComplete, false);
+  const middle = (await call("inspect_dataset", { dimension: "offer", cursor: "second" })).value;
+  assert.equal(middle.totalValueCount, 4);
+  assert.equal(middle.catalogComplete, true);
+  const repeat = (await call("inspect_dataset", { dimension: "offer" })).value;
+  assert.equal(repeat.readValueCount, 4);
+  assert.equal(repeat.totalValueCount, 4);
+  assert.deepEqual(repeat.values, ["标签甲", "标签乙"]);
+});
+
+test("字面目录筛选直达提供方且计数独立，不把匹配目录当成未筛选全目录", async (t) => {
+  const session = await createSnapshotAnalysisProvider(dataset).open();
+  session.dimensionValues = async (query) => ({ values: query.contains === undefined ? ["标签A", "标签B"] : ["标签A"] });
+  const { call } = await setup(t, session);
+  assert.equal((await call("inspect_dataset", { dimension: "offer" })).value.totalValueCount, 2);
+  const match = await call("inspect_dataset", { dimension: "offer", contains: "A" });
+  assert.equal(match.isError, undefined);
+  assert.deepEqual(match.value.match, { contains: "A", mode: "literal-case-sensitive" });
+  assert.equal(match.value.totalValueCount, 1);
+  assert.equal((await call("inspect_dataset", { dimension: "offer" })).value.totalValueCount, 2);
+  assert.equal((await call("inspect_dataset", { contains: "A" })).isError, true);
+});
+
 test("五种方法直接复用真实确定性计算，缺参可修正", async (t) => {
   const { session, call } = await setup(t);
   for (const method of ["aggregate", "compare", "decompose", "scan", "robustness"] as const) {

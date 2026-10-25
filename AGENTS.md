@@ -18,6 +18,8 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 直接问答正文不再进行代码数字核对，也不固定独立复核或 `decisionQuality` 门禁；保留 v4 结构、图表真实数据绑定和对外身份清洗，错误不能误称为正文数字未通过核验。工具仍受真实数据授权、白名单参数化只读查询和金额计算合同约束，不开放 SQL、命令、任意文件或网络。数据版本授权不可扩大；收到的 `history`、`context` 和报告业务范围交给模型理解，不能把客户端裁剪后的内容宣称为完整历史。原报告不变；原始结果和审计记录在仓库外，不保存隐藏思维。直接问答不设应用层总时长或业务轮数上限，取消可打断挂起的 SDK next。NDJSON 传递真实公开过程和最终 v4 答案，过程流不等于正文逐字流式输出。
 
+2026-10-25 后续授权：用户明确允许研发通用事实一致性校核，“达标后启用”；只核对回答与已读证据，不规定业务步骤或回复模板。当前仅有仓库外研发原型，尚未接入运行时，上段现有行为保持不变；质量、误改保留性和附加耗时未通过真实验收前不得启用。计划见 `docs/superpowers/plans/2026-10-25-qa-fact-consistency.md`，实验结论见 `docs/superpowers/notes/2026-10-25-qa-quality-repair.md`。此授权不扩展附件或活动生成流程。
+
 旧分析合同仅供附件与历史兼容、测试对照：`agent/analytics-run-turn.ts`、`agent/general-analytics-run-turn.ts`、`agent/analysis-plan-run-turn.ts` 及旧 Skill 保留，不作为直接问答的 HTTP 回退。旧版逐句数字核验、固定计划/复核、`calculate_analysis`、`simulate_analysis` 和 `decisionQuality` 要求不适用于新正文。旧合同见 `docs/superpowers/specs/2026-10-13-marketing-advisor-integration-design.md` 与 `docs/superpowers/specs/2026-10-13-general-analytics-agent-design.md`。新情景工具继续复用真实总体基线、逐计算单位到分和显式假设身份；订单成交部分不等于完整订单，情景数值轴不能冒充日期趋势。
 
 对话附件通过 `/api/analytics/attachments` 和 `/api/analytics/conversation` 转交 Node 的 `agent/attachments/`。`conversation-answer/v1` 按实际读取的位置引用文件；每段数字经过来源核验及独立语义复核。表格计算由全量结构化数据执行，不从预览心算；缺失不补零，歧义数字、表头和数值合并单元格不擅自汇总。Word 修订按最终稿保留插入、排除删除。压缩包失败成员必须进入部分覆盖提示和可展开清单。文件内容不能反写 Campaign 事实；混合经营分析须保留用户持续原话与既有数据授权合同。

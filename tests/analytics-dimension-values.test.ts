@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMysqlAnalysisProvider } from "../agent/analytics-operation-database.ts";
+import { createMysqlAnalysisProvider, buildAnalysisDimensionValuesQuery } from "../agent/analytics-operation-database.ts";
 import type { HistoryConnection } from "../agent/analytics-database.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
 import type { AnalysisDataSession, AnalysisDimension, AnalysisScope } from "../app/lib/analytics/analysis-v2-types.ts";
@@ -17,6 +17,29 @@ const dataset = (rows: SalesRow[], version = "import-revision-1"): AnalyticsData
 const compare = (a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 const method = (session: AnalysisDataSession) => { assert.equal(typeof session.dimensionValues, "function", "会话应提供受控 dimensionValues 分页"); return session.dimensionValues!.bind(session); };
 const hasCode = (code: string) => (error: unknown) => error instanceof Error && "code" in error && error.code === code;
+
+test("维度字样筛选按字面匹配，SQL参数化并转义通配符", () => {
+  const columns = ["_import_id", "交易日期wid", "实体分店店号", "sku号", "大区描述", "实际销售金额", "销售件数", "币种描述"];
+  const plan = buildAnalysisDimensionValuesQuery("sales", { dimension: "store", scope, contains: "月%_=", pageSize: 2 }, columns);
+  assert.match(plan.sql, /LIKE CAST\(\? AS BINARY\) ESCAPE '='/);
+  assert.equal(plan.params.at(-1), "%月=%=_==%");
+  const attack = "x' OR 1=1 --";
+  const unsafe = buildAnalysisDimensionValuesQuery("sales", { dimension: "store", scope, contains: attack }, columns);
+  assert.ok(!unsafe.sql.includes(attack));
+  assert.equal(unsafe.params.at(-1), "%x' OR 1==1 --%");
+});
+
+test("快照字样筛选保持授权范围与字面语义，游标不能换筛选或变成全目录", async (t) => {
+  const session = await createSnapshotAnalysisProvider(dataset([sourceRow({ store: "月A" }), sourceRow({ store: "月B" }), sourceRow({ store: "不匹配" }), sourceRow({ store: "字面%_=" }), sourceRow({ store: "字面ABC" })])).open();
+  t.after(() => session.close()); const read = method(session);
+  const first = await read({ dimension: "store", scope, contains: "月", pageSize: 1 });
+  assert.deepEqual(first.values, ["月A"]); assert.ok(first.nextCursor);
+  assert.deepEqual((await read({ dimension: "store", scope, contains: "月", cursor: first.nextCursor })).values, ["月B"]);
+  await assert.rejects(read({ dimension: "store", scope, cursor: first.nextCursor }), /游标/);
+  await assert.rejects(read({ dimension: "store", scope, contains: "字面", cursor: first.nextCursor }), /游标/);
+  assert.deepEqual((await read({ dimension: "store", scope, contains: "%_=" })).values, ["字面%_="]);
+  assert.deepEqual((await read({ dimension: "store", scope: { ...scope, filters: { stores: ["不匹配"] } }, contains: "月" })).values, []);
+});
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, initial = [sourceRow()]) {
   const dir = await mkdtemp(join(tmpdir(), "ctf-dimension-paging-")); t.after(() => rm(dir, { recursive: true, force: true }));

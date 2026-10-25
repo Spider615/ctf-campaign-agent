@@ -17,7 +17,7 @@ export type AnalyticsDatabase = { inspect(signal?: AbortSignal): Promise<Databas
 const object = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 
 export function normalizeAnalysisDimensionValuesQuery(input: AnalysisDimensionValuesQuery, capabilities: AnalysisCapabilities) {
-  if (!object(input) || Object.keys(input).some((key) => !["dimension", "scope", "cursor", "pageSize"].includes(key))) throw analysisArgumentsInvalid("维度取值分页参数不正确");
+  if (!object(input) || Object.keys(input).some((key) => !["dimension", "scope", "contains", "cursor", "pageSize"].includes(key))) throw analysisArgumentsInvalid("维度取值分页参数不正确");
   if (!capabilities.dimensions.includes(input.dimension)) throw analysisArgumentsInvalid("当前数据没有这个取值维度");
   let scope: AnalysisDimensionValuesQuery["scope"];
   try { scope = normalizeAnalysisAggregateQuery({ scope: input.scope, by: [input.dimension], metrics: ["rows"] }, capabilities).scope; }
@@ -28,7 +28,8 @@ export function normalizeAnalysisDimensionValuesQuery(input: AnalysisDimensionVa
   }
   const pageSize = input.pageSize === undefined ? 100 : input.pageSize;
   if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) throw analysisArgumentsInvalid("维度取值分页大小应为 1 至 100 的整数");
-  return { dimension: input.dimension, scope, pageSize };
+  if (input.contains !== undefined && (typeof input.contains !== "string" || input.contains.length < 1 || input.contains.length > 120)) throw analysisArgumentsInvalid("维度字样筛选应为1至120字符的非空文字");
+  return { dimension: input.dimension, scope, pageSize, ...(input.contains === undefined ? {} : { contains: input.contains }) };
 }
 
 // 游标只存于当前会话，绑定快照、版本、维度与规范化范围；不允许用偏移量猜测或跨会话续读。
@@ -38,7 +39,7 @@ export function createAnalysisDimensionValuePages(session: Pick<AnalysisDataSess
   return {
     request(input: AnalysisDimensionValuesQuery) {
       const query = normalizeAnalysisDimensionValuesQuery(input, session.capabilities);
-      const key = JSON.stringify({ snapshotId: session.snapshotId, datasetVersion: session.datasetVersion, dimension: query.dimension, scope: query.scope });
+      const key = JSON.stringify({ snapshotId: session.snapshotId, datasetVersion: session.datasetVersion, dimension: query.dimension, scope: query.scope, ...(query.contains === undefined ? {} : { contains: query.contains }) });
       let after: string | undefined;
       if (input.cursor !== undefined) {
         const saved = typeof input.cursor === "string" ? cursors.get(input.cursor) : undefined;

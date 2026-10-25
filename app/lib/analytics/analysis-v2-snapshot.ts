@@ -58,10 +58,10 @@ export function createSnapshotAnalysisProvider(source: AnalyticsDataset): Analys
         throwIfTurnCancelled(querySignal); throwIfTurnCancelled(signal); assertActive();
         const request = pages.request(input); const cached = dimensionCache.get(request.cacheKey);
         if (cached) return structuredClone(cached);
-        const { scope, dimension, pageSize } = request.query;
+        const { scope, dimension, pageSize, contains } = request.query;
         const rows = dataset.rows.filter((row) => row.date >= scope.period.start && row.date <= scope.period.end && participates(row, scope.population) &&
           Object.entries(scope.filters).every(([key, values]) => values!.includes(dimensionValue(row, ANALYSIS_FILTER_DIMENSIONS[key as keyof typeof ANALYSIS_FILTER_DIMENSIONS]) ?? "")));
-        const values = [...new Set(rows.map((row) => dimensionValue(row, dimension)).filter((value): value is string => value !== undefined))].sort().filter((value) => request.after === undefined || value > request.after).slice(0, pageSize + 1);
+        const values = [...new Set(rows.map((row) => dimensionValue(row, dimension)).filter((value): value is string => value !== undefined))].sort().filter((value) => (contains === undefined || value.includes(contains)) && (request.after === undefined || value > request.after)).slice(0, pageSize + 1);
         throwIfTurnCancelled(querySignal); throwIfTurnCancelled(signal); assertActive();
         const page = pages.page(request, values); dimensionCache.set(request.cacheKey, page); return structuredClone(page);
       },

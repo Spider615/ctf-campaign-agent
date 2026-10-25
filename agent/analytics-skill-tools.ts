@@ -10,7 +10,7 @@ import { capabilityBrief } from "../app/lib/analytics/qa/capabilities.ts";
 import { createQaResult, pageQaResult, type QaResult } from "../app/lib/analytics/qa/results.ts";
 import { drawQaChart, type DrawQaChartInput } from "../app/lib/analytics/qa/chart.ts";
 import { ANALYTICS_QA_TOOLS, type AnalyticsQaToolName } from "../app/lib/analytics/tool-names.ts";
-import { ANALYSIS_FILTER_KEYS } from "../app/lib/analytics/semantic/model.ts";
+import { ANALYSIS_FILTER_KEYS, SEMANTIC_DIMENSIONS } from "../app/lib/analytics/semantic/model.ts";
 import { isTurnCancelled, throwIfTurnCancelled } from "../app/lib/cancellation.ts";
 
 const period = z.object({ start: z.string().max(10), end: z.string().max(10) }).strict();
@@ -20,6 +20,7 @@ const metric = z.string().describe(`指标id：${ANALYSIS_METRICS.join("、")}�
 const dimension = z.string().describe(`维度id：${ANALYSIS_DIMENSIONS.join("、")}；实际可用维度以当前数据目录为准`);
 const operation = z.object({ method: z.string().describe("aggregate、compare、decompose、scan、robustness之一"), scope, metrics: z.array(metric).min(1).max(24), purpose: z.string().min(1).max(1000), by: z.array(dimension).optional(), reference: scope.optional(), controls: z.array(dimension).optional(), commonStores: z.boolean().optional(), breakdown: dimension.optional(), check: z.string().optional(), alternative: period.optional() }).strict();
 const pageFields = { cursor: z.string().max(500).optional(), pageSize: z.number().int().min(1).max(100).optional() };
+const inspectFields = { dimension: dimension.optional(), contains: z.string().min(1).max(120).optional(), ...pageFields };
 const analyzeFields = { action: z.enum(["query", "read_result"]), request: operation.optional(), resultId: z.string().max(160).optional(), orderBy: z.object({ metric: z.string(), direction: z.enum(["asc", "desc"]).optional(), frameId: z.string().optional() }).strict().optional(), ...pageFields };
 const scenarioFields = { baselineResultId: z.string().max(160), adjustment: z.object({ kind: z.string(), amount: z.string().optional(), rate: z.string().optional(), threshold: z.string().optional() }).strict(), netVolumeChanges: z.array(z.string()).min(1).max(20), reason: z.string().min(1).max(1000) };
 const chartFields = { resultId: z.string().max(160), metric: z.string().max(120), kind: z.enum(["bar", "line"]), by: z.string().max(120).optional(), top: z.number().int().min(1).max(30).optional(), title: z.string().max(1000).optional(), frameIds: z.array(z.string().max(160)).optional() };
@@ -39,6 +40,7 @@ export function createAnalyticsSkillTools(config: Config) {
   const operations: Array<{ id: string; op: string; status: string; summary: string }> = [];
   const pending = new Set<Promise<unknown>>();
   const ingested = new Map<string, AnalysisOperationResult>();
+  const catalogs = new Map<string, { values: Set<string>; pages: Map<string, { values: string[]; next: string | null }>; total: number | null }>();
   let registration = Promise.resolve(), analysis: ReturnType<typeof createAnalysisOperations> | undefined;
   let analysisPending: Promise<ReturnType<typeof createAnalysisOperations>> | undefined;
   const prefix = crypto.randomUUID().slice(0, 8); let sequence = 0;
@@ -82,12 +84,35 @@ export function createAnalyticsSkillTools(config: Config) {
 
   const handlers = {
     inspect_dataset: wrap("inspect_dataset", async (raw) => {
-      const input = z.object({ dimension: dimension.optional(), ...pageFields }).strict().parse(raw);
+      const input = z.object(inspectFields).strict().parse(raw);
+      if (input.contains !== undefined && !input.dimension) throw analysisArgumentsInvalid("按字样筛选取值须指定dimension");
       const session = await config.ensureSession(); check(); session.assertActive?.();
       if (input.dimension) {
         if (!session.capabilities.dimensions.includes(input.dimension as AnalysisDimension)) throw analysisArgumentsInvalid("当前数据没有这个维度");
         if (!session.dimensionValues) throw analysisArgumentsInvalid("当前数据源未提供完整维度分页能力");
-        return { dimension: input.dimension, ...(await session.dimensionValues({ dimension: input.dimension as AnalysisDimension, scope: { period: config.constraints.period ?? session.capabilities.coverage, population: "sales", filters: config.constraints.filters }, cursor: input.cursor, pageSize: input.pageSize }, config.signal)) };
+        const definition = session.capabilities.dimensionCatalog?.find((item) => item.id === input.dimension) ?? SEMANTIC_DIMENSIONS[input.dimension as AnalysisDimension];
+        const actualScope = { period: config.constraints.period ?? session.capabilities.coverage, population: "sales" as const, filters: config.constraints.filters };
+        const page = await session.dimensionValues({ dimension: input.dimension as AnalysisDimension, scope: actualScope, ...(input.contains === undefined ? {} : { contains: input.contains }), cursor: input.cursor, pageSize: input.pageSize }, config.signal);
+        // 计数来自本轮实际返回的原值；只有首尾连通的完整分页链才能确认目录总数。
+        // 跳读末页或重读页面都不能冒称已读全量，也不触发额外数据库查询。
+        const catalogKey = JSON.stringify([input.dimension, input.contains ?? null]);
+        let read = catalogs.get(catalogKey);
+        if (!read) { read = { values: new Set(), pages: new Map(), total: null }; catalogs.set(catalogKey, read); }
+        page.values.forEach((value) => read.values.add(value));
+        read.pages.set(input.cursor ?? "", { values: page.values, next: page.nextCursor ?? null });
+        if (read.total === null) {
+          const visited = new Set<string>(), values = new Set<string>(); let cursor = "";
+          while (read.pages.has(cursor) && !visited.has(cursor)) {
+            visited.add(cursor); const received = read.pages.get(cursor)!;
+            received.values.forEach((value) => values.add(value));
+            if (received.next === null) { read.total = values.size; break; }
+            cursor = received.next;
+          }
+        }
+        return { dimension: input.dimension, label: definition.label, definition: definition.definition, basis: definition.basis, scope: actualScope, ...page,
+          match: input.contains === undefined ? null : { contains: input.contains, mode: "literal-case-sensitive" },
+          pageValueCount: page.values.length, readValueCount: read.values.size, totalValueCount: read.total, catalogComplete: read.total !== null,
+          countDefinition: "数量只指本轮授权范围内有成交、并符合match字面筛选的原始取值；readValueCount为已读去重数，首尾分页读全才有totalValueCount。匹配目录读全不代表未筛选目录读全；未确认字段与业务实体的身份映射时，不能当实体数或其上下界，也不证明现实总体完整。" };
       }
       const lines = capabilityBrief(session.capabilities).split("\n"), start = input.cursor ? Number(input.cursor.replace(`catalog:${session.snapshotId}:`, "")) : 0;
       if (input.cursor && (!input.cursor.startsWith(`catalog:${session.snapshotId}:`) || !Number.isInteger(start) || start < 0 || start >= lines.length)) throw analysisArgumentsInvalid("能力目录游标已失效或不属于本会话");
@@ -104,9 +129,10 @@ export function createAnalyticsSkillTools(config: Config) {
         return pageQaResult(lookup(input.resultId), input);
       }
       if (!input.request || input.resultId || input.cursor) throw analysisArgumentsInvalid("新查询须提供 request，不能同时传入结果编号或游标");
-      const result = await (await getAnalysis()).execute({ ...input.request, needIds: ["qa"] } as AnalysisOperationRequest, config.signal);
+      const request = { ...input.request, needIds: ["qa"] } as AnalysisOperationRequest;
+      const result = await (await getAnalysis()).execute(request, config.signal);
       await register(result); check();
-      const stored = createQaResult(`r-${prefix}-${++sequence}`, result); results.set(stored.resultId, stored);
+      const stored = createQaResult(`r-${prefix}-${++sequence}`, result, request); results.set(stored.resultId, stored);
       operations.push({ id: stored.resultId, op: result.method, status: result.status, summary: clean(result.purpose) });
       return pageQaResult(stored, { pageSize: input.pageSize, orderBy: input.orderBy });
     }),
@@ -134,11 +160,11 @@ export function createAnalyticsSkillTools(config: Config) {
     }),
   };
   const server = createSdkMcpServer({ name: "analytics", version: "2.0.0", tools: [
-    tool("inspect_dataset", "按需读取当前授权数据的维度、指标定义、可用方法和限制；指定dimension后用cursor读取全部真实取值。无需先调用本工具才能查数。", { dimension: dimension.optional(), ...pageFields }, handlers.inspect_dataset, readonly),
+    tool("inspect_dataset", "按需读当前授权数据的定义和限制；指定dimension后用cursor读取真实取值。查找名称或字样可给contains做区分大小写的字面子串筛选，%和_不作通配符，不识别活动/规则身份。readValueCount是已读去重数，catalogComplete后totalValueCount才是该匹配目录总数。无需先读目录才能查数。", inspectFields, handlers.inspect_dataset, readonly),
     tool("analyze", "在同一只读快照执行aggregate汇总、compare对照、decompose变化拆解、scan分组份额/偏离、robustness敏感性检查。compare/decompose须reference；scan须by或breakdown；robustness须check，可选largest_store/largest_order/order_distribution/alternative_window。保留controls和commonStores。action=read_result只翻页，不重算。可用orderBy按真实metric排序完整结果，先看重点再续读其余，不重查或丢弃长尾；多范围时用orderBy.frameId选择。返回单元数不是实际门店/活动数。", analyzeFields, handlers.analyze, readonly),
     tool("simulate_scenario", "在实际已读的唯一sales总体实收上，按显式假设计算额外让利及收入情景；不是利润、需求或真实活动预测。逐行/逐单完整计算与到分舍入由代码执行。", scenarioFields, handlers.simulate_scenario, readonly),
     tool("draw_chart", "从本轮真实resultId画图，metric为结果真实metricId，不接受模型编写数据点。by是维度；多控制层可用frameIds明确选择。情景使用数值横轴。返回可放入正文的chartId。", chartFields, handlers.draw_chart),
-    tool("submit_answer", "提交自由Markdown正文，图用独立行[[chart:chartId]]插入。正文数字不作逐句核验。允许继续查证或多次提交，最后有效提交作为答案；无效提交不会覆盖旧版。", { body: z.string().min(1).max(20000) }, handlers.submit_answer),
+    tool("submit_answer", "提交基于已读证据的自由Markdown正文，图用独立行[[chart:chartId]]插入。区分已知与未确定，按问题自然组织内容。允许继续查证或多次提交，最后有效提交作为答案；无效提交不会覆盖旧版。", { body: z.string().min(1).max(20000) }, handlers.submit_answer),
   ] });
   return { server, results, charts, operations, readFactIds, evidence: () => registry.view(), pending, toolNames: ANALYTICS_QA_TOOLS };
 }

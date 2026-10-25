@@ -1,19 +1,53 @@
-import type { AnalysisFact, AnalysisMethodReport, AnalysisOperationResult } from "../analysis-v2-types.ts";
+import type { AnalysisFact, AnalysisFrame, AnalysisMethodReport, AnalysisOperationRequest, AnalysisOperationResult, FactExpression } from "../analysis-v2-types.ts";
+import { SEMANTIC_DIMENSIONS } from "../semantic/model.ts";
 import { analysisArgumentsInvalid } from "../analysis-v2-operations.ts";
 import { formatValue } from "../plan/bind.ts";
 import { qaPresentationFacts } from "./observations.ts";
 
-type ResultFact = Pick<AnalysisFact, "id" | "frameId" | "metricId" | "label" | "value" | "unit"> & { formatted: string; assumption?: AnalysisFact["assumption"]; comparisonRole?: AnalysisFact["comparisonRole"] };
+type ResultFact = Pick<AnalysisFact, "id" | "frameId" | "metricId" | "label" | "value" | "unit" | "definition" | "comparisonRole" | "comparisonControls" | "comparisonValues"> & { formatted: string; readout: string; objectContext: string; comparisonContext: string; evidenceKind: "observation" | "calculation" | "assumption"; calculation?: string; limitations?: string[]; assumption?: AnalysisFact["assumption"] };
 type ResultCheck = AnalysisMethodReport["checks"][number] & { occurrences: number; methodId?: string };
 type ResultGroup = { key: Record<string, string>; labels: Record<string, string>; facts: ResultFact[]; kind?: "supporting" | "method_check"; checks?: ResultCheck[] };
 type ResultMethod = Pick<AnalysisMethodReport, "method" | "status" | "controls" | "sampleRows" | "groupCount"> & { checks: ResultCheck[]; checkCount: number; checksInResult: boolean };
 export type QaResultOrder = { metric: string; direction?: "asc" | "desc"; frameId?: string };
 type ResultView = { groups: ResultGroup[]; orderBy?: QaResultOrder };
-export type QaResult = { resultId: string; result: AnalysisOperationResult; groups: ResultGroup[]; readFactIds: Set<string>; factIndex: Map<string, AnalysisFact>; methods: ResultMethod[]; views: Map<string, ResultView> };
+type QueryGrouping = Pick<AnalysisOperationRequest, "by" | "controls" | "breakdown">;
+export type QaResult = { resultId: string; result: AnalysisOperationResult; queryGrouping?: QueryGrouping; groups: ResultGroup[]; readFactIds: Set<string>; presentedFactIds: Set<string>; factIndex: Map<string, AnalysisFact>; methods: ResultMethod[]; views: Map<string, ResultView> };
 
-export function createQaResult(resultId: string, result: AnalysisOperationResult): QaResult {
+function scopeReadout(frame: AnalysisFrame): string {
+  const population = { sales: "销售", net: "净销售", returns: "退货", recovery: "回收候选", zero_sales: "零元销售", unknown: "总体未知" }[frame.scope.population];
+  const selections = Object.entries(frame.scope.filters).filter(([, values]) => values?.length).map(([filter, values]) => {
+    const label = Object.values(SEMANTIC_DIMENSIONS).find((item) => item.filter === filter)?.label ?? filter;
+    const shown = values!.slice(0, 3).map((value) => value.length > 80 ? `${value.slice(0, 80)}…` : value).join("、");
+    return `${label}=${shown}${values!.length > 3 ? `等${values!.length}个入选值（完整名单见frame）` : ""}`;
+  });
+  return [population, `${frame.scope.period.start}至${frame.scope.period.end}`, ...selections].join("；");
+}
+
+// 只注释工具已经返回的事实，不重算正文，也不把未翻到的计算依据偷带到本页。
+function calculationReadout(fact: AnalysisFact, stored: QaResult, visible: Set<string>): string | undefined {
+  if (!fact.derivation) return;
+  let remaining = 12;
+  const render = (node: FactExpression): string | undefined => {
+    if (--remaining < 0) return;
+    if ("constant" in node) return String(node.constant);
+    if ("factId" in node) {
+      const parent = stored.factIndex.get(node.factId);
+      if (!parent || !visible.has(parent.id)) return;
+      const frame = parent.frameId === fact.frameId ? undefined : stored.result.frames.find((item) => item.id === parent.frameId);
+      return `${parent.value === null ? "未提供" : String(parent.value)} ${parent.unit}${frame ? `［${scopeReadout(frame)}］` : ""}`;
+    }
+    const args = node.args.map(render);
+    if (args.some((arg) => arg === undefined)) return;
+    return `(${args.join(` ${{ add: "+", subtract: "−", multiply: "×", divide: "÷" }[node.op]} `)})`;
+  };
+  const text = render(fact.derivation);
+  return text && text.length <= 1800 ? text : undefined;
+}
+
+export function createQaResult(resultId: string, result: AnalysisOperationResult, request?: QueryGrouping): QaResult {
   const objects = new Map(result.objects.map((object) => [object.id, object]));
   const factIndex = new Map(result.facts.map((fact) => [fact.id, fact]));
+  const scopes = new Map(result.frames.map((frame) => [frame.id, scopeReadout(frame)]));
   const cases = new Map<string, { key: string; label: string }>();
   for (const fact of result.facts) if (fact.scenario?.kind === "revenue") {
     const rate = factIndex.get(fact.scenario.rateFactId);
@@ -24,9 +58,11 @@ export function createQaResult(resultId: string, result: AnalysisOperationResult
   const primary = new Set(qaPresentationFacts(result).map((fact) => fact.id));
   for (const fact of result.facts) {
     const key: Record<string, string> = {}, labels: Record<string, string> = {};
-    for (const object of fact.objectIds.map((id) => objects.get(id)).filter((v) => v !== undefined).sort((a, b) => a.dimension.localeCompare(b.dimension))) {
+    const factObjects = fact.objectIds.map((id) => objects.get(id)).filter((v) => v !== undefined).sort((a, b) => a.dimension.localeCompare(b.dimension));
+    for (const object of factObjects) {
       key[object.dimension] = object.value; labels[object.dimension] = object.label;
     }
+    const objectContext = factObjects.length ? factObjects.slice(0, 3).map((object) => `${SEMANTIC_DIMENSIONS[object.dimension].label}=${object.label.length > 80 ? `${object.label.slice(0, 80)}…` : object.label}`).join("；") + (factObjects.length > 3 ? `；其余对象见group.key，共${factObjects.length}个标签` : "") : "无分组对象标签（范围见frame筛选）";
     const scenario = cases.get(fact.id);
     if (scenario) { key.netVolumeChange = scenario.key; labels.netVolumeChange = scenario.label; }
     // 控制层与标准化结果保留实际身份；同对象的目标、参照及派生差额放在一起。
@@ -34,7 +70,10 @@ export function createQaResult(resultId: string, result: AnalysisOperationResult
     const signature = fact.comparisonKey ? `comparison:${fact.comparisonKey}` : JSON.stringify([key, fact.comparisonRole ?? "", fact.comparisonValues ?? {}]);
     let group = groups.get(signature);
     if (!group) { group = { key, labels, facts: [] }; groups.set(signature, group); }
-    group.facts.push({ id: fact.id, frameId: fact.frameId, metricId: fact.metricId, label: fact.label, value: fact.value, unit: fact.unit, formatted: formatValue(fact, /(?:delta|change|contribution)/.test(fact.metricId)), ...(fact.assumption ? { assumption: fact.assumption } : {}), ...(fact.comparisonRole ? { comparisonRole: fact.comparisonRole } : {}) });
+    const formatted = formatValue(fact, /(?:delta|change|contribution)/.test(fact.metricId));
+    const evidenceKind = fact.assumption || fact.scenario ? "assumption" : fact.derivation ? "calculation" : "observation";
+    const comparisonContext = fact.comparisonRole ? { descriptive: "未调整的描述性读数", within_stratum: "层内对照，非标准化总体", standardized: "已标记标准化" }[fact.comparisonRole] : "无标准化标记";
+    group.facts.push({ id: fact.id, frameId: fact.frameId, metricId: fact.metricId, label: fact.label, value: fact.value, unit: fact.unit, definition: fact.definition, formatted, evidenceKind, objectContext, comparisonContext, readout: `［${{ observation: "观察", calculation: "计算", assumption: "假设情景" }[evidenceKind]}；${scopes.get(fact.frameId) ?? "范围未知"}；${objectContext}；${comparisonContext}］${fact.label}：${formatted}`, ...(fact.limitations.length ? { limitations: [...fact.limitations] } : {}), ...(fact.assumption ? { assumption: fact.assumption } : {}), ...(fact.comparisonRole ? { comparisonRole: fact.comparisonRole } : {}), ...(fact.comparisonControls ? { comparisonControls: [...fact.comparisonControls] } : {}), ...(fact.comparisonValues ? { comparisonValues: { ...fact.comparisonValues } } : {}) });
   }
   const units = [...groups].sort(([a, x], [b, y]) => Number(Boolean(Object.keys(x.key).length)) - Number(Boolean(Object.keys(y.key).length)) || (a < b ? -1 : a > b ? 1 : 0)).flatMap(([signature, group]): ResultGroup[] => {
     if (signature.startsWith("comparison:")) return [group];
@@ -57,7 +96,8 @@ export function createQaResult(resultId: string, result: AnalysisOperationResult
     for (const check of method.checks) units.push({ key: {}, labels: {}, kind: "method_check", facts: [], checks: [{ ...check, methodId: result.methods[index].id }] });
     method.checks = []; method.checksInResult = true;
   }
-  return { resultId, result, groups: units, readFactIds: new Set(), factIndex, methods, views: new Map([["v0", { groups: units }]]) };
+  const queryGrouping = request ? { by: [...new Set(request.by ?? [])], controls: [...new Set(request.controls ?? [])], ...(request.breakdown ? { breakdown: request.breakdown } : {}) } : undefined;
+  return { resultId, result, queryGrouping, groups: units, readFactIds: new Set(), presentedFactIds: new Set(), factIndex, methods, views: new Map([["v0", { groups: units }]]) };
 }
 
 function orderedView(stored: QaResult, order: QaResultOrder): string {
@@ -96,31 +136,43 @@ export function pageQaResult(stored: QaResult, input: { cursor?: string; pageSiz
   if (input.orderBy) { const selected = orderedView(stored, input.orderBy); if (input.cursor && selected !== viewId) throw analysisArgumentsInvalid("结果游标与指定排序不匹配"); viewId = selected; }
   const view = stored.views.get(viewId)!;
   const result = stored.result;
-  const envelope = (groups: ResultGroup[]) => {
+  let compactReadouts = false;
+  const envelope = (groups: ResultGroup[], compact = compactReadouts) => {
     const frameIds = new Set(groups.flatMap((g) => g.facts.map((fact) => fact.frameId)));
     const next = offset + groups.length;
+    // 图表保留的fact未必向模型展示过数值，不能充当已读公式依据。
+    const visible = new Set([...stored.presentedFactIds, ...groups.flatMap((group) => group.facts.map((fact) => fact.id))]);
     return {
       resultId: stored.resultId, operationId: result.operationId, method: result.method, status: result.status,
       purpose: result.purpose, cached: result.cached === true,
       frames: result.frames.filter((frame) => frameIds.has(frame.id)),
-      definitions: [...new Set(groups.flatMap((g) => g.facts.map((fact) => stored.factIndex.get(fact.id)!.definition)))],
+      definitions: compact ? [] : [...new Set(groups.flatMap((g) => g.facts.map((fact) => fact.definition)))],
       methods: stored.methods,
-      limitations: result.limitations, groups, totalGroups: stored.groups.length,
-      groupCountDefinition: "totalGroups是含总体、比较、控制依据及方法检查的返回单元数；实际业务分组数见methods.groupCount，不能以返回单元数回答门店或活动数量。",
+      limitations: result.limitations, groups: groups.map((group) => ({ ...group, facts: group.facts.map((fact) => {
+        // 长名单比较不能因重复展示范围而变成不可读；完整frames、值、身份与限制仍在本页。
+        if (compact) return { ...fact, readout: `frame=${fact.frameId}` };
+        const calculation = calculationReadout(stored.factIndex.get(fact.id)!, stored, visible);
+        return calculation ? { ...fact, calculation } : fact;
+      }) })), totalGroups: stored.groups.length,
+      ...(compact ? { readoutContext: "本页读数以frameId关联同页完整范围，省略重复注释；事实与筛选未删改" } : {}),
+      queryGrouping: stored.queryGrouping,
+      groupCountDefinition: "totalGroups含总体、比较、控制依据与方法检查；methods.groupCount是方法实际分组键的组合计数，不能自动当作其中单字段的全域去重数或实体数。queryGrouping记录请求分组，实际覆盖看方法检查；组合数等于分父组计数之和不能证明跨组无重名。",
       orderBy: view.orderBy ?? null,
+      orderingMeaning: view.orderBy ? `仅按${view.orderBy.metric}的${view.orderBy.direction}排序，不代表其他属性的排名` : "未指定指标排序；返回先后不能当作其他属性最大、最优或跨度最长的依据",
       nextCursor: next < view.groups.length ? `${prefix}${viewId}:${next}` : null,
     };
   };
   const groups: ResultGroup[] = [];
   for (const group of view.groups.slice(offset, offset + size)) {
     if (JSON.stringify(envelope([...groups, group])).length > 16000) {
-      if (!groups.length) throw analysisArgumentsInvalid("单组结果超过安全返回长度，未截断或发布不完整结果；请减少单次指标或控制层后重读");
-      break;
+      if (groups.length) break;
+      if (JSON.stringify(envelope([group], true)).length > 16000) throw analysisArgumentsInvalid("单组结果超过安全返回长度，未截断或发布不完整结果；请减少单次指标或控制层后重读");
+      compactReadouts = true;
     }
     groups.push(group);
   }
   const page = envelope(groups);
   if (JSON.stringify(page).length > 16000) throw analysisArgumentsInvalid("结果元数据超过安全返回长度，未发布不完整结果");
-  for (const group of groups) for (const fact of group.facts) stored.readFactIds.add(fact.id);
+  for (const group of groups) for (const fact of group.facts) { stored.readFactIds.add(fact.id); stored.presentedFactIds.add(fact.id); }
   return page;
 }

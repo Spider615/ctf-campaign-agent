@@ -35,7 +35,7 @@ export type AnalysisEvidence = { frames: AnalysisFrame[]; facts: AnalysisFact[];
 // 单元数据仅供确定性操作使用；逐单标识和底层查询不进入模型上下文。
 export type AnalysisAggregateCell = { dimensions: Partial<Record<AnalysisDimension | "order", string>>; rows: number; amount: number | null; quantity: number | null; grams: number | null; profit: number | null; orders: number | null; stores: number | null; tag_amount: number | null; orderMissingRows?: number | null; orderIds?: Array<string | null> };
 export type AnalysisAggregateQuery = { scope: AnalysisScope; by: Array<AnalysisDimension | "order">; metrics?: AnalysisMetric[]; excludeStores?: string[]; excludeOrders?: string[] };
-export type AnalysisDimensionValuesQuery = { dimension: AnalysisDimension; scope: AnalysisScope; cursor?: string; pageSize?: number };
+export type AnalysisDimensionValuesQuery = { dimension: AnalysisDimension; scope: AnalysisScope; contains?: string; cursor?: string; pageSize?: number };
 export type AnalysisDimensionValuesPage = { values: string[]; nextCursor?: string };
 export type AnalysisOrderDistributionQuery = { scope: AnalysisScope; metrics: AnalysisMetric[] };
 export type AnalysisOrderDistribution = { sampleRows: number; excludedRows: number; orderCount: number; quantiles: Partial<Record<AnalysisMetric, { p50: number | null; p90: number | null; p99: number | null }>> };

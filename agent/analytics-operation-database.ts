@@ -130,8 +130,9 @@ export function buildAnalysisDimensionValuesQuery(table: string, input: Analysis
   const expression = dimension === "day" ? "CONCAT(LEFT(`交易日期wid`, 4), '-', SUBSTRING(`交易日期wid`, 5, 2), '-', RIGHT(`交易日期wid`, 2))" : dimensionExpression(dimension);
   const value = `CAST(CAST(${expression} AS CHAR) AS BINARY)`;
   const where = base.sql.slice(base.sql.indexOf(" WHERE "), base.sql.indexOf(" GROUP BY "));
-  const sql = `SELECT /*+ MAX_EXECUTION_TIME(${ANALYSIS_DATABASE_QUERY_TIMEOUT_MS}) */ DISTINCT ${value} AS dimension_value FROM ${quoted(table)}${where} AND NULLIF(TRIM(CAST(${expression} AS CHAR)), '') IS NOT NULL${after === undefined ? "" : ` AND ${value} > CAST(? AS BINARY)`} ORDER BY dimension_value LIMIT ${query.pageSize + 1}`;
-  return { sql, params: [...base.params, ...(after === undefined ? [] : [after])], query, requiredColumns: base.requiredColumns };
+  const pattern = query.contains === undefined ? undefined : `%${query.contains.replaceAll("=", "==").replaceAll("%", "=%").replaceAll("_", "=_")}%`;
+  const sql = `SELECT /*+ MAX_EXECUTION_TIME(${ANALYSIS_DATABASE_QUERY_TIMEOUT_MS}) */ DISTINCT ${value} AS dimension_value FROM ${quoted(table)}${where} AND NULLIF(TRIM(CAST(${expression} AS CHAR)), '') IS NOT NULL${pattern === undefined ? "" : ` AND ${value} LIKE CAST(? AS BINARY) ESCAPE '='`}${after === undefined ? "" : ` AND ${value} > CAST(? AS BINARY)`} ORDER BY dimension_value LIMIT ${query.pageSize + 1}`;
+  return { sql, params: [...base.params, ...(pattern === undefined ? [] : [pattern]), ...(after === undefined ? [] : [after])], query, requiredColumns: base.requiredColumns };
 }
 
 export function buildAnalysisScenarioQuery(table: string, input: AnalysisScenarioQuery, columns: readonly string[], groupLengths: GroupLengths = {}) {
