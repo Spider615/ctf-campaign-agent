@@ -7,6 +7,7 @@ import { PLAN_ANSWER_SCHEMA, PLAN_ANSWER_V4_SCHEMA } from "../app/lib/analytics/
 import { quickAnalyticsReply } from "../app/lib/analytics/dialogue.ts";
 import { simulatedPlanAnswer, simulatedPlanAnswerV4 } from "./helpers/plan-answer.ts";
 import { httpAnalyticsDatabase, httpAnalyticsReportRequest } from "./helpers/analytics-http.ts";
+import { MODEL_QUOTA_MESSAGE } from "../app/lib/agent/service-errors.ts";
 
 async function start(t: test.TestContext, calls: { legacy: number; plan: number }, configured = true) {
   const server = createServer(createAgentHttpHandler({
@@ -83,4 +84,22 @@ test("已保存的 v1/v3/v4 消息继续按原合同读取", () => {
     assert.deepEqual(validateAnalyticsAnswerResult(JSON.parse(JSON.stringify(stored))), stored);
   }
   assert.equal(normalizeAnalyticsAnswerSchema(PLAN_ANSWER_V4_SCHEMA), PLAN_ANSWER_V4_SCHEMA);
+});
+
+test("额度耗尽在流式与JSON入口统一中文提示，不泄漏上游预算和请求标识", async (t) => {
+  const server = createServer(createAgentHttpHandler({
+    token: "test", model: "test", logger: { log() {}, error() {} }, database: httpAnalyticsDatabase(),
+    runAgentTurn: async () => { throw new Error("不能调用执行工具"); },
+    runPlanAnalyticsTurn: async () => { throw new Error('API Error: Request rejected (429) · {"error":{"budget":123,"currency":"CNY","message":"monthly budget exhausted; ask your admin to raise it","request_id":"private-request","type":"quota_exceeded"}}'); },
+  }));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const address = server.address(); assert.ok(address && typeof address === "object");
+  for (const path of endpoints) {
+    const response = await fetch(`http://127.0.0.1:${address.port}${path}`, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": PLAN_ANSWER_V4_SCHEMA }, body: requestBody(path) });
+    assert.equal(response.status, path.endsWith("/stream") ? 200 : 502);
+    const raw = await response.text();
+    assert.doesNotMatch(raw, /API Error|429|budget|currency|request_id|private-request/);
+    assert.deepEqual(JSON.parse(raw), path.endsWith("/stream") ? { type: "error", error: MODEL_QUOTA_MESSAGE } : { error: MODEL_QUOTA_MESSAGE });
+  }
 });

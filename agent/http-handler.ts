@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { isAgentRequest } from "../app/lib/agent/protocol.ts";
-import { mentionsUnderlyingModel } from "../app/lib/agent/reply-stream.ts";
+import { publicAgentError as publicError } from "../app/lib/agent/service-errors.ts";
 import { encodeAgentStreamEvent, type AgentStreamEvent } from "../app/lib/agent/stream.ts";
 import { isTurnCancelled, TurnCancelledError } from "../app/lib/cancellation.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
@@ -44,11 +44,6 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     chunks.push(chunk as Buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
-
-// 报错原文会显示在对话里。SDK 进程出错时带着底层框架的名字（如 Claude Code），对外换成通用说法，原文只进日志。
-function publicError(message: string): string {
-  return mentionsUnderlyingModel(message) ? "Agent 执行出错" : message;
 }
 
 export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk }: AgentHttpOptions) {

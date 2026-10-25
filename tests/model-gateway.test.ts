@@ -121,3 +121,16 @@ test("转换层：上游错误保留状态码并转成 Anthropic 错误类型", 
   assert.equal(response.headers.get("x-should-retry"), "false", "确定额度耗尽不能按短暂限流重复等待");
   assert.equal((await response.json() as { error: { type: string } }).error.type, "rate_limit_error");
 });
+
+test("转换层：仅额度耗尽禁重试，普通限流和上下文长度沿用原语义", async (t) => {
+  let error = { status: 429, detail: { type: "insufficient_quota", message: "You exceeded your current quota" } };
+  const gateway = createModelGateway({ baseUrl: "https://gw.example/models/v1", fetch: async () => Response.json({ error: error.detail }, { status: error.status }), log: () => {} });
+  const base = await gateway.listen(); t.after(() => gateway.close());
+  for (const value of [error, { status: 429, detail: { type: "rate_limit_error", message: "Too many tokens per minute" } }, { status: 400, detail: { type: "context_length_exceeded", message: "maximum context length exceeded" } }]) {
+    error = value;
+    const response = await fetch(`${base}/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "m", messages: [] }) });
+    assert.equal(response.status, error.status);
+    assert.equal(response.headers.get("x-should-retry"), error.detail.type === "insufficient_quota" ? "false" : null);
+    await response.json();
+  }
+});

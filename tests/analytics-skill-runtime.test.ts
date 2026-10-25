@@ -179,5 +179,5 @@ test("会话resolve后、赋值前的取消也回收实际连接", async (t) => 
 
 test("上游额度错误如实用中文反馈，不伪装为数字核验失败或完成", async (t) => {
   const query: AgentQuery = async function* () { yield message({ type: "result", subtype: "error_during_execution", is_error: true, errors: ['API Error: Request rejected (429) · {"error":{"type":"quota_exceeded","message":"monthly budget exhausted"}}'] }); };
-  await assert.rejects(createAnalyticsSkillRunner(setup(t), { query, provider: createSnapshotAnalysisProvider(dataset) })(request), /额度不足/);
+  await assert.rejects(createAnalyticsSkillRunner(setup(t), { query, provider: createSnapshotAnalysisProvider(dataset) })(request), { message: "当前服务额度不足，请及时联系管理员。" });
 });

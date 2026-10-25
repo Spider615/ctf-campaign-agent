@@ -4,6 +4,7 @@
 // 立即重新拉状态，换一个同厂商、可用、未下线的对话模型重试一次。
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { modelQuotaMessage } from "../app/lib/agent/service-errors.ts";
 
 import { anthropicErrorType, createStreamTranslator, sdkModelName, toAnthropicMessage, toOpenAIRequest } from "./openai-bridge.ts";
 
@@ -74,7 +75,7 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
       const retryAfter = upstream.headers.get("retry-after");
       if (retryAfter) headers["retry-after"] = retryAfter;
       // 保留上游429，但明确额度耗尽属于不可重试错误，避免SDK把它当短暂限流等待数分钟。
-      try { if ((JSON.parse(detail) as { error?: { type?: string } }).error?.type === "quota_exceeded") headers["x-should-retry"] = "false"; } catch { /* 非JSON错误继续按上游状态处理。 */ }
+      if (modelQuotaMessage(detail)) headers["x-should-retry"] = "false";
       response.writeHead(upstream.status, headers).end(JSON.stringify({ type: "error", error: { type: anthropicErrorType(upstream.status), message: detail.slice(0, 500) } }));
       return;
     }

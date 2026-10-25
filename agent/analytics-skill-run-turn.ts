@@ -15,6 +15,7 @@ import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2
 import { assembleQaAnswer } from "../app/lib/analytics/qa/answer.ts";
 import { planAnswerV4Text } from "../app/lib/analytics/plan/answer.ts";
 import { removeUnderlyingIdentity } from "../app/lib/agent/reply-stream.ts";
+import { modelQuotaMessage } from "../app/lib/agent/service-errors.ts";
 import { ANALYTICS_QA_TOOLS, ANALYTICS_QA_TOOL_LABELS, ANALYTICS_SKILL_TRACE_TOOL } from "../app/lib/analytics/tool-names.ts";
 import { publicAnalyticsTrace } from "../app/lib/analytics/trace.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
@@ -150,7 +151,7 @@ export function createAnalyticsSkillRunner(config: Config, dependencies: Depende
         if (message.subtype !== "success" || message.is_error) {
           const detail = "errors" in message && Array.isArray(message.errors) ? message.errors.join("；") : "result" in message && typeof message.result === "string" ? message.result : "";
           audit("upstream_error", { detail });
-          if (/"type"\s*:\s*"quota_exceeded"|monthly budget exhausted/i.test(detail)) throw new Error("问答服务额度不足，本次回答未完成；请联系服务管理员调整额度后重试");
+          const quota = modelQuotaMessage(detail); if (quota) throw new Error(quota);
           throw new Error(`本次问答执行未完成：${publicText(detail.split("\n")[0], 800, "上游请求失败，请重试")}`);
         }
         if (lastStop === "max_tokens") throw new Error("本次回答被截断，尚未完成");
@@ -176,7 +177,8 @@ export function createAnalyticsSkillRunner(config: Config, dependencies: Depende
       const error = fatal ?? raw;
       audit("failure", { cancelled: !fatal && (controller.signal.aborted || isTurnCancelled(error)), message: redact(error instanceof Error ? error.message : "问答执行失败"), sdkQueries: 1, modelMessages, compactions, durationMs: performance.now() - monotonic });
       if (!fatal && (controller.signal.aborted || isTurnCancelled(error))) throw new TurnCancelledError();
-      throw new Error(publicText(error instanceof Error ? error.message : "", 1000, "本次问答执行未完成，请重试"));
+      const detail = error instanceof Error ? error.message : "";
+      throw new Error(modelQuotaMessage(detail) ?? publicText(detail, 1000, "本次问答执行未完成，请重试"));
     } finally {
       for (const event of steps.filter((step) => step.status === "started")) end(event, "failed", controller.signal.aborted ? "已停止" : "本步骤未完成");
       unrelay(); controller.signal.removeEventListener("abort", stop);
