@@ -60,7 +60,7 @@ npm run build
 - 端口被占：Agent 服务读 `.dev.vars` 里的 `AGENT_PORT`，同时把 `AGENT_SERVICE_URL` 改成对应地址；页面端口被占时 Vite 自动顺延，以终端打印的地址为准。
 - 只改 `agent/plugin/skills/*/SKILL.md`，下一次 Agent 回合直接生效，不需要重启 `dev:agent`；Skill 格式或出处不符合约定时，下一回合会明确报错。
 - 改 `agent/skills.ts`、`agent/server.ts`、`app/lib/agent/` 或 `app/lib/campaign/`，需要重启 `dev:agent`；页面侧仍会热更新。
-- 直接智能问答没有应用层总时长或业务轮数上限；附件保留上述外层预算。供应商或鉴权错误按真实上游错误反馈，持续挂起的回合可以主动停止。
+- 直接智能问答没有应用层总时长或业务轮数上限；附件保留上述外层预算。错误按真实失败状态反馈；额度耗尽只显示“当前服务额度不足，请及时联系管理员。”，原始英文、预算和请求标识保留于私有诊断，普通429限流及上下文超长不能误报额度。持续挂起的回合可以主动停止。
 
 本地 D1 首次使用前，先 `npm run build`，再应用迁移：
 
