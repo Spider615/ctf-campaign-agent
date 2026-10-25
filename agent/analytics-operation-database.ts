@@ -270,6 +270,12 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
         return currentRelation;
       };
       const lengths = () => Object.fromEntries([...groupLengths].filter(([, length]) => length !== undefined));
+      // 同一快照只复用完全等价的原始投影；固定空长度配置，避免测长前后签名变化。
+      // 实际执行仍按原路径测量全源长度并重编译，不跨会话缓存事实或订单身份。
+      const rawQueryCacheKey = (query: AnalysisAggregateQuery, includeOrderIds: boolean) => {
+        const plan = buildAnalysisAggregateQuery(config.table, query, columns, {}, includeOrderIds);
+        return JSON.stringify(["compiled-raw/v1", includeOrderIds ? "orderSet" : "aggregate", plan.sql, plan.params]);
+      };
       const session: AnalysisDataSession = { snapshotId, datasetVersion, capabilities, assertActive,
         async dimensionValues(input, querySignal) {
           if (querySignal?.aborted) invalidate(undefined, new TurnCancelledError());
@@ -321,7 +327,7 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
         },
         async aggregate(input, querySignal) {
           if (querySignal?.aborted) invalidate(undefined, new TurnCancelledError());
-          throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive(); const query = normalizeAnalysisAggregateQuery(input, capabilities); const key = JSON.stringify(query); const cached = cache.get(key);
+          throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive(); const query = normalizeAnalysisAggregateQuery(input, capabilities); const key = rawQueryCacheKey(query, false); const cached = cache.get(key);
           if (cached) { const result = await resource(() => cached, querySignal, false); return structuredClone(result); }
           const queuedAt = performance.now();
           const pending = queue.then(async () => {
@@ -347,7 +353,7 @@ export function createMysqlAnalysisProvider(config: MysqlAnalysisConfig, depende
           if (querySignal?.aborted) invalidate(undefined, new TurnCancelledError());
           throwIfTurnCancelled(signal); throwIfTurnCancelled(querySignal); assertActive(); const query = normalizeAnalysisAggregateQuery(input, capabilities);
           if (query.by.includes("order")) throw new Error("订单集合聚合不接受逐单分组");
-          const key = JSON.stringify(query); const cached = orderSetCache.get(key);
+          const key = rawQueryCacheKey(query, true); const cached = orderSetCache.get(key);
           if (cached) return structuredClone(await resource(() => cached, querySignal, false));
           const pending = queue.then(async () => {
             assertActive();

@@ -7,13 +7,16 @@ import { createQaResult, pageQaResult } from "../app/lib/analytics/qa/results.ts
 import { drawQaChart } from "../app/lib/analytics/qa/chart.ts";
 import { assembleQaAnswer } from "../app/lib/analytics/qa/answer.ts";
 import { validatePlanAnswerV4 } from "../app/lib/analytics/plan/answer.ts";
+import { createAnalysisOperations } from "../app/lib/analytics/analysis-v2-operations.ts";
+import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
+import { sampleDataset } from "../app/lib/analytics/sample.ts";
 
-function fixture(count = 3): AnalysisOperationResult {
+function fixture(count = 3, method: "aggregate" | "scan" = "aggregate"): AnalysisOperationResult {
   const result: AnalysisOperationResult = {
-    operationId: "op", method: "aggregate", status: "completed", purpose: "核对完整门店实收与客单价", needIds: ["qa"], limitations: [],
+    operationId: "op", method, status: "completed", purpose: "核对完整门店实收与客单价", needIds: ["qa"], limitations: [],
     frames: [{ id: "frame", snapshotId: "snapshot", datasetVersion: "version", mode: "snapshot", provenance: "sample", scope: { period: { start: "2025-08-01", end: "2025-08-31" }, population: "sales", filters: {} }, currency: "CNY", grain: "line", controls: [], limitations: [] }],
     objects: [], facts: [],
-    methods: [{ id: "method", operationId: "op", method: "aggregate", status: "completed", frameIds: ["frame"], controls: [], checks: [{ name: "完整聚合", status: "performed", result: "包含全部业务分组" }], sampleRows: count * 2, groupCount: count, limitations: [] }],
+    methods: [{ id: "method", operationId: "op", method, status: "completed", frameIds: ["frame"], controls: [], checks: [{ name: "完整聚合", status: "performed", result: "包含全部业务分组" }], sampleRows: count * 2, groupCount: count, limitations: [] }],
   };
   for (let at = 0; at < count; at++) {
     const objectId = `store-${at}`;
@@ -98,7 +101,7 @@ test("嵌套公式里的明确父引用可识别，父链本身保持原样", ()
   assert.deepEqual(source, before);
 });
 
-for (const method of ["compare", "decompose", "scan", "robustness"] as const) {
+for (const method of ["compare", "decompose", "robustness"] as const) {
   test(`${method}的同值事实和父链完整保留，不采用汇总展示去重`, () => {
     const source = fixture(1); source.method = method; source.methods[0].method = method;
     assert.equal(qaPresentationFacts(freeze(source)), source.facts);
@@ -107,9 +110,9 @@ for (const method of ["compare", "decompose", "scan", "robustness"] as const) {
   });
 }
 
-for (const name of ["完全无父链", "只有其他指标被公式引用"] as const) {
-  test(`${name}时相同原值仍拒绝歧义，分页不漏重复身份`, () => {
-    const source = fixture(1);
+for (const method of ["aggregate", "scan"] as const) for (const name of ["完全无父链", "只有其他指标被公式引用"] as const) {
+  test(`${method}的${name}时相同原值仍拒绝歧义，分页不漏重复身份`, () => {
+    const source = fixture(1, method);
     if (name === "完全无父链") source.facts.pop();
     else source.facts[4].derivation = { op: "multiply", args: [{ factId: "denominator-0" }, { constant: 1 }] };
     const selected = ids(qaPresentationFacts(freeze(source)));
@@ -137,9 +140,9 @@ const differentIdentities: Array<[string, (fact: AnalysisFact, source: AnalysisO
   ["比较控制维度", (fact) => { fact.comparisonControls = ["category"]; }],
   ["比较控制取值", (fact) => { fact.comparisonValues = { category: "另一货类" }; }],
 ];
-for (const [name, change] of differentIdentities) {
-  test(`即使原值相同且有父引用，不同${name}的事实也不能合并`, () => {
-    const source = fixture(1);
+for (const method of ["aggregate", "scan"] as const) for (const [name, change] of differentIdentities) {
+  test(`${method}即使原值相同且有父引用，不同${name}的事实也不能合并`, () => {
+    const source = fixture(1, method);
     change(source.facts[2], source);
     const selected = ids(qaPresentationFacts(freeze(source)));
     assert.ok(selected.includes("amount-0") && selected.includes("numerator-0"));
@@ -158,9 +161,9 @@ const differentReadings: Array<[string, Partial<AnalysisFact>]> = [
   ["派生值", { derivation: { factId: "amount-0" } }],
   ["情景身份", { scenario: { kind: "static_loss", baselineFactId: "amount-0", parameterFactIds: ["orders-0"] } }],
 ];
-for (const [name, change] of differentReadings) {
-  test(`有父引用也不能合并不同${name}，图表不能覆盖或混加`, () => {
-    const source = fixture(1);
+for (const method of ["aggregate", "scan"] as const) for (const [name, change] of differentReadings) {
+  test(`${method}有父引用也不能合并不同${name}，图表不能覆盖或混加`, () => {
+    const source = fixture(1, method);
     Object.assign(source.facts[2], change);
     const selected = ids(qaPresentationFacts(freeze(source)));
     assert.ok(selected.includes("amount-0") && selected.includes("numerator-0"));
@@ -249,3 +252,73 @@ test("只读主展示组仍可由比率补全原父链，v4序列化不丢原始
   assert.deepEqual(back.evidence.facts.find((fact) => fact.id === "ratio-0")!.derivation, source.facts[4].derivation);
   assert.deepEqual(source, before);
 });
+
+test("普通scan仅选择原值展示，151组含零和缺失的755条事实分页不变", () => {
+  const source = fixture(151, "scan"), before = structuredClone(source); freeze(source);
+  assert.equal(qaPresentationFacts(source).length, 453);
+  assertCompletePages(source);
+  const stored = createQaResult("scan", source);
+  const first = pageQaResult(stored, { orderBy: { metric: "amount", direction: "desc" }, pageSize: 1 });
+  assert.equal(first.groups[0].facts.find((fact) => fact.metricId === "amount")!.value, 15100.01);
+  const chart = draw(source, 30);
+  assert.deepEqual(chart.series[0].values.map((point) => point.value), Array.from({ length: 30 }, (_, at) => (151 - at) * 100 + 0.01));
+  assert.ok(chart.factIds.includes("amount-1") && chart.factIds.includes("amount-2"));
+  const answer = assembleQaAnswer({ runId: "scan", question: "普通scan", body: "按已读实收排序。\n\n[[chart:chart]]", charts: new Map([[chart.id, chart]]), evidence: source, readFactIds: stored.readFactIds, operations: [{ id: stored.resultId, op: "scan", status: "completed", summary: source.purpose }] });
+  const back = validatePlanAnswerV4(JSON.parse(JSON.stringify(answer)));
+  const factIndex = new Map(back.evidence.facts.map((fact) => [fact.id, fact]));
+  for (const id of first.groups[0].facts.map((fact) => fact.id)) {
+    assert.ok(factIndex.has(id));
+    for (const parent of analysisFactParents(factIndex.get(id)!)) assert.deepEqual(factIndex.get(parent), source.facts.find((fact) => fact.id === parent));
+  }
+  assert.deepEqual(source, before);
+});
+
+for (const condition of ["frame有控制", "后一个方法有控制", "多个frame"] as const) {
+  test(`scan资格保护：${condition}时原facts完整返回`, () => {
+    const source = fixture(1, "scan");
+    if (condition === "frame有控制") source.frames[0].controls = ["category"];
+    if (condition === "后一个方法有控制") source.methods.push({ ...source.methods[0], id: "controlled-method", controls: ["category"] });
+    if (condition === "多个frame") source.frames.push({ ...structuredClone(source.frames[0]), id: "reference" });
+    const before = structuredClone(source); freeze(source);
+    assert.equal(qaPresentationFacts(source), source.facts);
+    assert.throws(() => draw(source), /歧义|重复/);
+    assertCompletePages(source); assert.deepEqual(source, before);
+  });
+}
+
+test("真实受控scan的同值category父事实属于三个优惠子范围，不能折成单点100", async () => {
+  const dataset = sampleDataset();
+  dataset.rows = ["A", "B", "C"].map((offer) => ({ ...dataset.rows[0], lineId: offer, date: "2026-08-01", category: "黄金", campaignId: offer, store: "合成门店", orderId: offer, netSales: 100, quantity: 1 }));
+  const session = await createSnapshotAnalysisProvider(dataset).open();
+  try {
+    const scope = { period: { start: "2026-08-01", end: "2026-08-31" }, population: "sales" as const, filters: {} };
+    const operations = createAnalysisOperations(session, { filters: {} });
+    const source = await operations.execute({ method: "scan", scope, by: ["offer"], controls: ["category"], metrics: ["amount"], purpose: "合成受控范围反例", needIds: ["qa"] });
+    assert.equal(source.status, "completed");
+    const parents = source.facts.filter((fact) => fact.metricId === "amount" && fact.objectIds.length === 1 && source.objects.find((object) => object.id === fact.objectIds[0])?.dimension === "category");
+    assert.equal(parents.length, 3); assert.ok(parents.every((fact) => fact.value === 100));
+    const referenced = new Set(source.facts.flatMap(analysisFactParents));
+    assert.ok(parents.every((fact) => referenced.has(fact.id)));
+    const before = structuredClone(source);
+    assert.equal(qaPresentationFacts(source), source.facts);
+    assert.throws(() => drawQaChart({ id: "controlled", input: { resultId: "controlled", metric: "amount", kind: "bar", by: "category" }, result: source, evidence: source }), /歧义|重复/);
+    const aggregate = await operations.execute({ method: "aggregate", scope, by: ["category"], metrics: ["amount"], purpose: "独立核对真实货类总体", needIds: ["qa"] });
+    assert.equal(aggregate.facts.find((fact) => fact.metricId === "amount")!.value, 300);
+    assertCompletePages(source); assert.deepEqual(source, before);
+  } finally { await session.close(); }
+});
+
+for (const selection of ["reference", "commonStores"] as const) {
+  test(`真实${selection}扫描保持全部原facts与父链，不能作为普通scan去重`, async () => {
+    const session = await createSnapshotAnalysisProvider(sampleDataset()).open();
+    try {
+      const scope = { period: { start: "2026-08-01", end: "2026-08-31" }, population: "sales" as const, filters: {} };
+      const source = await createAnalysisOperations(session, { filters: {} }).execute({ method: "scan", scope, by: ["category"], metrics: ["amount", "amount_per_order"], purpose: "保持控制与参照身份", needIds: ["qa"], ...(selection === "reference" ? { reference: { ...scope, period: { start: "2025-08-01", end: "2025-08-31" } } } : { commonStores: true }) });
+      assert.equal(source.status, "completed");
+      assert.ok(source.frames.length > 1 || source.frames.some((frame) => frame.controls.length) || source.methods.some((method) => method.controls.length));
+      const before = structuredClone(source);
+      assert.equal(qaPresentationFacts(source), source.facts);
+      assertCompletePages(source); assert.deepEqual(source, before);
+    } finally { await session.close(); }
+  });
+}

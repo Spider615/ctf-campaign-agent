@@ -4,14 +4,19 @@ import { Client } from "../agent/node_modules/@modelcontextprotocol/sdk/dist/esm
 import { InMemoryTransport } from "../agent/node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js";
 import { createAnalyticsSkillTools } from "../agent/analytics-skill-tools.ts";
 import { createSnapshotAnalysisProvider } from "../app/lib/analytics/analysis-v2-snapshot.ts";
-import { createAnalysisOperations } from "../app/lib/analytics/analysis-v2-operations.ts";
+import { analysisMetricDefinitions, createAnalysisOperations } from "../app/lib/analytics/analysis-v2-operations.ts";
+import type { AnalysisAggregateCell, AnalysisAggregateQuery, AnalysisDataSession } from "../app/lib/analytics/analysis-v2-types.ts";
+import { createQaResult, pageQaResult } from "../app/lib/analytics/qa/results.ts";
+import { drawQaChart } from "../app/lib/analytics/qa/chart.ts";
+import { assembleQaAnswer } from "../app/lib/analytics/qa/answer.ts";
+import { validatePlanAnswerV4 } from "../app/lib/analytics/plan/answer.ts";
 import { sampleDataset } from "../app/lib/analytics/sample.ts";
 
 const dataset = sampleDataset();
 const scope = { period: { start: "2026-08-01", end: "2026-08-31" }, population: "sales" as const, filters: {} };
 const reference = { ...scope, period: { start: "2025-08-01", end: "2025-08-31" } };
-async function setup(t: { after(fn: () => Promise<void>): void }) {
-  const session = await createSnapshotAnalysisProvider(dataset).open();
+async function setup(t: { after(fn: () => Promise<void>): void }, providedSession?: AnalysisDataSession) {
+  const session = providedSession ?? await createSnapshotAnalysisProvider(dataset).open();
   let opens = 0;
   const submitted: string[] = [];
   const tools = createAnalyticsSkillTools({ ensureSession: async () => { opens++; return session; }, constraints: { filters: {} }, onSubmit: async (body) => { submitted.push(body); } });
@@ -136,4 +141,107 @@ test("同时读取原值与比率仍可按原值排序画图，分子分母证�
   assert.equal(chart.isError, undefined, JSON.stringify(chart.value));
   assert.equal(chart.value.categories, 4);
   assert.deepEqual(tools.charts.get(chart.value.chartId)!.series[0].values.map((point) => point.value).sort((a, b) => b! - a!), [64820, 64820, 56238, 56238]);
+});
+
+const scanMetrics = ["amount", "orders", "quantity", "profit", "margin_rate", "discount_rate", "amount_per_order", "stores"] as const;
+function ordinaryScanSession(): AnalysisDataSession & { reads: AnalysisAggregateQuery[] } {
+  // 全部为内存合成记录；同一订单横跨优惠，父组必须独立去重，不能相加子组订单数。
+  const rows = [
+    { offer: "A", store: "S1", order: "共同订单", amount: 100, quantity: 1, profit: 20, tag_amount: 125 },
+    { offer: "B", store: "S1", order: "共同订单", amount: 200, quantity: 2, profit: 60, tag_amount: 250 },
+    { offer: "B", store: "S2", order: "独立订单2", amount: 50, quantity: 1, profit: 10, tag_amount: 100 },
+    { offer: "C", store: "S1", order: "独立订单3", amount: 150, quantity: 1, profit: 30, tag_amount: 150 },
+  ];
+  const reads: AnalysisAggregateQuery[] = [];
+  return {
+    snapshotId: "memory-scan", datasetVersion: "memory-scan/v1", reads,
+    capabilities: { mode: "database", name: "仅内存合成扫描", currency: "CNY", provenance: "sample", coverage: scope.period, dimensions: ["offer", "store"], metrics: analysisMetricDefinitions("CNY", [...scanMetrics, "rows", "tag_amount"], "database"), methods: ["aggregate", "scan"], limitations: [] },
+    async aggregate(query) {
+      reads.push(structuredClone(query));
+      const groups = new Map<string, typeof rows>();
+      for (const row of rows) {
+        const key = JSON.stringify(query.by.map((dimension) => row[dimension as keyof typeof row]));
+        const group = groups.get(key) ?? []; group.push(row); groups.set(key, group);
+      }
+      return [...groups.values()].map((selected): AnalysisAggregateCell => ({
+        dimensions: Object.fromEntries(query.by.map((dimension) => [dimension, selected[0][dimension as keyof typeof selected[0]]])),
+        rows: selected.length, amount: selected.reduce((sum, row) => sum + row.amount, 0), quantity: selected.reduce((sum, row) => sum + row.quantity, 0),
+        profit: selected.reduce((sum, row) => sum + row.profit, 0), tag_amount: selected.reduce((sum, row) => sum + row.tag_amount, 0), grams: null,
+        orders: new Set(selected.map((row) => `${row.store}:${row.order}`)).size, stores: new Set(selected.map((row) => row.store)).size,
+      }));
+    },
+    async close() {},
+  };
+}
+
+test("普通scan八指标内存回归：原值排序画图、完整分页及v4父链不丢", async () => {
+  const session = ordinaryScanSession();
+  try {
+    const source = await createAnalysisOperations(session, { filters: {} }).execute({ needIds: ["qa"], method: "scan", scope, by: ["offer"], metrics: [...scanMetrics], purpose: "真实八指标普通扫描" });
+    assert.equal(source.status, "completed"); assert.equal(source.frames.length, 1);
+    assert.deepEqual(source.frames[0].controls, []); assert.ok(source.methods.every((method) => !method.controls.length));
+    assert.equal(source.facts.length, 125);
+    const before = structuredClone(source), stored = createQaResult("memory-scan", source);
+    for (const metric of scanMetrics) {
+      let page = pageQaResult(stored, { pageSize: 2, orderBy: { metric, direction: "desc" } });
+      const seen: string[] = [], ranked: Array<number | null> = [];
+      while (true) {
+        assert.ok(JSON.stringify(page).length <= 16000);
+        for (const group of page.groups) {
+          seen.push(...group.facts.map((fact) => fact.id));
+          const ordered = group.kind ? undefined : group.facts.find((fact) => fact.metricId === metric);
+          if (ordered) ranked.push(ordered.value);
+        }
+        if (!page.nextCursor) break;
+        page = pageQaResult(stored, { cursor: page.nextCursor, pageSize: 2 });
+      }
+      assert.equal(new Set(seen).size, source.facts.length);
+      assert.deepEqual([...seen].sort(), source.facts.map((fact) => fact.id).sort());
+      assert.equal(ranked.length, 4); assert.deepEqual(ranked, [...ranked].sort((a, b) => b! - a!));
+      if (metric === "amount") assert.deepEqual(ranked, [500, 250, 150, 100]);
+      const chart = drawQaChart({ id: "chart", input: { resultId: stored.resultId, metric, kind: "bar", by: "offer" }, result: source, evidence: source });
+      assert.equal(chart.categories.length, 3);
+      for (const point of chart.series[0].values) {
+        const actual = source.facts.find((fact) => fact.id === point.refIds[0])!;
+        assert.equal(actual.metricId, metric); assert.equal(point.value, actual.value);
+      }
+      if (metric === "amount") assert.deepEqual(chart.series[0].values.map((point) => point.value), [250, 150, 100]);
+    }
+    const orders = source.facts.filter((fact) => fact.metricId === "orders");
+    assert.equal(orders.find((fact) => !fact.objectIds.length)!.value, 3);
+    assert.equal(["A", "B", "C"].reduce((sum, offer) => sum + orders.find((fact) => fact.objectIds.some((id) => source.objects.find((object) => object.id === id)?.value === offer))!.value!, 0), 4);
+    const answer = assembleQaAnswer({ runId: "memory", question: "普通扫描", body: "根据全部已读优惠比较经营表现。", charts: new Map(), evidence: source, readFactIds: stored.readFactIds, operations: [{ id: stored.resultId, op: "scan", status: "completed", summary: source.purpose }] });
+    const back = validatePlanAnswerV4(JSON.parse(JSON.stringify(answer)));
+    assert.deepEqual(back.evidence.facts, source.facts);
+    assert.deepEqual(session.reads.map((query) => query.by), [["offer"], []]);
+    assert.deepEqual(source, before);
+  } finally { await session.close(); }
+});
+
+test("普通scan八指标MCP回归：amount降序成功且翻页画图不重查", async (t) => {
+  const session = ordinaryScanSession(), { call, tools } = await setup(t, session);
+  const response = await call("analyze", { action: "query", request: { method: "scan", scope, metrics: [...scanMetrics], by: ["offer"], purpose: "按原始实收降序读取全部优惠" }, orderBy: { metric: "amount", direction: "desc" }, pageSize: 1 });
+  assert.equal(response.isError, undefined, JSON.stringify(response.value));
+  const stored = tools.results.get(response.value.resultId)!, before = structuredClone(stored.result);
+  const seen: string[] = [], amounts: number[] = [];
+  let page = response.value;
+  while (true) {
+    assert.ok(JSON.stringify(page).length <= 16000);
+    for (const group of page.groups) {
+      seen.push(...group.facts.map((fact: { id: string }) => fact.id));
+      const amount = group.kind ? undefined : group.facts.find((fact: { metricId: string }) => fact.metricId === "amount");
+      if (amount) amounts.push(amount.value);
+    }
+    if (!page.nextCursor) break;
+    const next = await call("analyze", { action: "read_result", resultId: stored.resultId, cursor: page.nextCursor, pageSize: 2 });
+    assert.equal(next.isError, undefined, JSON.stringify(next.value)); page = next.value;
+  }
+  assert.deepEqual(amounts, [500, 250, 150, 100]);
+  assert.equal(new Set(seen).size, 125); assert.equal(seen.length, 125);
+  assert.deepEqual([...seen].sort(), stored.result.facts.map((fact) => fact.id).sort());
+  const chart = await call("draw_chart", { resultId: stored.resultId, metric: "amount", kind: "bar", by: "offer" });
+  assert.equal(chart.isError, undefined, JSON.stringify(chart.value));
+  assert.deepEqual(tools.charts.get(chart.value.chartId)!.series[0].values.map((point) => point.value), [250, 150, 100]);
+  assert.deepEqual(session.reads.map((query) => query.by), [["offer"], []]);
+  assert.equal(tools.operations.length, 1); assert.deepEqual(stored.result, before);
 });

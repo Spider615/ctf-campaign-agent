@@ -212,6 +212,64 @@ test("同连接并发工具排队执行，重复规范化查询不增加 SQL", a
   await session.close();
 });
 
+for (const mode of ["aggregate", "orderSet"] as const) {
+  test(`${mode}同快照等价指标的原始查询合并在途与完成结果，返回副本不污染缓存`, async (t) => {
+    const f = fixture(t); const session = await createMysqlAnalysisProvider(f.config, f.dependencies).open();
+    t.after(() => { void session.close(); });
+    const original = f.connection.execute; let reads = 0; let release!: () => void; let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    f.connection.execute = async (sql, params) => {
+      if (sql.includes("AS orders_observed")) { f.statements.push(sql); return [[{ orders_observed: 1 }], []]; }
+      if (sql.includes("AS rows_count") && !sql.includes("AS min_day")) { reads++; if (reads === 1) { enter(); await blocked; } }
+      if (!sql.includes("JSON_ARRAYAGG")) return original(sql, params);
+      f.statements.push(sql); return [[{ d_store: "A", rows_count: 2, amount: "3.02", orders: 1, stores: 1, order_ids: ["1:A:1", "1:A:1"] }], []];
+    };
+    const run = async (metrics: AnalysisAggregateQuery["metrics"]) => {
+      const input = { ...query, metrics };
+      if (mode === "aggregate") return session.aggregate(input);
+      assert.ok(session.aggregateWithOrderIds); return session.aggregateWithOrderIds(input);
+    };
+    const pending = run(["amount", "orders"]); await entered;
+    const alias = run(["amount", "orders", "amount_per_order"]); release();
+    const [first, second] = await Promise.all([pending, alias]);
+    assert.equal(reads, 1, "不同派生指标闭包相同，不应重复执行相同原始SQL");
+    assert.ok(first && second); assert.deepEqual(first, second); assert.notStrictEqual(first[0], second[0]);
+    first[0].amount = -100; first[0].dimensions.store = "被修改的副本"; first[0].orderIds?.push("被修改的订单");
+    const third = await run(["amount_per_order"]); assert.ok(third);
+    assert.equal(reads, 1); assert.deepEqual(third, second); assert.equal(third[0].amount, 3.02); assert.equal(third[0].dimensions.store, "A");
+    assert.equal(readdirSync(f.dir).map((name) => JSON.parse(readFileSync(join(f.dir, name), "utf8"))).filter((entry) => /AS rows_count/.test(entry.sql) && !/AS min_day/.test(entry.sql)).length, 1, "缓存不能伪造第二份实际SQL执行证据");
+    await session.close(); await assert.rejects(run(["amount_per_order"]), /失效|关闭|快照/);
+  });
+}
+
+test("原始查询等价缓存不跨参数、期间、总体、排除或分组，也不复用缺少父字段的结果", async (t) => {
+  const f = fixture(t); const session = await createMysqlAnalysisProvider(f.config, f.dependencies).open();
+  t.after(() => { void session.close(); });
+  const base: AnalysisAggregateQuery = { ...query, metrics: ["amount", "orders"] };
+  const variants: AnalysisAggregateQuery[] = [
+    base, { ...base, scope: { ...base.scope, filters: { stores: ["A"] } } }, { ...base, scope: { ...base.scope, filters: { stores: ["B"] } } },
+    { ...base, scope: { ...base.scope, population: "net" } }, { ...base, scope: { ...base.scope, period: { ...base.scope.period, end: "2025-08-30" } } },
+    { ...base, excludeStores: ["A"] }, { ...base, by: ["category"] },
+  ];
+  const reads = () => f.statements.filter((sql) => /AS rows_count/.test(sql) && !/AS min_day/.test(sql)).length;
+  for (const input of variants) { await session.aggregate(input); await session.aggregate({ ...input, metrics: ["amount_per_order"] }); }
+  assert.equal(reads(), variants.length, "只有SQL与参数都等价的同粒度请求可复用");
+  await session.aggregate({ ...base, by: [], metrics: ["amount"] });
+  await session.aggregate({ ...base, by: [], metrics: ["amount_per_order"] });
+  assert.equal(reads(), variants.length + 2, "先前没有订单字段时不能补造客单价分母");
+});
+
+test("等价原始查询的缓存仅存在于显式快照内，不跨新会话复用", async (t) => {
+  const f = fixture(t); const db = createMysqlAnalysisProvider(f.config, f.dependencies);
+  const first = await db.open(); await first.aggregate({ ...query, metrics: ["amount", "orders"] }); await first.close();
+  const second = await db.open(); t.after(() => { void second.close(); });
+  await second.aggregate({ ...query, metrics: ["amount_per_order"] });
+  assert.notEqual(first.snapshotId, second.snapshotId); assert.notEqual(first.datasetVersion, second.datasetVersion);
+  assert.equal(f.statements.filter((sql) => /AS rows_count/.test(sql) && !/AS min_day/.test(sql)).length, 2);
+  assert.equal(f.connections(), 2);
+});
+
 test("排队等待只在四类查询真正开始时观测毫秒，缓存命中和取消的排队请求不增加事件", async (t) => {
   const f = fixture(t); const observations: unknown[][] = []; let failObserver = false;
   const session = await createMysqlAnalysisProvider(f.config, { ...f.dependencies, onQueueWait(...args: unknown[]) { observations.push(args); if (failObserver) throw new Error("观测写入失败"); } }).open();

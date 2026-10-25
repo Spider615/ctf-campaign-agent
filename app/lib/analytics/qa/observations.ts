@@ -1,10 +1,14 @@
 import type { AnalysisFact, AnalysisOperationResult } from "../analysis-v2-types.ts";
 import { analysisFactParents } from "../analysis-v2-fact-links.ts";
 
-// 汇总中的同一读数可能同时登记为请求指标和多个比率的分子/分母。
+// 汇总与无控制层单范围扫描中的同一读数，可能同时登记为请求指标和多个比率的分子/分母。
 // 仅选一个相同原值作为展示点，完整事实和父链仍保留；冲突值及其他分析方法不合并。
+// 受控扫描的同值父事实可能属于不同隐含子范围，不能仅凭同值与父引用合并。
 export function qaPresentationFacts(result: AnalysisOperationResult): AnalysisFact[] {
-  if (result.method !== "aggregate") return result.facts;
+  const ordinaryScan = result.method === "scan" && result.frames.length === 1
+    && result.frames[0].controls.length === 0
+    && result.methods.every((method) => method.controls.length === 0);
+  if (result.method !== "aggregate" && !ordinaryScan) return result.facts;
   const parents = new Set(result.facts.flatMap(analysisFactParents));
   const points = new Map<string, AnalysisFact[]>();
   const keep = new Set<string>();
