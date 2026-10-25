@@ -2,6 +2,8 @@
 
 日期：2026-10-25。实现分支 `codex/skill-driven-qa`；工作树 `/Users/jerry/.codex/worktrees/skill-driven-qa/ctf-campaign-agent`。
 
+后续：用户确认已切换可用接口，已恢复真实回放；最新进度与结论见[切换接口后的真实问答复验](2026-10-25-native-provider-revalidation.md)。下文保留原阶段记录。
+
 用户在真实网关返回 429 后明确选择“先完成本地验收，保留未测项”。本记录区分功能、本地自动检查、浏览器合成验收和真实模型证据，不以本地通过替代完整业务效果或耗时验收。
 
 ## 1. 已实现的合同

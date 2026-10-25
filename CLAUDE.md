@@ -27,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run install:ci               # 根目录依赖
 npm run install:agent            # agent/ 的独立依赖（Claude Agent SDK、zod v4）
-cp .dev.vars.example .dev.vars   # 填 JUZI_MODELS_KEY；页面和 Agent 服务读同一个文件
+cp .dev.vars.example .dev.vars   # 填所选接口的密钥；页面和 Agent 服务读同一个文件
 npm run dev:all                  # 同时起 Agent 服务（8788）和页面（5173），一个退出另一个也停
 npm run dev                      # 只起页面（vinext + Cloudflare Workers + 本地 D1）
 npm run dev:agent                # 只起 Agent 服务；AGENT_DEBUG=1 打印每次工具调用的参数和结果
@@ -73,7 +73,7 @@ test "$(find agent/plugin/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l 
 两个进程共用一份领域逻辑：
 
 - **页面和数据（Workers）**：`app/api/sessions/**` → `app/lib/server/turns.ts`（`createSession` / `runTurn`）→ `SessionStore`（`session-store.ts`，D1 实现和测试用的内存实现）。版本、消息、落库都在这一侧，一个回合一次 `db.batch`。`app/lib/server/runtime.ts` 是唯一接 `cloudflare:workers` 的地方，负责组装 `TurnDeps`。
-- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON，模型走公司统一模型网关（OpenAI 兼容接口，`AGENT_MODEL`，默认 `claude-5.5-sonnet`）：SDK 只会 Anthropic 协议，`agent/model-gateway.ts` 在本机回环起一个转换层（协议转换是 `openai-bridge.ts` 的纯函数），网关拒收的 `thinking` 等字段不转发，404/503 时按 `/models/status` 换同厂商可用模型重试一次。服务不存数据：收当前草稿，回改好的草稿。
+- **Agent 服务（Node）**：`agent/server.ts` 提供兼容用的 `POST /turn` JSON 和流式 `POST /turn/stream` NDJSON。`AGENT_PROVIDER` 默认 `juzi`：公司统一模型网关使用 OpenAI 兼容接口（`AGENT_MODEL`，默认 `claude-5.5-sonnet`），SDK 的 Anthropic 协议经 `agent/model-gateway.ts` 本机回环转换（`openai-bridge.ts` 为纯函数），不转发网关拒收的 `thinking` 等字段，404/503 时按 `/models/status` 换同厂商可用模型重试一次。本地也可显式选择 `deepseek`，读取私有 `DEEPSEEK_API_KEY` 与 `DEEPSEEK_MODEL`，直接访问官方 Anthropic 兼容接口；不经过公司网关转换或其模型重试。配置选择不改变业务工具、权限或问答流程，对外回复不披露底层身份。原生接口的本地配置与连通已验证；效果、耗时另见复验记录，容器部署尚未验证。Campaign 会话数据仍由 Workers 保存；Node 另负责仓库外的私有附件与解析缓存。
 - 两边的协议是 `app/lib/agent/protocol.ts`（`AgentRequest` / `AgentResult`）。Workers 侧请求超时 150s，要大于 Agent 侧单轮超时 120s。
 - 工具事件协议在 `app/lib/tool-trace.ts`，Agent 流协议在 `app/lib/agent/stream.ts`，浏览器解码在 `app/lib/client/stream.ts`。轨迹摘要不能包含隐藏思维、系统提示词、完整入参、密钥或内部堆栈。
 
@@ -152,7 +152,7 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 ### 界面 `app/components/`
 
 - 以对话为主：追问就是 Agent 的回复；有提议时回复下面一行小字写明「回「行」就按这个记」的具体值（代码渲染）。活动建好时对话里出「活动建好了」和摘要，之后改动出「填写值已同步更新」。没有卡片、确认按钮和步骤条。`chat/question-controls.tsx` 只给面板修改用。
-- `chat/tool-run-card.tsx` 与 `chat/tool-step.tsx` 展示实时和已落库的真实工具轨迹；完成轨迹默认折叠，`conversation.tsx` 收到最终 Snapshot 后替换临时轨迹。
+- `chat/tool-timeline.tsx` 统一展示实时和已落库的真实Skill/工具轨迹，完成后默认折叠，失败与停止按真实状态显示；活动正文保留真实增量，直接智能问答传递公开过程与最终v4正文。
 - `draft/draft-panel.tsx` 是右侧填写值面板（填写值、对外文案、修改、待确认、校验、版本），随对话实时更新；「不限定」这类处理放在待确认页签。
 - 页面通过 `app/lib/webmcp.ts` 暴露 WebMCP 工具（在 `app-shell.tsx` 注册），只能改名称、内容和日期，走 `edit` 回合，`origin: "tool"`。
 
