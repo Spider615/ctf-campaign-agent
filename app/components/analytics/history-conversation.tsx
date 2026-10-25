@@ -5,7 +5,7 @@ import { ChartNoAxesCombined, Lightbulb, MessageCircle } from "lucide-react";
 import { analyticsRequest } from "../../lib/client/analytics";
 import type { DatabaseExplainRequest } from "../../lib/analytics/database";
 import { conversationRoute } from "../../lib/analytics/intent";
-import { historyConversation, historyMessageContext, mergeConversationTimeline, replaceHistoryAttachment, type HistoryMessage } from "../../lib/client/history-conversation";
+import { historyConversation, historyMessageContext, mergeConversationTimeline, replaceHistoryAttachment, type HistoryMessage, type HistorySaveState } from "../../lib/client/history-conversation";
 import { postHistoryStream } from "../../lib/client/history-stream";
 import { reduceVisualizationProgress } from "../../lib/analytics/visualization-progress";
 import { analyticsAnswerText } from "../../lib/analytics/stream";
@@ -39,6 +39,15 @@ const noFocus = () => null;
 // 嵌在「智能洞察 / 智能问答」工作台里时，由洞察传入当前看的范围、建活动草稿话和「在图上看」的回调。
 export type InsightLink = { draft?: { text: string; nonce: number } | null; onLocate?: (id: InsightNodeId) => void };
 
+export function HistorySaveStatus({ state, onRetry }: { state: HistorySaveState; onRetry: () => void }) {
+  if (state.status === "idle") return null;
+  if (state.status !== "failed") return <p role="status" className="mb-2 select-text text-xs leading-6 text-[#7187a1]">{state.status === "saved" ? "已保存" : state.status === "saving" ? "正在保存…" : "未保存 · 等待保存"}</p>;
+  return <div role="alert" className="mb-2 min-w-0 select-text rounded-xl border border-[#f0d7ab] bg-[#fff8ec] px-3 py-2 text-xs leading-6 text-[#855b20]">
+    <p className="break-words"><strong className="font-semibold">{state.code === "too_large" ? "未保存" : "保存失败"}</strong>：{state.reason}</p>
+    <div className="flex flex-wrap items-center justify-between gap-x-3"><p>本页答案仍可复制；保存成功前请保留此页。</p><button type="button" onClick={onRetry} className="min-h-11 shrink-0 rounded-md px-1 font-medium underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">重试保存</button></div>
+  </div>;
+}
+
 export function HistoryConversation({ embedded = false, ...link }: InsightLink & { embedded?: boolean }) {
   const id = useSyncExternalStore(historyConversation.subscribe, historyConversation.activeId, historyConversation.serverActiveId);
   return <WorkspacePanel key={id || "loading"}><UnifiedConversation conversationId={id} embedded={embedded} {...link} /></WorkspacePanel>;
@@ -50,6 +59,8 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
   const onClearFocus = () => historyConversation.setFocus(null);
   const messages = useSyncExternalStore(historyConversation.subscribe, historyConversation.snapshot, historyConversation.serverSnapshot);
   const campaignId = useSyncExternalStore(historyConversation.subscribe, historyConversation.campaignId, noCampaign);
+  const saveState = useSyncExternalStore(historyConversation.subscribeSaveState, () => historyConversation.saveState(conversationId), historyConversation.serverSaveState);
+  const saveNotice = <HistorySaveStatus state={saveState} onRetry={() => { void historyConversation.retrySave(conversationId); }} />;
   const setMessages = (change: (messages: HistoryMessage[]) => HistoryMessage[]) => historyConversation.update(change, conversationId);
   const [input, setInput] = useState(""); const [error, setError] = useState("");
   // 进行中的回答按对话 id 登记在模块里：切到别的对话不会中止，回来接着看；其他对话照常提问。
@@ -136,13 +147,16 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
   const retry = (message: HistoryMessage) => { if (message.request) { followBottom.current = true; void perform(message.request, message.id, true); } };
   const fileDeleted = (id: string) => setMessages((items) => items.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => file.id === id ? { ...file, deleted: true } : file) } : {}) })));
 
-  if (campaignId) return <Conversation sessionId={campaignId} attachmentConversationId={conversationId} autoOpenPanel={false} composerMaxLength={500} externalBusy={busy} onExternalStop={stop} onBusyChange={executionBusyChanged}
+  if (campaignId) return <div className="flex h-full min-h-0 flex-col">
+    <div className="shrink-0 px-4 pt-2 md:px-8">{saveNotice}</div>
+    <div className="min-h-0 flex-1 [--workspace-h:100%]"><Conversation sessionId={campaignId} attachmentConversationId={conversationId} autoOpenPanel={false} composerMaxLength={500} externalBusy={busy} onExternalStop={stop} onBusyChange={executionBusyChanged}
     extraMessages={messages.map((message) => ({ id: message.id, role: message.role, createdAt: message.createdAt, afterMessageId: message.afterMessageId, content: <HistoryMessageView message={message} busy={busy || executionBusy} onRetry={retry} onFileDeleted={fileDeleted} onLocate={onLocate} /> }))}
     onExternalText={(text, snapshot, files = []) => {
       const analysisWasLast = messages.length > 0 && messages.at(-1)?.afterMessageId === snapshot.messages.at(-1)?.id;
       if (!files.length && conversationRoute(text, true, analysisWasLast) !== "analysis") return false;
       analyze(text, snapshot, files); return true;
-    }} />;
+    }} /></div>
+  </div>;
 
   return <section className="flex h-[var(--workspace-h,calc(100dvh-4rem))] min-w-0 flex-col md:h-[var(--workspace-h,100vh)]">
     {embedded ? null : <header className="flex min-h-[76px] shrink-0 items-center border-b border-[#dbe8f7] bg-white/55 px-5 py-4 backdrop-blur-md md:px-8">
@@ -165,6 +179,7 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
       <div className="mx-auto max-w-[780px]">
         {insightFocus ? <div className="mb-2 flex items-center gap-1.5"><span className="inline-flex min-h-8 max-w-full items-center gap-1 rounded-full border border-[#c7ddff] bg-[#eef5ff] py-1 pl-3 pr-1 text-[12px] text-[#174e96]"><span className="truncate">正在看：{focusLabel(insightFocus)}</span><button type="button" aria-label="移除洞察上下文" onClick={onClearFocus} className="grid size-7 shrink-0 place-items-center rounded-full hover:bg-[#dbe9ff] focus-visible:ring-2 focus-visible:ring-ring">×</button></span></div> : null}
         {error ? <p role="alert" className="mb-2 rounded-xl border border-[#f2c8c3] bg-[#fff4f2] px-3 py-2 text-sm text-[#a43f37]">{error}</p> : null}
+        {saveNotice}
         <Composer value={input} onChange={setInput} onSubmit={send} onStop={stop} busy={busy} stoppable={busy} attachments={attachments} maxLength={500} placeholder={messages.length ? "继续追问，也可以上传更多资料…" : "说说你的问题，或上传文件一起分析…"} />
         {!messages.length ? <p className="mt-2 text-center text-[11px] leading-5 text-[#8397af]">有数据支持的回答，可点角标查看依据。</p> : null}
       </div>

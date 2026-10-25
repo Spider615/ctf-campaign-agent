@@ -19,6 +19,23 @@ export function replaceHistoryAttachment(messages: HistoryMessage[], previousId:
 type Thread = { id: string; title: string; messages: HistoryMessage[]; context: string[]; campaignId: string | null; updatedAt: string; unread?: boolean; focus?: InsightFocus };
 export type ConversationSummary = Pick<Thread, "id" | "title" | "updatedAt" | "campaignId" | "unread">;
 type Persistence = { getItem(key: string): string | null; setItem(key: string, value: string): void };
+// 与 analytics-access.ts 的 readAnalyticsJson 一致，限制完整 JSON 请求的 UTF-8 字节，保留原后端容量合同。
+export const CONVERSATION_SAVE_MAX_BYTES = 2 * 1024 * 1024;
+export type HistorySaveState = Readonly<{ status: "idle" | "pending" | "saving" | "saved" | "failed"; code?: "too_large" | "network" | "cancelled"; reason?: string; retryable?: boolean }>;
+const idleSave: HistorySaveState = { status: "idle" };
+const pendingSave: HistorySaveState = { status: "pending" };
+const saving: HistorySaveState = { status: "saving" };
+const saved: HistorySaveState = { status: "saved" };
+class ConversationSaveError extends Error {
+  readonly code: "too_large" | "network";
+  readonly retryable: boolean;
+  constructor(code: "too_large" | "network", reason: string, retryable: boolean) { super(reason); this.code = code; this.retryable = retryable; }
+}
+function saveFailure(error: unknown): HistorySaveState {
+  if (error instanceof ConversationSaveError) return { status: "failed", code: error.code, reason: error.message, retryable: error.retryable };
+  if (error instanceof Error && error.name === "AbortError") return { status: "failed", code: "cancelled", reason: "本次保存已取消，尚未确认保存成功。", retryable: true };
+  return { status: "failed", code: "network", reason: error instanceof Error && error.message ? error.message : "对话记录暂时存不上", retryable: true };
+}
 // 服务端存储：每条对话整条覆盖写，按访问标识和范围读回。
 export type RemoteThreads = { list(): Promise<unknown[]>; save(thread: Thread): Promise<void>; remove(id: string): Promise<void>; pointer?: Persistence };
 export function remoteThreads(scope: string): RemoteThreads {
@@ -31,9 +48,15 @@ export function remoteThreads(scope: string): RemoteThreads {
     },
     async save(thread) {
       const body = JSON.stringify({ scope, thread });
+      const byteLength = new TextEncoder().encode(body).byteLength;
+      if (byteLength > CONVERSATION_SAVE_MAX_BYTES) throw new ConversationSaveError("too_large", `当前对话请求为 ${byteLength.toLocaleString("zh-CN")} 字节，超过 2 MiB（${CONVERSATION_SAVE_MAX_BYTES.toLocaleString("zh-CN")} 字节）的保存上限。`, false);
       // 页面关闭时也尽量写完；keepalive 有 64KB 上限，超了就走普通请求。
-      const response = await fetch(`${base}/${encodeURIComponent(thread.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body, keepalive: body.length < 60_000 });
-      if (!response.ok) throw new Error("对话记录暂时存不上");
+      const response = await fetch(`${base}/${encodeURIComponent(thread.id)}`, { method: "PUT", headers: { "content-type": "application/json" }, body, keepalive: byteLength < 60_000 });
+      if (!response.ok) {
+        const detail: unknown = await response.json().catch(() => null);
+        const reason = detail && typeof detail === "object" && "error" in detail && typeof detail.error === "string" ? detail.error : `对话记录暂时存不上（HTTP ${response.status}）`;
+        throw new ConversationSaveError(response.status === 413 ? "too_large" : "network", reason, response.status !== 413);
+      }
     },
     async remove(id) {
       const response = await fetch(`${base}/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -77,32 +100,70 @@ export function historyMessageContext(message: HistoryMessage): string {
 export function createHistoryConversationStore(storage?: Persistence, remote?: RemoteThreads) {
   let loaded = false; let threads: Thread[] = []; let activeId = ""; let snapshot = empty; let index = emptyThreads;
   const listeners = new Set<() => void>();
+  const saveListeners = new Set<() => void>();
+  const saveStates = new Map<string, HistorySaveState>();
+  let saveActiveId = "";
+  const revisions = new Map<string, number>();
+  const setSaveState = (id: string, state: HistorySaveState) => {
+    if (deleted.has(id) || saveStates.get(id) === state) return;
+    saveStates.set(id, state); saveListeners.forEach((listener) => listener());
+  };
   // 服务端同步：读回之前不写，免得旧缓存盖掉别的标签页刚存的；删掉的对话不让迟到的读回结果复活。
   let synced: Promise<void> | null = null; const dirty = new Set<string>(); const deleted = new Set<string>(); let timer: ReturnType<typeof setTimeout> | undefined;
   const worth = (thread: Thread) => thread.messages.length > 0 || thread.campaignId !== null;
   // 同一时间只有一轮写回，免得同一条对话的旧内容后到、盖掉新内容。
-  let flushing = false; let failures = 0;
-  const flush = async () => {
-    timer = undefined; if (!remote || !synced || flushing) return; flushing = true;
-    try {
+  let flushing: Promise<void> | null = null;
+  const failures = new Map<string, number>();
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
+  const queue = (delay: number) => {
+    if (flushing || timer || ![...dirty].some((id) => !retries.has(id))) return;
+    timer = setTimeout(() => { timer = undefined; void flush(); }, delay);
+  };
+  const flush = (): Promise<void> => {
+    if (timer) { clearTimeout(timer); timer = undefined; }
+    if (!remote || !synced) return Promise.resolve();
+    if (flushing) return flushing;
+    flushing = (async () => {
       await synced;
       for (const id of [...dirty]) {
+        if (retries.has(id)) continue;
         dirty.delete(id); const thread = threads.find((item) => item.id === id); if (!thread || !worth(thread)) continue;
-        try { await remote.save(thread); failures = 0; } catch { dirty.add(id); failures += 1; break; }
+        const revision = revisions.get(id) ?? 0;
+        setSaveState(id, saving);
+        try {
+          // 整条发送时取快照；后续流式更新不能改变这次请求，更不能被旧请求的成功误标为已保存。
+          await remote.save(structuredClone(thread)); failures.delete(id);
+          if (!deleted.has(id) && revision === (revisions.get(id) ?? 0) && !dirty.has(id)) setSaveState(id, saved);
+        } catch (error) {
+          if (deleted.has(id) || revision !== (revisions.get(id) ?? 0)) continue;
+          const state = saveFailure(error); setSaveState(id, state);
+          // 超限等确定性失败不后台循环；新内容或显式重试会重新排队。
+          if (!state.retryable) continue;
+          dirty.add(id); const count = (failures.get(id) ?? 0) + 1; failures.set(id, count);
+          retries.set(id, setTimeout(() => { retries.delete(id); void flush(); }, Math.min(30_000, 2000 * 2 ** count)));
+        }
       }
-    } finally { flushing = false; }
-    // 失败的稍后重试，间隔逐次拉长；写回期间又有新改动的接着写。
-    if (dirty.size) timer ??= setTimeout(() => void flush(), failures ? Math.min(30_000, 2000 * 2 ** failures) : 0);
+    })().finally(() => { flushing = null; queue(0); });
+    return flushing;
   };
   // 流式回答每一小段都会改消息，合并成每秒最多写一次。
-  const schedule = (id: string) => { if (!remote) return; dirty.add(id); timer ??= setTimeout(() => void flush(), 1000); };
+  const schedule = (id: string) => {
+    if (!remote) return;
+    revisions.set(id, (revisions.get(id) ?? 0) + 1); dirty.add(id);
+    if (saveStates.get(id)?.status !== "failed") setSaveState(id, pendingSave);
+    queue(1000);
+  };
   const pull = () => remote!.list().then((stored) => {
     const local = new Map(threads.map((thread) => [thread.id, thread]));
     const fromServer = stored.filter((t): t is Thread => threadValid(t as Thread) && !deleted.has((t as Thread).id)).map(restoreThread);
-    const merged = fromServer.map((server) => { const mine = local.get(server.id); return mine && mine.updatedAt > server.updatedAt ? mine : server; });
+    const merged = fromServer.map((server) => {
+      const mine = local.get(server.id);
+      if (mine && (dirty.has(server.id) || mine.updatedAt > server.updatedAt)) return mine;
+      setSaveState(server.id, saved); return server;
+    });
     const known = new Set(merged.map((thread) => thread.id));
     // 只在本浏览器有、或本地更新的对话（含迁移前的旧记录）补写到服务端。
-    for (const thread of threads) if (!known.has(thread.id) || local.get(thread.id) === merged.find((item) => item.id === thread.id)) { if (worth(thread)) dirty.add(thread.id); }
+    for (const thread of threads) if (!known.has(thread.id) || local.get(thread.id) === merged.find((item) => item.id === thread.id)) { if (worth(thread)) { dirty.add(thread.id); setSaveState(thread.id, pendingSave); } }
     threads = [...merged, ...threads.filter((thread) => !known.has(thread.id))];
     // 用户还没开始聊时切到上次打开的那条；已经在新对话里聊了、或从洞察带着焦点过来的就不打断。
     if (!current() || !worth(current()!) && !current()!.focus) {
@@ -137,7 +198,11 @@ export function createHistoryConversationStore(storage?: Persistence, remote?: R
     if (remote) {
       synced = pull(); void synced.then(flush);
       // 关页面前把没写完的改动发出去（fetch keepalive）。
-      if (typeof window !== "undefined") window.addEventListener("pagehide", () => { if (timer) { clearTimeout(timer); void flush(); } });
+      if (typeof window !== "undefined") window.addEventListener("pagehide", () => {
+        if (!dirty.size) return;
+        for (const waiting of retries.values()) clearTimeout(waiting); retries.clear();
+        void flush();
+      });
     }
   };
   const commit = (changed?: string) => {
@@ -145,9 +210,21 @@ export function createHistoryConversationStore(storage?: Persistence, remote?: R
     try { persistence()?.setItem(key, JSON.stringify({ activeId, threads })); } catch { /* 存储空间不足不影响本页继续使用。 */ }
     remote?.pointer?.setItem("active", activeId);
     listeners.forEach((listener) => listener());
+    if (saveActiveId !== activeId) { saveActiveId = activeId; saveListeners.forEach((listener) => listener()); }
   };
   return {
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribeSaveState(listener: () => void) { saveListeners.add(listener); return () => { saveListeners.delete(listener); }; },
+    serverSaveState: () => idleSave,
+    saveState(id?: string) { load(); return saveStates.get(id ?? activeId) ?? idleSave; },
+    async retrySave(id?: string) {
+      load(); const target = id ?? activeId;
+      if (!remote || deleted.has(target) || !threads.some((thread) => thread.id === target && worth(thread))) return;
+      const waiting = retries.get(target); if (waiting) clearTimeout(waiting); retries.delete(target); failures.delete(target);
+      dirty.add(target); setSaveState(target, pendingSave);
+      if (flushing) await flushing;
+      if (dirty.has(target)) await flush();
+    },
     serverSnapshot: () => empty,
     serverThreadsSnapshot: () => emptyThreads,
     serverActiveId: () => "",
@@ -197,6 +274,7 @@ export function createHistoryConversationStore(storage?: Persistence, remote?: R
     deleteConversation(id: string) {
       load(); if (!threads.some((thread) => thread.id === id)) return false;
       threads = threads.filter((thread) => thread.id !== id); dirty.delete(id); deleted.add(id);
+      const waiting = retries.get(id); if (waiting) clearTimeout(waiting); retries.delete(id); failures.delete(id); revisions.delete(id); saveStates.delete(id);
       if (remote) void (synced ?? Promise.resolve()).then(() => remote.remove(id)).catch(() => { /* 下次打开时这条还会出现，可以再删。 */ });
       if (activeId === id) {
         const latest = threads.filter((thread) => thread.messages.length || thread.campaignId).at(-1);

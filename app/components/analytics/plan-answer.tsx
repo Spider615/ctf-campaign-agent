@@ -215,12 +215,47 @@ function Figures({ figures }: { figures: NonNullable<PlanAnswer["figures"]> }) {
   </section>;
 }
 
-// 出处面板：这条结论用到的数据，加本次的口径说明、待确认口径和分析步骤。
-// 只给业务看：一句话、算式小表、数据范围。口径定义、分析步骤、逐项事实先不在页面上展示（数据仍在答案里，问答和复制都还用得到）。
-// 有待确认的口径时在业务版下面单独提醒一句，不让它藏在折叠里。
-export function SourcePanel({ answer, factIds }: { answer: PlanAnswer | PlanAnswerV4; factIds: string[] }) {
-  return <div className="space-y-4">
-    {factIds.length ? <PlainSource evidence={answer.evidence} factIds={factIds} formatFact={defaultFactText} /> : null}
+// 新问答保留工具实际已读的事实与计算父链；这里按范围展示，不将它们绑定为正文的逐句引用。
+function QueryResults({ evidence }: { evidence: AnalysisEvidence }) {
+  const objects = new Map(evidence.objects.map((object) => [object.id, object]));
+  return <div data-query-results className="min-w-0 select-text space-y-5">
+    <p className="text-xs leading-6 text-muted-foreground">本轮实际读取的数据和计算依据，共 {evidence.facts.length} 项。</p>
+    {evidence.frames.map((frame) => {
+      const metadata = sourceMetadata(frame);
+      const facts = evidence.facts.filter((fact) => fact.frameId === frame.id);
+      const definitions = [...new Set(facts.map((fact) => fact.definition).filter(Boolean))];
+      const limitations = [...new Set([...frame.limitations, ...facts.flatMap((fact) => fact.limitations)])];
+      return <section key={frame.id} className="min-w-0 space-y-3">
+        <dl className="space-y-1 text-[13px] leading-6">
+          <div><dt className="text-xs text-muted-foreground">数据来源</dt><dd className="break-words">{metadata.来源}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">统计范围</dt><dd className="break-words">{metadata.周期}，{metadata.范围}</dd><dd className="break-words text-xs text-muted-foreground">{metadata.口径}</dd></div>
+        </dl>
+        {facts.length ? <div role="region" aria-label={`${metadata.周期}的查数结果`} tabIndex={0} className="max-h-[32rem] min-w-0 overflow-auto rounded-xl border border-[#dce6f0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <table className="w-full min-w-[18rem] border-collapse text-left text-[13px] leading-6">
+            <caption className="sr-only">本次查数结果，共 {facts.length} 项</caption>
+            <thead className="sticky top-0 bg-[#f5f8fc] text-xs text-muted-foreground"><tr className="border-b border-[#dce6f0]"><th scope="col" className="px-3 py-2 font-medium">对象 / 指标</th><th scope="col" className="px-3 py-2 text-right font-medium">数值</th></tr></thead>
+            <tbody>{facts.map((fact) => {
+              const object = fact.objectIds.map((id) => objects.get(id)?.label).filter(Boolean).join("、");
+              return <tr key={fact.id} className="border-b border-[#eef2f7] last:border-0">
+                <th scope="row" className="break-words px-3 py-2 align-top font-normal text-[#425873]">{plainFactLabel(fact)}{object ? <span className="block text-xs text-muted-foreground">{object}</span> : null}</th>
+                <td className="whitespace-nowrap px-3 py-2 text-right align-top font-medium tabular-nums">{defaultFactText(fact)}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div> : <p className="text-xs leading-6 text-muted-foreground">这个范围没有已保存的事实。</p>}
+        <details className="text-xs leading-6 text-muted-foreground">
+          <summary className="min-h-11 cursor-pointer rounded-md py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">口径与数据版本</summary>
+          <div className="space-y-2 break-words">{definitions.map((definition) => <p key={definition}>{definition}</p>)}{limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}<p className="break-all">数据版本：{metadata.数据版本}</p></div>
+        </details>
+      </section>;
+    })}
+  </div>;
+}
+
+// 旧数字入口仍只看其引用；新问答的整体入口可在没有 refs、没有图时查看本轮查数结果。
+export function SourcePanel({ answer, factIds = [] }: { answer: PlanAnswer | PlanAnswerV4; factIds?: string[] }) {
+  return <div className="min-w-0 select-text space-y-4">
+    {factIds.length ? <PlainSource evidence={answer.evidence} factIds={factIds} formatFact={defaultFactText} /> : answer.schema === "analysis-answer/v4" ? <QueryResults evidence={answer.evidence} /> : null}
     {answer.assumptions.length ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-6 text-amber-800">有 {answer.assumptions.length} 处口径还没和业务确认，数字先作参考。</p> : null}
   </div>;
 }
@@ -255,23 +290,24 @@ function BodyTable({ block }: { block: Extract<PlanAnswerBlock, { kind: "table" 
   const changeAt = block.columns.indexOf("变化");
   return <section data-plan-block="table" className="min-w-0">
     {block.title ? <h3 className="mb-1.5 text-xs font-medium text-muted-foreground">{block.title}</h3> : null}
-    <div className="overflow-x-auto rounded-xl border border-[#dce6f0]">
+    <div role="region" aria-label={block.title || "数据表"} tabIndex={0} className="max-h-[32rem] overflow-auto rounded-xl border border-[#dce6f0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
       <table className="w-full min-w-[22rem] border-collapse text-left text-[13px] leading-6">
         <caption className="sr-only">{block.title || "数据表"}</caption>
-        <thead><tr className="border-b border-[#dce6f0] bg-[#f5f8fc] text-xs text-muted-foreground">{block.columns.map((column, index) => <th key={index} scope="col" className={`px-3 py-2 font-medium ${index ? "text-right" : ""}`}>{column}</th>)}</tr></thead>
+        <thead className="sticky top-0"><tr className="border-b border-[#dce6f0] bg-[#f5f8fc] text-xs text-muted-foreground">{block.columns.map((column, index) => <th key={index} scope="col" className={`px-3 py-2 font-medium ${index ? "text-right" : ""}`}>{column}</th>)}</tr></thead>
         <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex} className="border-b border-[#eef2f7] last:border-0">{row.cells.map((cell, index) => index === 0
-          ? <th key={index} scope="row" className="px-3 py-2 font-normal text-[#425873]">{cell}</th>
-          : <td key={index} className={`px-3 py-2 text-right tabular-nums ${index === changeAt ? cell.startsWith("-") ? "text-[#b4543a]" : cell && cell !== "—" ? "text-[#2f7a55]" : "text-muted-foreground" : index === 1 ? "font-medium text-foreground" : "text-[#425873]"}`}>{cell}</td>)}</tr>)}</tbody>
+          ? <th key={index} scope="row" className="min-w-24 break-words px-3 py-2 align-top font-normal text-[#425873] [overflow-wrap:anywhere]">{cell}</th>
+          : <td key={index} className={`min-w-28 break-words px-3 py-2 text-right align-top tabular-nums [overflow-wrap:anywhere] ${index === changeAt ? cell.startsWith("-") ? "text-[#b4543a]" : cell && cell !== "—" ? "text-[#2f7a55]" : "text-muted-foreground" : index === 1 ? "font-medium text-foreground" : "text-[#425873]"}`}>{cell}</td>)}</tr>)}</tbody>
       </table>
     </div>
   </section>;
 }
 
-// v4：重点数字放大在最上面，下面是模型写的正文；正文里每个数字是一个按钮，点开看这一个数字的出处。
+// v4 同时显示自由正文和旧数字引用；已读事实通过整体查数入口查看。
 export function PlanAnswerV4View({ answer }: { answer: PlanAnswerV4 }) {
   const answerId = useId();
   const { panelId, activeId, togglePanel, dismissPanel } = useWorkspacePanel();
   useEffect(() => () => dismissPanel(answerId), [answerId, dismissPanel]);
+  const resultsId = `${answerId}:results`;
   const numberButton = (key: string, text: string, factIds: string[]) => {
     const id = `${answerId}:${key}`; const open = activeId === id;
     const toggle = (event: MouseEvent<HTMLButtonElement>) => togglePanel({ id, title: `${text} 的出处`, label: "数据出处", content: <SourcePanel answer={answer} factIds={factIds} /> }, event.currentTarget);
@@ -300,5 +336,6 @@ export function PlanAnswerV4View({ answer }: { answer: PlanAnswerV4 }) {
     {answer.body.map((block, index) => block.kind === "markdown" ? markdown(block, index)
       : block.kind === "table" ? <BodyTable key={`b${index}`} block={block} />
       : <VisualizationCard key={`b${index}`} chart={block.chart} sourceContent={<SourcePanel answer={answer} factIds={block.chart.factIds} />} />)}
+    {answer.evidence.facts.length || answer.evidence.frames.length ? <button type="button" aria-controls={panelId} aria-expanded={activeId === resultsId} onClick={(event) => togglePanel({ id: resultsId, title: "本次查数结果", label: "数据来源", width: "wide", content: <SourcePanel answer={answer} /> }, event.currentTarget)} className="min-h-11 rounded-lg px-1 text-left text-[13px] text-[#6b7f96] underline decoration-[#b9c8d9] underline-offset-4 hover:text-[#2470cc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">本次查数结果</button> : null}
   </div>;
 }

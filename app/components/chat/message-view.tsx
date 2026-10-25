@@ -11,7 +11,7 @@ import { promoCtaMessageId } from "../../lib/client/promo-cta";
 import { CopyButton } from "./copy-button";
 import { MarkdownText } from "./markdown-text";
 import { AgentAvatar } from "./agent-avatar";
-import { ToolRunCard } from "./tool-run-card";
+import { ToolTimeline } from "./tool-timeline";
 import { mergeConversationTimeline } from "../../lib/client/history-conversation";
 
 export type AdditionalChatMessage = { id: string; role: "user" | "assistant"; createdAt: string; afterMessageId?: string; content: React.ReactNode };
@@ -204,7 +204,7 @@ function MessageItem({ message, snapshot, actions, isLastAgent, continued }: { m
     case "agent_tool_trace":
       return (
         <AgentRow continued={continued}>
-          <ToolRunCard trace={content.trace} live={false} />
+          <ToolTimeline steps={content.trace.steps} live={false} status={content.trace.status} durationMs={content.trace.timing?.totalMs ?? content.trace.durationMs} context="campaign" />
         </AgentRow>
       );
     case "agent_text": {

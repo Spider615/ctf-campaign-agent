@@ -37,7 +37,7 @@ import { Composer } from "./composer";
 import { AgentRow, MessageList, MessageTimestamp, UserBubble, type AdditionalChatMessage } from "./message-view";
 import { MarkdownText } from "./markdown-text";
 import { ThinkingIndicator } from "./thinking-indicator";
-import { ToolRunCard } from "./tool-run-card";
+import { ToolTimeline } from "./tool-timeline";
 import type { AttachmentReference } from "../../lib/attachments/types";
 import { attachmentSubmission } from "../../lib/client/attachments";
 import { conversationRoute } from "../../lib/analytics/intent";
@@ -125,6 +125,7 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
   const displayedExtraMessages = onExternalText ? extraMessages : [...extraMessages, ...fileChat.messages.map((message) => ({ id: message.id, role: message.role, createdAt: message.createdAt, afterMessageId: message.afterMessageId, content: <HistoryMessageView message={message} busy={fileChat.busy || busy !== null} onRetry={fileChat.retry} onFileDeleted={fileChat.deleted} /> }))];
   const submittedTextTurn = useRef(0);
   const [error, setError] = useState("");
+  const [stoppedTrace, setStoppedTrace] = useState<{ steps: AgentTraceEvent[]; durationMs: number } | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelTab, setPanelTab] = useState(DEFAULT_WORKSPACE_TAB);
   // 面板收起时把手也要收起来，否则对话右边挂着一条没有来由的竖线。
@@ -139,6 +140,8 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
   const stopGeneration = useCallback(() => {
     const current = campaignTurns.get(sessionId);
     if (!current || current.controller.signal.aborted) return;
+    // 只在当前页面保留停止时已收到的真实过程，不改活动事实、取消请求或落库合同。
+    setStoppedTrace({ steps: current.state.trace, durationMs: Math.max(0, Date.now() - (current.state.startedAt ?? Date.now())) });
     // 停止后登记保留到请求自己收尾，期间仍算忙，免得新回合和正在取消的回合抢同一个版本号。
     campaignTurns.abort(sessionId, {
       keep: true,
@@ -225,6 +228,7 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
     };
     onBusyChange?.(true);
     setError("");
+    setStoppedTrace(null);
     try {
       const payload = { ...body, expectedSeq: snapshot.latest.seq, clientTurnId };
       const next = streams
@@ -456,7 +460,12 @@ export function Conversation({ sessionId, extraMessages = EMPTY_ADDITIONAL_MESSA
           ) : null}
           {!stopping && liveTrace.length ? (
             <AgentRow>
-              <ToolRunCard trace={liveTrace} live startedAt={runStartedAt} />
+              <ToolTimeline steps={liveTrace} live startedAt={runStartedAt} context="campaign" />
+            </AgentRow>
+          ) : null}
+          {stoppedTrace ? (
+            <AgentRow>
+              <ToolTimeline steps={stoppedTrace.steps} live={false} status="cancelled" durationMs={stoppedTrace.durationMs} context="campaign" />
             </AgentRow>
           ) : null}
           {!stopping && liveReply.text ? (

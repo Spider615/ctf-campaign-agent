@@ -220,3 +220,35 @@ test("恢复会话：v4 答案重新核验后保留，复制文本走 planAnswer
   assert.ok(restored.answer && "schema" in restored.answer && restored.answer.schema === "analysis-answer/v4");
   assert.equal(restored.text, "二月销售额 1,234.56元，先核对门店口径。");
 });
+
+test("v4：refs 为空且没有图，仍有本次查数结果入口，不把正文数字标成已核验", async (t) => {
+  const answer: PlanAnswerV4 = { ...simulatedPlanAnswerV4(), keyFigure: undefined, body: [{ kind: "markdown", text: "二月销售额 1,234.56元，建议先核对门店范围。", refs: [] }] };
+  const html = await renderV4(t, answer);
+  assert.match(html, /<button[^>]*aria-controls="panel"[^>]*aria-expanded="false"[^>]*>本次查数结果<\/button>/);
+  assert.match(html, /1,234\.56元/); assert.doesNotMatch(html, /data-plan-ref|data-visualization-card|逐句核验|正文已核验/);
+});
+
+test("v4：本次查数结果面板展示全部已读事实与实际范围，不截断为八条或用缺失值补零", async (t) => {
+  const base = simulatedPlanAnswerV4();
+  const frame = { ...base.evidence.frames[0], provenance: "imported" as const, scope: { ...base.evidence.frames[0].scope, filters: { stores: ["上海甲店"] } } };
+  const facts = Array.from({ length: 105 }, (_, index) => ({ ...base.evidence.facts[0], id: `f${index}`, objectIds: ["store"], label: `已读指标${index + 1}`, value: index === 104 ? null : index + 1 }));
+  const answer: PlanAnswerV4 = { ...base, body: [{ kind: "markdown", text: "先观察分组差异。", refs: [] }], evidence: { ...base.evidence, frames: [frame], objects: [{ id: "store", frameId: frame.id, dimension: "store", value: "上海甲店", label: "上海甲店" }], facts } };
+  const { SourcePanel } = await loadReactComponent(t, "app/components/analytics/plan-answer.tsx");
+  const html = renderToStaticMarkup(provider(createElement(SourcePanel, { answer, factIds: [] })));
+  for (const text of ["已读指标1", "已读指标105", "上海甲店", "2025", "暂无可计算值"]) assert.ok(html.includes(text), text);
+  assert.match(html, /105/); assert.match(html, /overflow-auto/); assert.match(html, /tabindex="0"/); assert.match(html, /select-text/);
+  assert.doesNotMatch(html, /逐句核验|正文已核验|暂无已保存的引用数据/);
+});
+
+test("v4：旧数字来源按钮继续可用，问候没有数据时不出现空来源入口", async (t) => {
+  const legacy = await renderV4(t, simulatedPlanAnswerV4());
+  assert.match(legacy, /data-plan-ref/); assert.match(legacy, /查看 1,234\.56元 的出处/);
+  const greeting: PlanAnswerV4 = { ...simulatedPlanAnswerV4(), keyFigure: undefined, body: [{ kind: "markdown", text: "你好。", refs: [] }], evidence: { frames: [], facts: [], objects: [], methods: [] } };
+  assert.doesNotMatch(await renderV4(t, greeting), /本次查数结果/);
+});
+
+test("v4：长表正文全部保留在可横向和纵向滚动的键盘区域中", async (t) => {
+  const answer: PlanAnswerV4 = { ...simulatedPlanAnswerV4(), body: [{ kind: "table", title: "分组明细", columns: ["门店", "销售额", "范围"], rows: Array.from({ length: 200 }, (_, index) => ({ cells: [`门店${index + 1}`, "1,234.56元", "很长的业务范围".repeat(12)], factIds: [] })) }] };
+  const html = await renderV4(t, answer);
+  assert.match(html, /门店200/); assert.match(html, /overflow-auto/); assert.match(html, /tabindex="0"/); assert.match(html, /aria-label="分组明细"/);
+});
