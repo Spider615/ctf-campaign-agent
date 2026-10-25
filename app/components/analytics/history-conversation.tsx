@@ -26,6 +26,7 @@ import { useAttachmentDraft } from "../attachments/use-attachments";
 import { useAttachmentAvailability } from "../attachments/use-attachment-availability";
 import { focusContext, focusLabel } from "../../lib/insight/context";
 import type { InsightNodeId } from "../../lib/insight/types";
+import { publicAgentError } from "../../lib/agent/service-errors";
 
 const prompts = [
   { title: "审视优惠方案", text: "帮我看看这档优惠方案，哪里还能改进？", icon: MessageCircle },
@@ -98,7 +99,7 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
         text: analyticsAnswerText(explanation) } : m));
     } catch (caught) {
       if (caught instanceof UnavailableAttachmentsError) markUnavailable(caught.ids);
-      const detail = caught instanceof Error ? caught.message : "本次回答暂未完成，可以重试";
+      const detail = publicAgentError(caught instanceof Error ? caught.message : "本次回答暂未完成，可以重试");
       const text = /数据库|连接|视图|字段映射|访问标识/.test(detail) ? "这次回答暂时无法完成，你的问题已保留，可以稍后重试。" : detail;
       if (owns(token)) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "failed", text, durationMs: now() - clock } : m));
     } finally { analysisTurns.end(conversationId, token); }
@@ -129,7 +130,7 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
       if (owns(token)) { historyConversation.bindCampaign(snapshot.session.id, text, conversationId); notifySessionsChanged(); }
     } catch (caught) {
       // 切走后失败时界面已不在，原话放不回输入框；只在本界面还开着时提示。
-      if (owns(token) && historyConversation.activeId() === conversationId) { setError(caught instanceof Error ? caught.message : "这次活动暂未准备好，可以重试"); setInput((current) => current || text); }
+      if (owns(token) && historyConversation.activeId() === conversationId) { setError(publicAgentError(caught instanceof Error ? caught.message : "这次活动暂未准备好，可以重试")); setInput((current) => current || text); }
     } finally { analysisTurns.end(conversationId, token); }
   };
   const send = () => {

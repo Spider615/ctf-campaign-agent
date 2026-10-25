@@ -96,7 +96,7 @@ test("额度耗尽在流式与JSON入口统一中文提示，不泄漏上游预�
   t.after(() => { server.closeAllConnections(); server.close(); });
   const address = server.address(); assert.ok(address && typeof address === "object");
   for (const path of endpoints) {
-    const response = await fetch(`http://127.0.0.1:${address.port}${path}`, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": PLAN_ANSWER_V4_SCHEMA }, body: requestBody(path) });
+    const response: Response = await fetch(`http://127.0.0.1:${address.port}${path}`, { method: "POST", headers: { ...headers, "x-analytics-answer-schema": PLAN_ANSWER_V4_SCHEMA }, body: requestBody(path) });
     assert.equal(response.status, path.endsWith("/stream") ? 200 : 502);
     const raw = await response.text();
     assert.doesNotMatch(raw, /API Error|429|budget|currency|request_id|private-request/);
