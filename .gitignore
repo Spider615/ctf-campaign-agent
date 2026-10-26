@@ -60,3 +60,6 @@ dist/
 agent/.claude-runtime/
 __pycache__/
 *.pyc
+# 本地工具临时文件和随手截图
+.superpowers/brainstorm/
+/analytics-charts-desktop.png
