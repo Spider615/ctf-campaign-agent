@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 每轮直接问答只启动一次 SDK `query()`，其中可包含多次模型 API 请求。模型自主选择是否加载 `analytics:ctf-qa`、`analytics:marketing-theory`，以及是否、按什么顺序调用 `inspect_dataset`、`analyze`、`simulate_scenario`、`draw_chart`、`submit_answer`；不强制 Skill、不固定业务步骤。你好、谢谢、身份介绍和明确月份总额都进入新模型，不调用 `quickAnalyticsReply` 或 `quickMonthlySalesQuery`。数据库入口未配置数据服务时统一返回 503，问候不特殊放行；已配置时按工具需求惰性打开数据会话。
 
-直接问答正文不再进行代码数字核对，也不固定独立复核或 `decisionQuality` 门禁；保留 v4 结构、图表真实数据绑定和对外身份清洗，错误不能误称为正文数字未通过核验。工具仍受真实数据授权、白名单参数化只读查询和金额计算合同约束，不开放 SQL、命令、任意文件或网络。数据版本授权不可扩大；收到的 `history`、`context` 和报告业务范围交给模型理解，不能把客户端裁剪后的内容宣称为完整历史。原报告不变；原始结果和审计记录在仓库外，不保存隐藏思维。直接问答不设应用层总时长或业务轮数上限，取消可打断挂起的 SDK next。NDJSON 传递真实公开过程和最终 v4 答案，过程流不等于正文逐字流式输出。
+直接问答正文不再进行代码数字核对，也不固定独立复核或 `decisionQuality` 门禁；保留 v4 结构、图表真实数据绑定和对外身份清洗，错误不能误称为正文数字未通过核验。工具仍受真实数据授权、白名单参数化只读查询和金额计算合同约束，不开放 SQL、命令、任意文件或网络。数据版本授权不可扩大；收到的 `history`、`context` 和报告业务范围交给模型理解，不能把客户端裁剪后的内容宣称为完整历史。原报告不变；原始结果和审计记录在仓库外，不保存隐藏思维。直接问答不设应用层总时长或业务轮数上限，取消可打断挂起的 SDK next。页面给每次直接问答分配运行 id（`X-Analytics-Run-Id`），Agent 的 `agent/analytics-runs.ts` 按访问标识登记运行：浏览器刷新或断开只退订，分析跑完后过程和结果在内存保留 30 分钟，页面用 `/api/analytics/history/runs/<id>` 重新连上补放；只有点停止（同一路径 DELETE）才中止，Agent 重启则标为已中断。附件问答仍随连接断开中止。NDJSON 传递真实公开过程和最终 v4 答案，过程流不等于正文逐字流式输出。
 
 附件及混合文件问答仍由 `agent/attachments/` 处理，在 `server.ts` 单独注入原 `createPlanAnalyticsRunner`，不注入新运行器；保留原外层 240 秒预算、至多三次历史分析调用、`conversation-answer/v1` 的逐段来源/数字合同和独立语义复核。直接问答的无总时长、无固定复核与正文放开不扩展到附件。
 

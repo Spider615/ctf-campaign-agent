@@ -202,3 +202,15 @@ test("订阅默认 getter 时切换当前对话也通知，取消订阅后不再
   store.selectConversation(id); assert.equal(observed.at(-1), "failed"); store.selectConversation(other); assert.equal(observed.at(-1), "saved");
   unsubscribe(); const count = observed.length; store.selectConversation(id); assert.equal(observed.length, count);
 });
+
+test("刷新后带运行标识的回答保持进行中，没有标识的标为已结束", () => {
+  const at = new Date().toISOString();
+  const thread = { id: "t1", title: "你好", campaignId: null, updatedAt: at, context: [], messages: [
+    { id: "a", role: "assistant", text: "", createdAt: at, status: "running" },
+    { id: "b", role: "assistant", text: "", createdAt: at, status: "running", runId: "11111111-2222-4333-8444-555555555555" },
+  ] };
+  const values = new Map([["ctf:conversations:v2", JSON.stringify({ activeId: "t1", threads: [thread] })]]);
+  const store = createHistoryConversationStore({ getItem: (k) => values.get(k) ?? null, setItem: (k, v) => { values.set(k, v); } });
+  const [a, b] = store.snapshot();
+  assert.equal(a.status, "cancelled"); assert.equal(b.status, "running");
+});

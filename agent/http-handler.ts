@@ -14,6 +14,7 @@ import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/li
 import type { InsightGraphService } from "./insight-graph.ts";
 import type { InsightAskRunner } from "./insight-ask.ts";
 import { parseAskBody } from "../app/lib/insight/ask.ts";
+import { ANALYTICS_RUN_ID, createAnalyticsRuns, type AnalyticsRuns } from "./analytics-runs.ts";
 
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
@@ -27,12 +28,28 @@ type AgentHttpOptions = {
   attachmentHandler?: (request: IncomingMessage, response: ServerResponse) => Promise<void>;
   insight?: InsightGraphService;
   insightAsk?: InsightAskRunner;
+  analyticsRuns?: AnalyticsRuns;
 };
 
 function send(response: ServerResponse, status: number, body: unknown) {
   if (response.destroyed || response.writableEnded) return;
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+// 把一次登记的运行写成 NDJSON：断开连接只退订，不停止运行。
+function pipeRun(response: ServerResponse, subscribe: (listener: (event: AnalyticsStreamEvent) => void) => (() => void) | null) {
+  response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
+  response.flushHeaders();
+  let unsubscribe: (() => void) | null = null; let ended = false;
+  const close = () => { ended = true; unsubscribe?.(); };
+  response.on("close", close);
+  unsubscribe = subscribe((event) => {
+    if (ended || response.destroyed || response.writableEnded) return;
+    response.write(encodeAnalyticsStreamEvent(event));
+    if (event.type === "result" || event.type === "error") { ended = true; response.end(); }
+  });
+  if (ended) unsubscribe?.();
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -46,7 +63,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns() }: AgentHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
     const isTurn = request.method === "POST" && request.url === "/turn";
@@ -57,9 +74,20 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
     const isDatabaseInfo = request.method === "GET" && request.url === "/analytics/database";
     const isInsight = request.method === "GET" && /^\/insight\/graph(?:\?|$)/.test(request.url ?? "");
     const isInsightAsk = request.method === "POST" && /^\/insight\/ask(?:\?|$)/.test(request.url ?? "");
+    const runRoute = /^\/analytics\/runs\/([^/?]+)\/(stream|cancel)$/.exec(request.url ?? "");
+    const isRunStream = request.method === "GET" && runRoute?.[2] === "stream";
+    const isRunCancel = request.method === "POST" && runRoute?.[2] === "cancel";
     const isAttachment = Boolean(attachmentHandler) && /^\/attachments(?:[/?]|$)/.test(request.url ?? "");
-    if (!isTurn && !isStream && !isAnalytics && !isDatabase && !isDatabaseStream && !isDatabaseInfo && !isAttachment && !isInsight && !isInsightAsk) return send(response, 404, { error: "没有这个接口" });
+    if (!isTurn && !isStream && !isAnalytics && !isDatabase && !isDatabaseStream && !isDatabaseInfo && !isAttachment && !isInsight && !isInsightAsk && !isRunStream && !isRunCancel) return send(response, 404, { error: "没有这个接口" });
     if (token && request.headers.authorization !== `Bearer ${token}`) return send(response, 401, { error: "Agent 服务鉴权失败" });
+    // 运行只归开始它的访问标识所有，别人拿到 id 也读不到、停不了。
+    const owner = typeof request.headers["x-analytics-owner"] === "string" ? request.headers["x-analytics-owner"] : "";
+    if (isRunStream || isRunCancel) {
+      const runId = runRoute![1];
+      if (!owner || !ANALYTICS_RUN_ID.test(runId) || !analyticsRuns.has(runId, owner)) return send(response, 404, { error: "这次回答已中断，可以重试" });
+      if (isRunCancel) { analyticsRuns.cancel(runId, owner); return send(response, 200, { ok: true }); }
+      return pipeRun(response, (listener) => analyticsRuns.subscribe(runId, owner, listener));
+    }
     if (isAttachment) return attachmentHandler!(request, response);
     if (isInsight) {
       if (!insight) return send(response, 503, { error: "历史数据库尚未启用，洞察图谱暂不可用" });
@@ -119,6 +147,22 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
         if ((isDatabase || isDatabaseStream) && !database) return send(response, 503, { error: "历史数据库尚未启用" });
         if (!runner) return send(response, 503, { error: "营销分析解读服务尚未启动" });
         const started = performance.now();
+        const runId = request.headers["x-analytics-run-id"];
+        if (isDatabaseStream && typeof runId === "string") {
+          if (!owner || !ANALYTICS_RUN_ID.test(runId)) return send(response, 400, { error: "回答标识无效" });
+          const fresh = analyticsRuns.start(runId, owner, async (signal, emit) => {
+            try { return { type: "result", result: await runner(analyticsRequest, signal, emit) }; }
+            catch (error) {
+              if (signal.aborted || isTurnCancelled(error)) return null;
+              const detail = error instanceof Error ? error.message : "本次分析暂未完成";
+              logger.error(`[analytics] 回答失败（${Math.round(performance.now() - started)}ms）：${publicError(detail)}`);
+              return { type: "error", error: publicError(detail) };
+            }
+          });
+          // 同一 id 重复提交（例如页面重发）时直接接上已有运行，不再跑第二次。
+          if (!fresh && !analyticsRuns.has(runId, owner)) return send(response, 409, { error: "回答标识已被占用" });
+          return pipeRun(response, (listener) => analyticsRuns.subscribe(runId, owner, listener));
+        }
         if (isDatabaseStream) {
           response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
           response.flushHeaders();

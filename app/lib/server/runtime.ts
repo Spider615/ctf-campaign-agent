@@ -40,11 +40,11 @@ export async function forwardAttachmentRequest(request: Request, owner: string, 
 }
 
 
-async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest | DatabaseExplainRequest, accept?: string, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string): Promise<Response> {
+async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest | DatabaseExplainRequest, accept?: string, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, run?: { id: string; owner: string }): Promise<Response> {
   try {
     return await fetch(url, {
       method: "POST",
-      headers: { ...agentHeaders(), ...(accept ? { accept } : {}), ...(normalizeAnalyticsAnswerSchema(answerSchema) ? { "X-Analytics-Answer-Schema": normalizeAnalyticsAnswerSchema(answerSchema)! } : {}), ...(visualizationCapability(visualizationSchema) ? { "X-Analytics-Visuals": visualizationCapability(visualizationSchema)! } : {}) },
+      headers: { ...agentHeaders(), ...(accept ? { accept } : {}), ...(run ? { "x-analytics-run-id": run.id, "x-analytics-owner": run.owner } : {}), ...(normalizeAnalyticsAnswerSchema(answerSchema) ? { "X-Analytics-Answer-Schema": normalizeAnalyticsAnswerSchema(answerSchema)! } : {}), ...(visualizationCapability(visualizationSchema) ? { "X-Analytics-Visuals": visualizationCapability(visualizationSchema)! } : {}) },
       body: JSON.stringify(request),
       signal,
     });
@@ -89,11 +89,27 @@ export async function explainHistoryDatabase(request: DatabaseExplainRequest, si
   return validateAnalyticsAnswerResult(await response.json());
 }
 
-export async function explainHistoryDatabaseStream(request: DatabaseExplainRequest, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string) {
+// 带运行标识时 Agent 按运行登记：这条连接断了分析照常跑完，之后用同一标识重新连上。
+export async function explainHistoryDatabaseStream(request: DatabaseExplainRequest, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, run?: { id: string; owner: string }) {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await agentFetch(`${base}/analytics/database/explain/stream`, request, "application/x-ndjson", signal, answerSchema, visualizationSchema);
+  const response = await agentFetch(`${base}/analytics/database/explain/stream`, request, "application/x-ndjson", signal, answerSchema, visualizationSchema, run);
   if (!response.ok) throw await agentHttpError(response);
   return consumeAnalyticsStream(response, onProgress, signal);
+}
+
+export async function resumeHistoryRun(run: { id: string; owner: string }, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal) {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  let response: Response;
+  try { response = await fetch(`${base}/analytics/runs/${encodeURIComponent(run.id)}/stream`, { headers: { ...agentHeaders(), accept: "application/x-ndjson", "x-analytics-owner": run.owner }, signal }); }
+  catch (error) { if (signal?.aborted || isTurnCancelled(error)) throw new TurnCancelledError(); throw new Error("连不上 Agent 服务，请先运行 npm run dev:agent"); }
+  if (!response.ok) throw await agentHttpError(response);
+  return consumeAnalyticsStream(response, onProgress, signal);
+}
+
+export async function cancelHistoryRun(run: { id: string; owner: string }) {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  // 找不到说明已经结束或服务重启过，停止本来就无事可做。
+  await fetch(`${base}/analytics/runs/${encodeURIComponent(run.id)}/cancel`, { method: "POST", headers: { ...agentHeaders(), "x-analytics-owner": run.owner } }).catch(() => undefined);
 }
 
 async function agentHttpError(response: Response): Promise<Error> {

@@ -1,6 +1,6 @@
 // 进行中的请求按会话登记在模块里，不挂在组件实例上：切换会话只卸载界面，请求继续跑完并落库，
 // 切回来时新组件从这里接着读实时状态。同一会话同时只允许一个请求，不同会话互不影响。
-// 整页刷新或关闭标签页仍会中止请求，那是浏览器断开连接，不在这里处理。
+// 整页刷新或关闭标签页会断开连接：附件问答随之中止；直接问答带运行标识在服务端跑完，重新打开对话时接上。
 import type { AgentTraceEvent } from "../tool-trace.ts";
 import type { Snapshot } from "../server/turns.ts";
 import type { TurnBody } from "./api.ts";
@@ -108,5 +108,12 @@ export function newerSnapshot(current: Snapshot | null, next: Snapshot): Snapsho
 }
 
 // 营销对话（数据分析、新建活动）按浏览器里的对话 id 登记；附件问答按所在活动 id 登记。
-export const analysisTurns = createBackgroundRegistry<{ replyId?: string; clock: number; pendingCreation?: string }>();
+// 刷新或关页时浏览器会切断进行中的连接；带运行标识的回答仍在服务端跑，这时不能记成失败，留给新页面接上。
+let unloading = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => { unloading = true; });
+  window.addEventListener("pagehide", () => { unloading = true; });
+  window.addEventListener("pageshow", () => { unloading = false; });
+}
+export const analysisTurns = { ...createBackgroundRegistry<{ replyId?: string; clock: number; pendingCreation?: string; runId?: string }>(), unloading: () => unloading };
 export const fileTurns = createBackgroundRegistry<{ id: string; started: number }>();

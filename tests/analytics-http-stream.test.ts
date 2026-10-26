@@ -60,3 +60,42 @@ test("新问答流的底层框架错误仍隐藏身份", async (t) => {
   const response = await fetch(`${base}/analytics/database/explain/stream`, { method: "POST", headers, body });
   assert.deepEqual((await response.text()).trim().split("\n").map((line) => JSON.parse(line)), [{ type: "error", error: "Agent 执行出错" }]);
 });
+
+const runId = "11111111-2222-4333-8444-555555555555";
+const owned = { ...headers, "x-analytics-owner": "owner-a", "x-analytics-run-id": runId };
+
+test("带运行标识的问答断开连接后继续跑完，重新连上补放过程并拿到结果", { timeout: 5000 }, async (t) => {
+  let finish = () => {}; const waiting = new Promise<void>((resolve) => { finish = resolve; });
+  let aborted = false; t.after(() => finish());
+  const base = await start(t, async (_request, signal, emit) => {
+    signal?.addEventListener("abort", () => { aborted = true; }, { once: true });
+    emit?.({ type: "phase", phase: "analyzing", at: 1 });
+    await waiting; return simulatedPlanAnswerV4();
+  });
+  const controller = new AbortController();
+  const response = await fetch(`${base}/analytics/database/explain/stream`, { method: "POST", headers: owned, body, signal: controller.signal });
+  assert.equal(response.status, 200); await response.body!.getReader().read(); controller.abort();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(aborted, false);
+  // 别的访问标识拿到 id 也接不上。
+  assert.equal((await fetch(`${base}/analytics/runs/${runId}/stream`, { headers: { authorization: "Bearer test", "x-analytics-owner": "owner-b" } })).status, 404);
+  const resumed = fetch(`${base}/analytics/runs/${runId}/stream`, { headers: { authorization: "Bearer test", "x-analytics-owner": "owner-a" } });
+  finish();
+  const events = (await (await resumed).text()).trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(events[0].type, "phase"); assert.equal(events.at(-1).type, "result");
+  assert.deepEqual(events.at(-1).result, simulatedPlanAnswerV4());
+});
+
+test("显式停止才中止带运行标识的问答", { timeout: 5000 }, async (t) => {
+  let cancelled = () => {}; const stopped = new Promise<void>((resolve) => { cancelled = resolve; });
+  const base = await start(t, async (_request, signal) => {
+    await new Promise<void>((resolve) => signal?.addEventListener("abort", () => { cancelled(); resolve(); }, { once: true }));
+    return simulatedPlanAnswerV4();
+  });
+  const pending = fetch(`${base}/analytics/database/explain/stream`, { method: "POST", headers: owned, body });
+  const response = await pending; assert.equal(response.status, 200);
+  assert.equal((await fetch(`${base}/analytics/runs/${runId}/cancel`, { method: "POST", headers: { authorization: "Bearer test", "x-analytics-owner": "owner-a" } })).status, 200);
+  await stopped;
+  const events = (await response.text()).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(events.at(-1), { type: "error", error: "本次回答已停止" });
+});

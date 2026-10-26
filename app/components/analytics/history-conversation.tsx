@@ -6,7 +6,7 @@ import { analyticsRequest } from "../../lib/client/analytics";
 import type { DatabaseExplainRequest } from "../../lib/analytics/database";
 import { conversationRoute } from "../../lib/analytics/intent";
 import { historyConversation, historyMessageContext, mergeConversationTimeline, replaceHistoryAttachment, type HistoryMessage, type HistorySaveState } from "../../lib/client/history-conversation";
-import { postHistoryStream } from "../../lib/client/history-stream";
+import { cancelHistoryRun, postHistoryStream, resumeHistoryStream } from "../../lib/client/history-stream";
 import { reduceVisualizationProgress } from "../../lib/analytics/visualization-progress";
 import { analyticsAnswerText } from "../../lib/analytics/stream";
 import { createSessionRequest, notifySessionsChanged } from "../../lib/client/api";
@@ -80,11 +80,15 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
   const lastDraft = useRef(0);
   useEffect(() => { if (draft && draft.nonce !== lastDraft.current) { lastDraft.current = draft.nonce; setInput(draft.text); requestAnimationFrame(() => { const box = document.querySelector<HTMLTextAreaElement>("#mode-panel-qa textarea"); box?.focus(); box?.setSelectionRange(box.value.length, box.value.length); }); } }, [draft]);
 
-  const perform = async (request: DatabaseExplainRequest | ConversationRequest, replyId: string, retryFiles = false) => {
+  // resume：页面刷新前已在服务端开始的回答，重新连上接着收，不再提交问题。
+  const perform = async (request: DatabaseExplainRequest | ConversationRequest, replyId: string, retryFiles = false, resume?: { runId: string; startedAt: number }) => {
     if (executionLock.current) return;
-    const clock = now(); const entry = analysisTurns.begin(conversationId, { replyId, clock }); if (!entry) return;
+    const clock = resume ? now() - Math.max(0, Date.now() - resume.startedAt) : now();
+    // 附件问答仍挂在连接上，不分配运行标识。
+    const runId = resume?.runId ?? ("attachmentIds" in request ? undefined : crypto.randomUUID());
+    const entry = analysisTurns.begin(conversationId, { replyId, clock, runId }); if (!entry) return;
     const { controller, token } = entry; setError("");
-    setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "running", text: "", answer: undefined, visualizationState: undefined, trace: [], phase: "analyzing", startedAt: Date.now(), durationMs: undefined } : m));
+    setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "running", text: "", answer: undefined, visualizationState: undefined, trace: [], phase: "analyzing", startedAt: resume?.startedAt ?? Date.now(), durationMs: undefined, runId } : m));
     try {
       await analyticsRequest("/api/analytics/access", undefined, controller.signal);
       if (retryFiles && "attachmentIds" in request) request = await retryConversationAttachments(request, (previousId, file) => {
@@ -94,10 +98,11 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
         if (!owns(token)) return;
         setMessages((items) => items.map((m) => m.id !== replyId ? m : event.type === "trace" ? { ...m, trace: mergeTraceEvent(m.trace ?? [], event.event) } : event.type === "visualization" ? { ...m, visualizationState: reduceVisualizationProgress(m.visualizationState, event) } : { ...m, phase: event.phase }));
       };
-      const explanation = "attachmentIds" in request ? await postAttachmentStream(request, progress, controller.signal) : await postHistoryStream(request, progress, controller.signal);
+      const explanation = "attachmentIds" in request ? await postAttachmentStream(request, progress, controller.signal) : resume ? await resumeHistoryStream(resume.runId, progress, controller.signal) : await postHistoryStream(request, progress, controller.signal, runId);
       if (owns(token)) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "done", answer: explanation, visualizationState: undefined, createdAt: new Date().toISOString(), durationMs: now() - clock,
         text: analyticsAnswerText(explanation) } : m));
     } catch (caught) {
+      if (runId && analysisTurns.unloading?.()) return;
       if (caught instanceof UnavailableAttachmentsError) markUnavailable(caught.ids);
       const detail = publicAgentError(caught instanceof Error ? caught.message : "本次回答暂未完成，可以重试");
       const text = /数据库|连接|视图|字段映射|访问标识/.test(detail) ? "这次回答暂时无法完成，你的问题已保留，可以稍后重试。" : detail;
@@ -141,10 +146,20 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
   };
   const stop = () => {
     const turn = analysisTurns.abort(conversationId); if (!turn) return;
-    const { replyId, clock, pendingCreation: creation } = turn.state;
+    const { replyId, clock, pendingCreation: creation, runId } = turn.state;
+    if (runId) void cancelHistoryRun(runId);
     if (replyId) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "cancelled", text: "已停止本次回答，你可以继续追问。", durationMs: now() - clock } : m));
     else setInput((current) => current || creation || "");
   };
+  // 刷新或重新打开这条对话时，接上还在服务端跑的回答。
+  const resumed = useRef(new Set<string>());
+  useEffect(() => {
+    if (analysisTurns.has(conversationId)) return;
+    const pending = messages.find((m) => m.role === "assistant" && m.status === "running" && m.runId && m.request && !resumed.current.has(m.runId));
+    if (!pending) return;
+    resumed.current.add(pending.runId!);
+    void perform(pending.request!, pending.id, false, { runId: pending.runId!, startedAt: pending.startedAt ?? Date.now() });
+  });
   const retry = (message: HistoryMessage) => { if (message.request) { followBottom.current = true; void perform(message.request, message.id, true); } };
   const fileDeleted = (id: string) => setMessages((items) => items.map((message) => ({ ...message, ...(message.attachments ? { attachments: message.attachments.map((file) => file.id === id ? { ...file, deleted: true } : file) } : {}) })));
 

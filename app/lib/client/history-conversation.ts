@@ -7,7 +7,7 @@ import { isConversationAnswer } from "../attachments/answer.ts";
 import type { AttachmentReference, ConversationRequest } from "../attachments/types.ts";
 import type { InsightFocus } from "../insight/context.ts";
 
-export type HistoryMessage = { id: string; role: "user" | "assistant"; text: string; createdAt: string; answer?: AnalyticsAnswerResult; request?: DatabaseExplainRequest | ConversationRequest; attachments?: AttachmentReference[]; status?: "running" | "done" | "failed" | "cancelled"; trace?: AgentTraceEvent[]; startedAt?: number; durationMs?: number; phase?: "analyzing" | "writing"; visualizationState?: VisualizationProgressState; afterMessageId?: string };
+export type HistoryMessage = { id: string; role: "user" | "assistant"; text: string; createdAt: string; answer?: AnalyticsAnswerResult; request?: DatabaseExplainRequest | ConversationRequest; attachments?: AttachmentReference[]; status?: "running" | "done" | "failed" | "cancelled"; trace?: AgentTraceEvent[]; startedAt?: number; durationMs?: number; phase?: "analyzing" | "writing"; visualizationState?: VisualizationProgressState; afterMessageId?: string; runId?: string };
 export function replaceHistoryAttachment(messages: HistoryMessage[], previousId: string, file: AttachmentReference): HistoryMessage[] {
   return messages.map((message) => ({ ...message,
     ...(message.attachments ? { attachments: [...new Map(message.attachments.map((item) => item.id === previousId ? file : item).map((item) => [item.id, item])).values()] } : {}),
@@ -78,7 +78,8 @@ const focusValid = (value: unknown): value is InsightFocus => {
 };
 const threadValid = (t: Thread) => Boolean(t) && typeof t.id === "string" && typeof t.title === "string" && typeof t.updatedAt === "string" && (t.campaignId === null || typeof t.campaignId === "string") && (t.unread === undefined || typeof t.unread === "boolean") && messagesValid(t.messages) && contextValid(t.context);
 const restoreThread = (t: Thread): Thread => { const { focus, ...rest } = t; return { ...rest, messages: restoreMessages(t.messages), ...(focusValid(focus) ? { focus } : {}) }; };
-const finishPending = (messages: HistoryMessage[]) => messages.map((m) => m.status === "running" ? { ...m, status: "cancelled" as const, text: "上次等待已结束，可以继续追问或重新分析。" } : m);
+// 带 runId 的回答在服务端独立运行，恢复时保持进行中，由对话界面重新连上；其余进行中的请求已随页面断开。
+const finishPending = (messages: HistoryMessage[]) => messages.map((m) => m.status === "running" && !m.runId ? { ...m, status: "cancelled" as const, text: "上次等待已结束，可以继续追问或重新分析。" } : m);
 const restoreMessages = (messages: HistoryMessage[]) => finishPending(messages).map((stored) => {
   const message = { ...stored, ...(stored.visualizationState === undefined ? {} : { visualizationState: restoreVisualizationProgress(stored.visualizationState) }) };
   // 旧记录保留旧合同；新记录恢复时重新核验，不能凭存储里的正文绕过引用检查。
