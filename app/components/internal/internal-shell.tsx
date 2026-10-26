@@ -9,6 +9,7 @@ import { internalLogout } from "../../lib/internal/client";
 const NAV = [
   { href: "/internal/stats", label: "统计总览", hint: "按渠道按天的 Token" },
   { href: "/internal/conversations", label: "会话", hint: "提问、回复与执行过程" },
+  { href: "/internal/settings", label: "设置", hint: "模型渠道" },
 ];
 
 // 管理端外壳：左侧菜单，只给内部同学用，客户首页没有入口。窄屏时菜单收到顶部。

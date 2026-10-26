@@ -143,8 +143,9 @@ function reviewRefs(body: string, execution: PlanExecution, capabilities: Analys
 }
 
 export function createPlanAnalyticsRunner(config: Config, dependencies: Dependencies = { query }): PlanAnalyticsRunner {
-  const sdkModel = analyticsSdkModel(config.model);
   return async (request, externalSignal, onProgress) => {
+    // 模型名每轮按当前渠道取：管理端切换渠道后下一轮立即生效。
+    const sdkModel = analyticsSdkModel(config.model);
     throwIfTurnCancelled(externalSignal);
     const quick = quickAnalyticsReply(request.question); if (quick) return quick;
     if ("mode" in request && quickMonthlySalesQuery(request)) return createAnalyticsRunner(config, { query: dependencies.query })(request, externalSignal, onProgress);

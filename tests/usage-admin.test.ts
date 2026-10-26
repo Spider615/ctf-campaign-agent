@@ -135,3 +135,30 @@ test("用量库打不开时 Agent 照常服务客户", () => {
   const server = readFileSync(new URL("../agent/server.ts", import.meta.url), "utf8");
   assert.match(server, /try \{ usage = createUsageStore\([\s\S]*?\ncatch \(error\)/);
 });
+
+test("管理端渠道接口：查看、切换立即生效，未登录和没配 key 的拒绝", async (t) => {
+  const { createModelChannels } = await import("../agent/model-channels.ts");
+  const dir = mkdtempSync(join(tmpdir(), "usage-admin-ch-"));
+  const channels = await createModelChannels({ env: { NODE_ENV: "test", AGENT_PROVIDER: "deepseek", DEEPSEEK_API_KEY: "ds", JUZI_MODELS_KEY: "jz" }, statePath: join(dir, "model-channel.json"), fetch: async () => Response.json({}) });
+  const usage = createUsageStore(join(dir, "usage.sqlite"));
+  const admin = createAdminAuth({ password: "pw-123456", secret: SECRET });
+  const server = createServer(createAgentHttpHandler({ token: "", model: () => channels.current().model, usage, admin, channels, logger: { log() {}, error() {} }, runAgentTurn: async () => { throw new Error("不调用"); } }));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { server.closeAllConnections(); server.close(); usage.close(); await channels.close(); rmSync(dir, { recursive: true, force: true }); });
+  const address = server.address(); assert.ok(address && typeof address === "object");
+  const base = `http://127.0.0.1:${address.port}`;
+  const headers = { "x-ctf-admin": admin.login("pw-123456")!, "content-type": "application/json" };
+  assert.equal((await fetch(`${base}/internal/channel`)).status, 401);
+  assert.equal((await fetch(`${base}/internal/channel`, { method: "POST", body: JSON.stringify({ channel: "juzi" }) })).status, 401);
+  const before = await (await fetch(`${base}/internal/channel`, { headers })).json() as { active: string; channels: Array<{ channel: string; configured: boolean }>; history: unknown[] };
+  assert.equal(before.active, "deepseek");
+  assert.deepEqual(before.channels.map((item) => item.configured), [true, true]);
+  assert.ok(!JSON.stringify(before).includes("\"ds\"") && !JSON.stringify(before).includes("\"jz\""), "不返回 key");
+  const switched = await fetch(`${base}/internal/channel`, { method: "POST", headers, body: JSON.stringify({ channel: "juzi" }) });
+  assert.equal(switched.status, 200);
+  assert.equal(channels.active(), "juzi");
+  assert.equal(((await (await fetch(`${base}/health`)).json()) as { model: string }).model, "claude-sonnet-5-5", "下一次读取立即是新渠道");
+  const after = await (await fetch(`${base}/internal/channel`, { headers })).json() as { active: string; history: Array<{ from: string; to: string }> };
+  assert.deepEqual([after.active, after.history[0].from, after.history[0].to], ["juzi", "deepseek", "juzi"]);
+  assert.equal((await fetch(`${base}/internal/channel`, { method: "POST", headers, body: JSON.stringify({ channel: "openai" }) })).status, 400);
+});

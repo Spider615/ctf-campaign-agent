@@ -9,6 +9,12 @@ import { runInUsageTurn, safely } from "./context.ts";
 import type { TraceStep, TurnFinish, TurnStart, UsageChannel, UsageEntry, UsageStore } from "./store.ts";
 
 export type UsageIdentity = { visitor: string | null; conversationId: string | null; internal: boolean };
+// 渠道可以是固定值，或每轮开始时读取的当前渠道（管理端可切换）。
+export type UsageChannelSource = UsageChannel | (() => UsageChannel);
+// 把一轮固定在开始时的渠道上（见 model-channels.ts 的 pin）；没有时原样执行。
+export type ChannelPin = <T>(work: () => Promise<T>) => Promise<T>;
+let channelPin: ChannelPin = (work) => work();
+export function setChannelPin(pin: ChannelPin | undefined) { channelPin = pin ?? ((work) => work()); }
 type Outcome = Pick<TurnFinish, "status" | "reply">;
 
 const header = (request: IncomingMessage, name: string) => { const value = request.headers[name]; return typeof value === "string" ? value.trim() : ""; };
@@ -29,17 +35,23 @@ const traceStep = (event: AgentTraceEvent): TraceStep => ({ title: event.title, 
 
 export async function recordTurn<T>(
   store: UsageStore | undefined,
-  start: Omit<TurnStart, "id" | "startedAt"> & { entry: UsageEntry; channel: UsageChannel },
+  start: Omit<TurnStart, "id" | "startedAt" | "channel"> & { entry: UsageEntry; channel: UsageChannelSource },
   work: (emitTrace: (event: AgentTraceEvent) => void) => Promise<T>,
   outcome: (result: T) => Outcome,
   signal: AbortSignal,
   publicError: (message: string) => string,
 ): Promise<T> {
+  return channelPin(() => record(store, start, work, outcome, signal, publicError));
+}
+
+async function record<T>(store: UsageStore | undefined, start: Omit<TurnStart, "id" | "startedAt" | "channel"> & { channel: UsageChannelSource }, work: (emitTrace: (event: AgentTraceEvent) => void) => Promise<T>,
+  outcome: (result: T) => Outcome, signal: AbortSignal, publicError: (message: string) => string): Promise<T> {
   if (!store) return work(() => {});
+  const channel = typeof start.channel === "function" ? start.channel() : start.channel;
   const id = crypto.randomUUID();
   const steps = new Map<string, TraceStep>();
   const emitTrace = (event: AgentTraceEvent) => { steps.set(event.id, traceStep(event)); };
-  safely(() => store.startTurn({ ...start, id, startedAt: Date.now() }));
+  safely(() => store.startTurn({ ...start, channel, id, startedAt: Date.now() }));
   const finish = (result: Omit<TurnFinish, "trace" | "finishedAt">) => safely(() => store.finishTurn(id, { ...result, trace: [...steps.values()], finishedAt: Date.now() }));
   try {
     const result = await runInUsageTurn(id, () => work(emitTrace));

@@ -38,8 +38,9 @@ const SYSTEM = `你是${AGENT_NAME}，${AGENT_IDENTITY}。用户正在看一张�
 调用 submit_insight_answer({ body, highlights }) 提交。`;
 
 export function createInsightAskRunner(config: Config, dependencies: { query: AgentQuery } = { query }): InsightAskRunner {
-  const sdkModel = analyticsSdkModel(config.model);
   return async (request, graph, externalSignal) => {
+    // 模型名每轮按当前渠道取：管理端切换渠道后下一轮立即生效。
+    const sdkModel = analyticsSdkModel(config.model);
     throwIfTurnCancelled(externalSignal);
     mkdirSync(config.runtimeDir, { recursive: true });
     const material = askContext(graph, request.selection);

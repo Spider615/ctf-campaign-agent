@@ -116,7 +116,7 @@ export async function cancelHistoryRun(run: { id: string; owner: string }) {
 // 管理端：浏览器 cookie 里的凭据转成 x-ctf-admin，Agent 验签；Workers 不保存密码。
 export async function forwardInternalRequest(path: string, init: { method: "GET" | "POST"; token?: string; body?: string; signal?: AbortSignal }): Promise<Response> {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const headers: Record<string, string> = { ...agentHeaders(), ...(init.token ? { "x-ctf-admin": init.token } : {}) };
+  const headers: Record<string, string> = { ...agentHeaders(), "content-type": "application/json", ...(init.token ? { "x-ctf-admin": init.token } : {}) };
   try {
     const response = await fetch(`${base}${path}`, { method: init.method, headers, body: init.body, signal: init.signal });
     return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8", "cache-control": "no-store" } });

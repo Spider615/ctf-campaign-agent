@@ -14,9 +14,10 @@ import { createAttachmentsHttpHandler } from "./attachments/http.ts";
 import { createConversationRunner } from "./attachments/run-turn.ts";
 import { createInsightGraphService } from "./insight-graph.ts";
 import { createInsightAskRunner } from "./insight-ask.ts";
-import { modelConfigFromEnv } from "./model-gateway.ts";
+import { createModelChannels, liveModelConfig } from "./model-channels.ts";
 import { privateAnalyticsDirectory } from "./analytics-private-records.ts";
 import { setUsageRecorder } from "./usage/context.ts";
+import { setChannelPin } from "./usage/turns.ts";
 import { createUsageStore } from "./usage/store.ts";
 import { createAdminAuth } from "./usage/admin.ts";
 import mysql from "mysql2/promise";
@@ -27,8 +28,12 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 const HOST = process.env.AGENT_HOST || "127.0.0.1";
 const PORT = Number(process.env.AGENT_PORT || 8788);
 const TOKEN = process.env.AGENT_SERVICE_TOKEN || "";
-// SDK使用Anthropic协议：公司网关模式走本机转换层，官方兼容模式直接连接所选接口。
-const { channel: CHANNEL, model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, apiKeyEnvName: API_KEY_ENV_NAME } = await modelConfigFromEnv();
+// 模型渠道：配了 key 的渠道都在本机回环上准备好，管理端切换后下一轮立即生效；选中的渠道存在持久目录里。
+const CHANNEL_STATE = process.env.MODEL_CHANNEL_STATE_PATH || join(dirname(process.env.USAGE_DB_PATH || join(homedir(), "Library/Application Support/ctf-campaign-agent/usage/usage.sqlite")), "model-channel.json");
+const channels = await createModelChannels({ statePath: CHANNEL_STATE });
+setChannelPin((work) => channels.pin(() => work()));
+// 运行器每次读 model / modelBaseUrl / apiKey 都取当前轮次的渠道。
+const live = <T extends object>(rest: T) => liveModelConfig(channels, rest);
 // 内部用量库：客户问题和执行记录只存在仓库外的私有目录。
 const USAGE_PATH = process.env.USAGE_DB_PATH || join(homedir(), "Library/Application Support/ctf-campaign-agent/usage/usage.sqlite");
 // 用量库打不开（目录不可写、路径在仓库内）时只关掉记录和管理端，客户问答照常。
@@ -44,33 +49,31 @@ const RUNTIME_DIR = fileURLToPath(new URL("./.claude-runtime/", import.meta.url)
 // 业务规则所在的本地插件（agent/plugin/skills/*/SKILL.md），每轮按需加载。
 const PLUGIN_DIR = fileURLToPath(new URL("./plugin/", import.meta.url));
 
-const runAgentTurn = createAgentRunner({
-  model: MODEL,
-  modelBaseUrl: MODEL_BASE_URL,
-  apiKey: API_KEY,
+const runAgentTurn = createAgentRunner(live({
   runtimeDir: RUNTIME_DIR,
   pluginDir: PLUGIN_DIR,
   debug: DEBUG,
-});
+}));
 
 const database = process.env.CTF_MYSQL_HOST ? createMysqlAnalyticsDatabase({ host: process.env.CTF_MYSQL_HOST, port: Number(process.env.CTF_MYSQL_PORT || 3306), user: process.env.CTF_MYSQL_USER || "root", password: process.env.CTF_MYSQL_PASSWORD || "", database: process.env.CTF_MYSQL_DATABASE || "ctf_sales_202508", table: process.env.CTF_MYSQL_TABLE || "sales_detail_202508", evidenceDir: process.env.CTF_MYSQL_EVIDENCE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/mysql-evidence") }) : undefined;
-const analyticsConfig = { model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR,
-  pluginDir: fileURLToPath(new URL("./analytics-plugin/", import.meta.url)), auditDirectory: process.env.ANALYTICS_AUDIT_DIR || undefined, database };
+const analyticsConfig = live({ runtimeDir: RUNTIME_DIR,
+  pluginDir: fileURLToPath(new URL("./analytics-plugin/", import.meta.url)), auditDirectory: process.env.ANALYTICS_AUDIT_DIR || undefined, database });
 const runPlanAnalyticsTurn = createAnalyticsSkillRunner(analyticsConfig);
 // 文件问答保留原计划式运行器及外层预算、复核和数字合同。
 const runAttachmentAnalyticsTurn = createPlanAnalyticsRunner(analyticsConfig);
 const installedAttachmentPython = join(homedir(), "Library/Application Support/ctf-campaign-agent/attachment-python/bin/python3");
 const attachmentStore = createAttachmentStore({ directory: process.env.ATTACHMENTS_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/attachments"), python: process.env.ATTACHMENTS_PYTHON || (existsSync(installedAttachmentPython) ? installedAttachmentPython : "python3") });
-const runConversation = createConversationRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR, pluginDir: PLUGIN_DIR, store: attachmentStore, runAnalytics: runAttachmentAnalyticsTurn, visionModel: process.env.ATTACHMENTS_VISION_MODEL });
+const runConversation = createConversationRunner(live({ runtimeDir: RUNTIME_DIR, pluginDir: PLUGIN_DIR, store: attachmentStore, runAnalytics: runAttachmentAnalyticsTurn, visionModel: process.env.ATTACHMENTS_VISION_MODEL }));
 // 洞察图谱默认读源表：问答用的投影表没有回收金标识和 sku 年龄。
 const insight = process.env.CTF_MYSQL_HOST ? createInsightGraphService({ table: process.env.CTF_INSIGHT_TABLE || "sales_detail_202508", evidenceDir: process.env.CTF_MYSQL_EVIDENCE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/mysql-evidence"),
   cacheDir: process.env.CTF_INSIGHT_CACHE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/insight-cache"),
   connect: () => mysql.createConnection({ host: process.env.CTF_MYSQL_HOST, port: Number(process.env.CTF_MYSQL_PORT || 3306), user: process.env.CTF_MYSQL_USER || "root", password: process.env.CTF_MYSQL_PASSWORD || "", database: process.env.CTF_MYSQL_DATABASE || "ctf_sales_202508", charset: "utf8mb4", connectTimeout: 5000, supportBigNumbers: true, bigNumberStrings: true }) }) : undefined;
-const insightAsk = createInsightAskRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR });
-const server = createServer(createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation, usage, channel: CHANNEL, admin }), insight, insightAsk, usage, channel: CHANNEL, admin }));
+const insightAsk = createInsightAskRunner(live({ runtimeDir: RUNTIME_DIR }));
+const activeChannel = () => channels.active();
+const server = createServer(createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: () => channels.current().model, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation, usage, channel: activeChannel, admin }), insight, insightAsk, usage, channel: activeChannel, admin, channels }));
 
-if (!API_KEY) {
-  console.error(`缺少 ${API_KEY_ENV_NAME}：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。`);
+if (!channels.configured) {
+  console.error("缺少模型 key：DEEPSEEK_API_KEY 和 JUZI_MODELS_KEY 至少配一个。本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。");
   process.exit(1);
 }
 if (!TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST)) {
@@ -78,7 +81,7 @@ if (!TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST)) {
 }
 // 数据准备在后台启动；连接、范围和口径校验不进入客户首页。
 if (database) void database.inspect().then(() => console.log("历史营销资料已完成后台校验"), () => console.error("历史营销资料准备暂未完成，请在后台检查数据源"));
-server.listen(PORT, HOST, () => console.log(`Agent 服务已启动：http://${HOST}:${PORT}（模型 ${MODEL}）`));
+server.listen(PORT, HOST, () => console.log(`Agent 服务已启动：http://${HOST}:${PORT}（渠道 ${channels.active()}，模型 ${channels.current().model}）`));
 // 后台预热一次分析会话：读出维度取值并缓存，首个问题不用等这一步；失败不影响启动。
 void database?.openAnalysisSession?.().then((session) => session.close(), () => undefined);
 // 后台预热全部洞察图谱：查询结果落盘，只有第一次（或数据变了）要查库，之后重启直接读盘，打开洞察即出图。

@@ -8,7 +8,7 @@ import { encodeAnalyticsStreamEvent, type AnalyticsProgressEvent, type Analytics
 import type { AttachmentScope, AttachmentStore } from "./store.ts";
 import { publicAgentError } from "../../app/lib/agent/service-errors.ts";
 import { analyticsAnswerText } from "../../app/lib/analytics/stream.ts";
-import { recordTurn, usageIdentity } from "../usage/turns.ts";
+import { recordTurn, usageIdentity, type UsageChannelSource } from "../usage/turns.ts";
 import type { UsageChannel, UsageStore } from "../usage/store.ts";
 import type { AdminAuth } from "../usage/admin.ts";
 
@@ -21,7 +21,7 @@ async function readJson(request: IncomingMessage) {
   try { return JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { throw new Error("文件对话请求不是有效 JSON"); }
 }
 
-type AttachmentsHttpOptions = { store: AttachmentStore; runConversation?: ConversationRunner; usage?: UsageStore; channel?: UsageChannel; admin?: AdminAuth };
+type AttachmentsHttpOptions = { store: AttachmentStore; runConversation?: ConversationRunner; usage?: UsageStore; channel?: UsageChannelSource; admin?: AdminAuth };
 
 export function createAttachmentsHttpHandler({ store, runConversation, usage, channel = "deepseek", admin }: AttachmentsHttpOptions) {
   const isInternal = admin ? (value: string | undefined) => admin.verify(value) : undefined;

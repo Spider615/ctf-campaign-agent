@@ -213,3 +213,13 @@ test("没配用量库时入口行为不变", async (t) => {
     runAgentTurn: async () => { throw new Error("不调用活动"); }, runPlanAnalyticsTurn: async () => simulatedPlanAnswerV4() }));
   assert.equal((await ask(base, "八月")).status, 200);
 });
+
+test("用量记录的渠道取这一轮开始时的渠道", async (t) => {
+  const { store } = await setup(t);
+  let channel: "deepseek" | "juzi" = "deepseek";
+  const base = await listen(t, createAgentHttpHandler({ token: "", model: "test", channel: () => channel, usage: store, database: httpAnalyticsDatabase(), logger: { log() {}, error() {} },
+    runAgentTurn: async () => { throw new Error("不调用活动"); }, runPlanAnalyticsTurn: async () => { channel = "juzi"; return simulatedPlanAnswerV4(); } }));
+  await (await ask(base, "八月")).text();
+  await (await ask(base, "九月")).text();
+  assert.deepEqual(store.conversation(`analysis:${CONVERSATION}`)?.turns.map((turn) => turn.channel), ["deepseek", "juzi"]);
+});

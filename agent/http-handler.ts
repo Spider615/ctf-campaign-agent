@@ -16,9 +16,10 @@ import type { InsightAskRunner } from "./insight-ask.ts";
 import { parseAskBody } from "../app/lib/insight/ask.ts";
 import { ANALYTICS_RUN_ID, createAnalyticsRuns, type AnalyticsRuns } from "./analytics-runs.ts";
 import { analyticsAnswerText } from "../app/lib/analytics/stream.ts";
-import { recordTurn, usageIdentity } from "./usage/turns.ts";
+import { recordTurn, usageIdentity, type UsageChannelSource } from "./usage/turns.ts";
 import type { UsageChannel, UsageStore } from "./usage/store.ts";
 import { ADMIN_SESSION_SECONDS, parseUsageQuery, type AdminAuth } from "./usage/admin.ts";
+import type { ModelChannels } from "./model-channels.ts";
 
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
@@ -27,7 +28,8 @@ type AgentHttpOptions = {
   runPlanAnalyticsTurn?: AnalyticsSkillRunner;
   database?: AnalyticsDatabase;
   token: string;
-  model: string;
+  // 健康检查里报的模型；可切换渠道时传函数，每次读当前值。
+  model: string | (() => string);
   logger?: Pick<Console, "log" | "error">;
   attachmentHandler?: (request: IncomingMessage, response: ServerResponse) => Promise<void>;
   insight?: InsightGraphService;
@@ -35,14 +37,16 @@ type AgentHttpOptions = {
   analyticsRuns?: AnalyticsRuns;
   // 内部用量记录；没配时入口行为不变。admin 校验管理员凭据，也用来判定内部流量。
   usage?: UsageStore;
-  channel?: UsageChannel;
+  channel?: UsageChannelSource;
+  // 模型渠道管理器；有它时管理端可以查看和切换渠道。
+  channels?: Pick<ModelChannels, "active" | "list" | "history" | "select">;
   admin?: AdminAuth;
 };
 
 // 管理端接口：登录换凭据；其余只读查询都要有效凭据，未登录时不返回任何客户内容。
 // 任何异常只回错误，不让未捕获的拒绝打崩整个 Agent 进程。
-async function handleInternal(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined, logger: Pick<Console, "error">) {
-  try { await internalRoutes(request, response, usage, admin); }
+async function handleInternal(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined, logger: Pick<Console, "error">, channels?: AgentHttpOptions["channels"]) {
+  try { await internalRoutes(request, response, usage, admin, channels); }
   catch (error) {
     if (error instanceof URIError) return send(response, 400, { error: "会话编号不正确" });
     logger.error(`[internal] 查询失败：${error instanceof Error ? error.message : error}`);
@@ -50,7 +54,7 @@ async function handleInternal(request: IncomingMessage, response: ServerResponse
   }
 }
 
-async function internalRoutes(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined) {
+async function internalRoutes(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined, channels?: AgentHttpOptions["channels"]) {
   if (!admin?.configured || !usage) return send(response, 503, { error: "管理端未配置" });
   const url = new URL(request.url ?? "/", "http://local");
   if (url.pathname === "/internal/login") {
@@ -64,6 +68,17 @@ async function internalRoutes(request: IncomingMessage, response: ServerResponse
   }
   const credential = request.headers["x-ctf-admin"];
   if (!admin.verify(typeof credential === "string" ? credential : undefined)) return send(response, 401, { error: "请先登录管理端" });
+  // 模型渠道：GET 看当前和可选渠道（不含 key），POST 切换，下一轮起生效。
+  if (url.pathname === "/internal/channel") {
+    if (!channels) return send(response, 503, { error: "渠道切换未启用" });
+    if (request.method === "POST") {
+      let target: unknown;
+      try { target = (await readJson(request) as { channel?: unknown })?.channel; } catch { return send(response, 400, { error: "请求不是有效的 JSON" }); }
+      if (target !== "deepseek" && target !== "juzi") return send(response, 400, { error: "没有这个渠道" });
+      try { channels.select(target); } catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "切换失败" }); }
+    } else if (request.method !== "GET") return send(response, 405, { error: "只支持 GET 和 POST" });
+    return send(response, 200, { active: channels.active(), channels: channels.list(), history: channels.history() });
+  }
   if (request.method !== "GET") return send(response, 405, { error: "只支持 GET" });
   if (url.pathname.startsWith("/internal/conversations/")) {
     const key = decodeURIComponent(url.pathname.slice("/internal/conversations/".length));
@@ -109,12 +124,12 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns(), usage, channel = "deepseek", admin }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns(), usage, channel = "deepseek", admin, channels }: AgentHttpOptions) {
   const isInternal = admin ? (value: string | undefined) => admin.verify(value) : undefined;
-  const internalApi = (request: IncomingMessage, response: ServerResponse) => handleInternal(request, response, usage, admin, logger);
+  const internalApi = (request: IncomingMessage, response: ServerResponse) => handleInternal(request, response, usage, admin, logger, channels);
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const identity = () => usageIdentity(request, isInternal);
-    if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
+    if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model: typeof model === "function" ? model() : model });
     const isTurn = request.method === "POST" && request.url === "/turn";
     const isStream = request.method === "POST" && request.url === "/turn/stream";
     const isAnalytics = request.method === "POST" && request.url === "/analytics/explain";
@@ -127,7 +142,7 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
     const isRunStream = request.method === "GET" && runRoute?.[2] === "stream";
     const isRunCancel = request.method === "POST" && runRoute?.[2] === "cancel";
     const isAttachment = Boolean(attachmentHandler) && /^\/attachments(?:[/?]|$)/.test(request.url ?? "");
-    const isInternalApi = /^\/internal\/(?:login|overview|conversations)(?:[/?]|$)/.test(request.url ?? "");
+    const isInternalApi = /^\/internal\/(?:login|overview|conversations|channel)(?:[/?]|$)/.test(request.url ?? "");
     if (isInternalApi) {
       if (token && request.headers.authorization !== `Bearer ${token}`) return send(response, 401, { error: "Agent 服务鉴权失败" });
       return internalApi(request, response);

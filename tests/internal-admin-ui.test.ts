@@ -67,3 +67,14 @@ test("管理端用左侧菜单导航，退出放在菜单底部", () => {
   assert.match(shell, /<aside[\s\S]*<nav[\s\S]*NAV\.map[\s\S]*退出[\s\S]*<\/aside>/);
   assert.doesNotMatch(shell, /<header[\s\S]*<nav/, "菜单不再放在顶部");
 });
+
+test("设置页：列出渠道、未配置的不能选、切换后提示从下一轮起生效", () => {
+  const page = read("app/components/internal/settings-view.tsx");
+  assert.match(page, /internalPost(?:<\w+>)?\(\s*"channel"/);
+  assert.match(page, /disabled=\{[^}]*!item\.configured/);
+  assert.match(page, /未配置/);
+  assert.match(page, /下一轮/);
+  assert.match(read("app/components/internal/internal-shell.tsx"), /\/internal\/settings/);
+  assert.match(read("app/api/internal/[...path]/route.ts"), /export async function POST/);
+  assert.match(read("app/api/internal/[...path]/route.ts"), /assertSameOrigin\(request\)/);
+});
