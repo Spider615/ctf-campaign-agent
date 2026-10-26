@@ -47,7 +47,7 @@ export function InsightWorkspace({ selection, onSelect, onAskQa }: {
 
   // 一屏放下：指标卡在上，下面左图右栏，各自在框内滚动，页面本身不滚。窄屏（< 1180px）退回整页滚动、上下排。
   // relative：滚动区里的绝对定位元素（如输入框的读屏标签）以这里为基准，不撑高整页。
-  return <section aria-label="智能洞察" className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3 md:px-6 min-[1180px]:overflow-hidden">
+  return <section aria-label="深度剖析" className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3 md:px-6 min-[1180px]:overflow-hidden">
     <div className="grid shrink-0 gap-3 sm:grid-cols-3">
       {graph.kpis.map((k) => { const Icon = KPI_ICON[k.id];
         return <button key={k.id} type="button" onClick={() => choose({ kind: "node", id: k.id })} aria-pressed={selection?.kind === "node" && selection.id === k.id}

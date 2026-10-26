@@ -150,7 +150,7 @@ button, summary, a { -webkit-tap-highlight-color: transparent; }
   .thinking-wave-dot { animation: none; opacity: 0.75; transform: none; }
 }
 
-/* 智能洞察：选中链路上的流动光点，表示影响方向。 */
+/* 深度剖析：选中链路上的流动光点，表示影响方向。 */
 @keyframes insight-flow { to { stroke-dashoffset: -32; } }
 .insight-flow { animation: insight-flow 1.1s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .insight-flow { animation: none; } }

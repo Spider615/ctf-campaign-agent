@@ -105,9 +105,9 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 - `card.ts`：结构化回答（面板修改、提议）的解析和校验。`messages.ts`：消息结构 `StoredMessage`（v2，`agent_round_card` / `agent_readback` / `user_card_submit` 只为读旧会话）、`flowOf`、改动摘要。
 - `examples.ts`：验收用例 T1–T10 夹具，测试和示例会话共用。
 
-### 智能洞察 `app/lib/insight/`
+### 深度剖析 `app/lib/insight/`
 
-`/analysis` 分「智能洞察 / 智能问答」两种模式（`app/components/analytics/analysis-modes.tsx`），模式和图上选中的节点、连线、来源筛选都存在 URL 里（`?mode=&node=` / `&edge=from>to` / `&source=`），两边一直挂载，切换只隐藏。设计见 `docs/superpowers/specs/2026-10-20-insight-drivers-design.md`（取代 10-19 那份的图谱部分）。
+`/analysis` 分「深度剖析 / 智能问答」两种模式（`app/components/analytics/analysis-modes.tsx`），模式和图上选中的节点、连线、来源筛选都存在 URL 里（`?mode=&node=` / `&edge=from>to` / `&source=`），两边一直挂载，切换只隐藏。设计见 `docs/superpowers/specs/2026-10-20-insight-drivers-design.md`（取代 10-19 那份的图谱部分）。
 
 - 图谱只有一张：「销售额、毛利、销量受哪些因素影响」，四列从左往右是细项因素 → 因素 → 指标拆解 → 指标，节点固定 23 个（`types.ts` 的 `INSIGHT_NODE_IDS`）。没有指标、优惠、货类筛选。
 - 数据流：页面 `GET /api/analytics/insight` → Agent `GET /insight/graph` → `agent/insight-graph.ts` 发 8 条聚合查询（门店日面板、门店属性、货类、逐日、一般足金类按日按优惠组、15–25 克逐克件数、以旧换新按单关联、范围）→ `drivers.ts` 的 `buildDriverGraph`。默认源表 `sales_detail_202508`，`CTF_INSIGHT_TABLE` 可改。查询结果按数据版本落盘（`CTF_INSIGHT_CACHE_DIR`，默认 `~/Library/Application Support/ctf-campaign-agent/insight-cache`），Agent 启动时 `warm()` 预热：第一次约 2 分钟，之后重启只读盘、20–30 秒内算好。
