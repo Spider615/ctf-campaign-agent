@@ -19,6 +19,7 @@ import { privateAnalyticsDirectory } from "./analytics-private-records.ts";
 import { setUsageRecorder } from "./usage/context.ts";
 import { setChannelPin } from "./usage/turns.ts";
 import { createUsageStore } from "./usage/store.ts";
+import { createCostEstimator } from "./usage/pricing.ts";
 import { createAdminAuth } from "./usage/admin.ts";
 import mysql from "mysql2/promise";
 
@@ -38,7 +39,7 @@ const live = <T extends object>(rest: T) => liveModelConfig(channels, rest);
 const USAGE_PATH = process.env.USAGE_DB_PATH || join(homedir(), "Library/Application Support/ctf-campaign-agent/usage/usage.sqlite");
 // 用量库打不开（目录不可写、路径在仓库内）时只关掉记录和管理端，客户问答照常。
 let usage: ReturnType<typeof createUsageStore> | undefined;
-try { usage = createUsageStore(join(privateAnalyticsDirectory(dirname(USAGE_PATH)), basename(USAGE_PATH))); setUsageRecorder(usage); }
+try { usage = createUsageStore(join(privateAnalyticsDirectory(dirname(USAGE_PATH)), basename(USAGE_PATH)), createCostEstimator()); setUsageRecorder(usage); }
 catch (error) { console.error(`内部用量库没有打开，本次不记录用量：${error instanceof Error ? error.message : error}`); }
 // 管理端共享密码和签名密钥只在 Agent 环境里；没配时管理端接口返回 503。
 const admin = createAdminAuth({ password: process.env.INTERNAL_ADMIN_PASSWORD, secret: process.env.INTERNAL_SESSION_SECRET });

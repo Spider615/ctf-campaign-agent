@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createUsageStore, type ModelRequestFinish, type TurnStart, type UsageStore } from "../agent/usage/store.ts";
+import { createCostEstimator } from "../agent/usage/pricing.ts";
 
 const DAY = { from: "2026-10-01", to: "2026-10-31" };
 const at = (iso: string) => Date.parse(iso);
@@ -122,3 +123,25 @@ test("按模型汇总不按厂商拆行", () => withStore((store) => {
   store.finishRequest("r2", { ...done, upstreamModel: "claude-5.5-sonnet", inputTokens: 2 });
   assert.deepEqual(store.overview(DAY).models.map((row) => [row.model, row.requests, row.inputTokens]), [["claude-5.5-sonnet", 2, 3]]);
 }));
+
+test("估算费用：请求、轮次、会话、按天按渠道都带上，算不出的记为未定价", () => {
+  const dir = mkdtempSync(join(tmpdir(), "usage-store-"));
+  const store = createUsageStore(join(dir, "usage.sqlite"), createCostEstimator({}));
+  try {
+    const mon10 = at("2026-10-26T02:00:00Z");
+    store.startTurn(turn("t1", { startedAt: mon10 }));
+    store.startRequest({ id: "r1", turnId: "t1", source: "analysis", channel: "deepseek", sdkModel: "x", sentModel: "deepseek-flash", vendor: "DeepSeek", vendorBasis: "x", startedAt: mon10 });
+    store.finishRequest("r1", { ...done, upstreamModel: null, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0 });
+    store.startTurn(turn("t2", { channel: "juzi", conversationId: "c2", startedAt: mon10 }));
+    store.startRequest({ id: "r2", turnId: "t2", source: "analysis", channel: "juzi", sdkModel: "x", sentModel: "claude-sonnet-5-5", vendor: null, vendorBasis: "x", startedAt: mon10 });
+    store.finishRequest("r2", { ...done, inputTokens: 10 });
+    const filter = { from: "2026-10-26", to: "2026-10-26" };
+    assert.equal(store.conversation("analysis:c1")?.turns[0].requests[0].costYuan, 2);
+    assert.equal(store.conversation("analysis:c1")?.turns[0].costYuan, 2);
+    assert.equal(store.conversation("analysis:c2")?.turns[0].costYuan, null);
+    const rows = store.conversations(filter);
+    assert.equal(rows.find((row) => row.key === "analysis:c1")?.costYuan, 2);
+    assert.equal(rows.find((row) => row.key === "analysis:c2")?.costYuan, null);
+    assert.deepEqual(store.overview(filter).days.map((row) => [row.channel, row.costYuan, row.unpricedRequests]), [["deepseek", 2, 0], ["juzi", null, 1]]);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

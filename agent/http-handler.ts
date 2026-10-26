@@ -87,7 +87,7 @@ async function internalRoutes(request: IncomingMessage, response: ServerResponse
   }
   let filter;
   try { filter = parseUsageQuery(url.searchParams); } catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "查询参数不正确" }); }
-  if (url.pathname === "/internal/overview") return send(response, 200, { overview: usage.overview(filter), billing: "来源未接入" });
+  if (url.pathname === "/internal/overview") return send(response, 200, { overview: usage.overview(filter) });
   if (url.pathname === "/internal/conversations") return send(response, 200, { conversations: usage.conversations(filter) });
   return send(response, 404, { error: "没有这个接口" });
 }

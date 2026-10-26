@@ -3,12 +3,12 @@
 import { useEffect, useState } from "react";
 
 import { internalGet } from "../../lib/internal/client";
-import { CHANNEL_LABEL, TURN_STATUS_HINT, durationText, groupByChannel, tokenText, turnStatusText } from "../../lib/internal/format";
+import { CHANNEL_LABEL, TURN_STATUS_HINT, durationText, groupByChannel, tokenText, turnStatusText, yuanText } from "../../lib/internal/format";
 import type { Overview } from "../../lib/internal/types";
 import { UsageFilters, useUsageQuery } from "./filters";
 import { DataTable, InternalShell, Notice, Panel } from "./internal-shell";
 
-// 统计总览：两个渠道各一块，各自按天列 Token；费用按渠道按天对账，来源接入前只写「来源未接入」。
+// 统计总览：两个渠道各一块，各自按天列 Token 和估算费用（Token × 单价），两个渠道不相加。
 export function StatsView() {
   const query = useUsageQuery().toString();
   const [state, setState] = useState<{ query: string; overview?: Overview; error?: string }>({ query: "" });
@@ -41,8 +41,8 @@ export function StatsView() {
             </Panel>
             {overview.days.length === 0 ? <Notice>这段时间没有记录。</Notice> : null}
             {groupByChannel(overview.days).map((group) => (
-              <Panel key={group.channel} title={CHANNEL_LABEL[group.channel]} note="Token 按北京时间切天；费用按渠道按天对账">
-                <DataTable head={["日期", "轮次", "模型请求", "输入 Token", "输出 Token", "缓存命中", "缓存写入", "不完整请求", "实际费用"]} minWidth={900}>
+              <Panel key={group.channel} title={CHANNEL_LABEL[group.channel]} note="按北京时间切天；估算费用按 Token × 单价算，以官方账单为准">
+                <DataTable head={["日期", "轮次", "模型请求", "输入 Token", "输出 Token", "缓存命中", "缓存写入", "不完整请求", "估算费用"]} minWidth={900}>
                   {group.rows.map((row) => (
                     <tr key={row.day}>
                       <td className="whitespace-nowrap">{row.day}</td>
@@ -53,7 +53,7 @@ export function StatsView() {
                       <td>{tokenText(row.cacheReadTokens)}</td>
                       <td>{tokenText(row.cacheWriteTokens)}</td>
                       <td className={row.incompleteRequests ? "text-[#b2443b]" : ""}>{row.incompleteRequests}</td>
-                      <td className="text-[#71869f]">来源未接入</td>
+                      <td className="whitespace-nowrap">{yuanText(row.costYuan, row.unpricedRequests)}</td>
                     </tr>
                   ))}
                 </DataTable>

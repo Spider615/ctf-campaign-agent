@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 import { internalGet } from "../../lib/internal/client";
 import { MarkdownText } from "../chat/markdown-text";
-import { CHANNEL_LABEL, ENTRY_LABEL, durationText, requestStatusText, timeText, tokenText, turnStatusText } from "../../lib/internal/format";
+import { CHANNEL_LABEL, ENTRY_LABEL, durationText, requestStatusText, timeText, tokenText, turnStatusText, yuanText } from "../../lib/internal/format";
 import type { ConversationDetail as Detail, TurnRecord } from "../../lib/internal/types";
 import { DataTable, InternalShell, Notice, Panel } from "./internal-shell";
 
@@ -14,7 +14,7 @@ const statusTone = (status: string) => status === "answered" || status === "done
 function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
   const elapsed = turn.finishedAt ? turn.finishedAt - turn.startedAt : undefined;
   return (
-    <Panel title={`第 ${index + 1} 轮`} note={`${timeText(turn.startedAt)} · ${CHANNEL_LABEL[turn.channel]} · 耗时 ${durationText(elapsed)} · SDK 启动 ${turn.sdkStarts} 次`}>
+    <Panel title={`第 ${index + 1} 轮`} note={`${timeText(turn.startedAt)} · ${CHANNEL_LABEL[turn.channel]} · 耗时 ${durationText(elapsed)} · 估算费用 ${yuanText(turn.costYuan, turn.unpricedRequests)}`}>
       <div className="space-y-3 text-sm">
         <p className={`font-medium ${statusTone(turn.status)}`}>{turnStatusText(turn.status)}</p>
         <div className="rounded-xl bg-[#f1f7ff] px-4 py-3"><p className="text-[12px] text-[#637a95]">客户提问</p><p className="mt-1 whitespace-pre-wrap text-[#20314d]">{turn.question}</p></div>
@@ -31,7 +31,7 @@ function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
           </details>
         ) : null}
         {turn.requests.length ? (
-          <DataTable head={["开始", "来源", "模型", "状态", "输入", "输出", "缓存命中", "缓存写入", "耗时"]} minWidth={820}>
+          <DataTable head={["开始", "来源", "模型", "状态", "输入", "输出", "缓存命中", "缓存写入", "估算费用", "耗时"]} minWidth={900}>
             {turn.requests.map((request) => (
               <tr key={request.id}>
                 <td className="whitespace-nowrap">{timeText(request.startedAt)}</td>
@@ -43,6 +43,7 @@ function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
                 <td>{tokenText(request.outputTokens)}</td>
                 <td>{tokenText(request.cacheReadTokens)}</td>
                 <td>{tokenText(request.cacheWriteTokens)}</td>
+                <td className="whitespace-nowrap">{yuanText(request.costYuan)}</td>
                 <td className="whitespace-nowrap">{durationText(request.finishedAt ? request.finishedAt - request.startedAt : undefined)}</td>
               </tr>
             ))}
@@ -70,7 +71,7 @@ export function ConversationDetailView({ conversationKey }: { conversationKey: s
         {state.error ? <Notice tone="error">{state.error}</Notice> : null}
         {detail ? (
           <>
-            <p className="text-sm text-[#4f6681]">{ENTRY_LABEL[detail.entry] ?? detail.entry} · 访客 <span className="font-mono">{detail.visitor ?? "—"}</span> · {detail.turns.length} 轮 · 费用按天对账，会话不显示金额</p>
+            <p className="text-sm text-[#4f6681]">{ENTRY_LABEL[detail.entry] ?? detail.entry} · 访客 <span className="font-mono">{detail.visitor ?? "—"}</span> · {detail.turns.length} 轮 · 估算费用 {yuanText(detail.turns.some((turn) => turn.costYuan !== null) ? Math.round(detail.turns.reduce((sum, turn) => sum + (turn.costYuan ?? 0), 0) * 1e6) / 1e6 : null, detail.turns.reduce((sum, turn) => sum + turn.unpricedRequests, 0))}（按 Token × 单价算，以官方账单为准）</p>
             {detail.turns.map((turn, index) => <Turn key={turn.id} turn={turn} index={index} />)}
           </>
         ) : null}

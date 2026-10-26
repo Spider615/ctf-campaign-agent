@@ -5,6 +5,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import type { CostEstimator } from "./pricing.ts";
+
 export type UsageChannel = "deepseek" | "juzi";
 export type UsageEntry = "analysis" | "attachments" | "campaign" | "insight";
 export type TurnStatus = "running" | "answered" | "partial" | "failed" | "cancelled" | "interrupted";
@@ -17,14 +19,15 @@ export type ModelRequestFinish = { status: Exclude<RequestStatus, "running" | "i
 export type UsageFilter = { from: string; to: string; entry?: UsageEntry; channel?: UsageChannel; model?: string; status?: TurnStatus; keyword?: string };
 type Tokens = { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null };
 export type UsageOverview = {
-  days: Array<{ day: string; channel: UsageChannel; turns: number; requests: number; incompleteRequests: number } & Tokens>;
+  // costYuan：能定价的请求的估算费用合计；unpricedRequests：算不出价的请求数。
+  days: Array<{ day: string; channel: UsageChannel; turns: number; requests: number; incompleteRequests: number; costYuan: number | null; unpricedRequests: number } & Tokens>;
   statuses: Record<TurnStatus, number>;
   models: Array<{ channel: UsageChannel; model: string; requests: number; inputTokens: number | null; outputTokens: number | null }>;
   durations: { turnsMs: { p50: number | null; p90: number | null } };
 };
-export type UsageConversationRow = { key: string; entry: UsageEntry; visitor: string | null; title: string; lastQuestion: string; turns: number; channels: UsageChannel[]; inputTokens: number | null; outputTokens: number | null; durationMs: number; lastAt: number; internal: boolean };
-export type UsageRequestRecord = ModelRequestStart & Partial<Omit<ModelRequestFinish, "status" | "vendor">> & { status: RequestStatus };
-export type UsageTurnRecord = TurnStart & Partial<Omit<TurnFinish, "status">> & { status: TurnStatus; sdkStarts: number; requests: UsageRequestRecord[] };
+export type UsageConversationRow = { key: string; entry: UsageEntry; visitor: string | null; title: string; lastQuestion: string; turns: number; channels: UsageChannel[]; inputTokens: number | null; outputTokens: number | null; costYuan: number | null; unpricedRequests: number; durationMs: number; lastAt: number; internal: boolean };
+export type UsageRequestRecord = ModelRequestStart & Partial<Omit<ModelRequestFinish, "status" | "vendor">> & { status: RequestStatus; costYuan: number | null };
+export type UsageTurnRecord = TurnStart & Partial<Omit<TurnFinish, "status">> & { status: TurnStatus; sdkStarts: number; requests: UsageRequestRecord[]; costYuan: number | null; unpricedRequests: number };
 export type UsageConversationDetail = { key: string; entry: UsageEntry; visitor: string | null; turns: UsageTurnRecord[] };
 export type UsageStore = {
   startTurn(turn: TurnStart): void; finishTurn(id: string, result: TurnFinish): void; countSdkStart(turnId: string): void;
@@ -57,7 +60,8 @@ CREATE TABLE IF NOT EXISTS usage_request (
   upstream_model TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER, finished_at INTEGER);
 CREATE INDEX IF NOT EXISTS usage_request_turn ON usage_request(turn_id);`;
 
-export function createUsageStore(path: string): UsageStore {
+// 费用按查询时的价格表现算，不落库：改了单价，旧记录也按新价格重算。
+export function createUsageStore(path: string, estimate: CostEstimator = () => null): UsageStore {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL;");
@@ -82,8 +86,25 @@ export function createUsageStore(path: string): UsageStore {
     return sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)];
   }
 
+  const costOf = (row: Row) => estimate({ channel: row.channel as UsageChannel, model: String(row.upstream_model ?? row.sent_model), startedAt: Number(row.started_at),
+    inputTokens: num(row.input_tokens), outputTokens: num(row.output_tokens), cacheReadTokens: num(row.cache_read_tokens), cacheWriteTokens: num(row.cache_write_tokens) });
+  // 合计能定价的部分；一次也定不了价时为 null。
+  const total = (costs: Array<number | null>) => {
+    const priced = costs.filter((cost): cost is number => cost !== null);
+    return { costYuan: priced.length ? Math.round(priced.reduce((sum, cost) => sum + cost, 0) * 1e6) / 1e6 : null, unpricedRequests: costs.length - priced.length };
+  };
+  const costsByTurn = (turnIds: string[]) => {
+    const map = new Map<string, Array<number | null>>();
+    if (!turnIds.length) return map;
+    for (const row of all(`SELECT * FROM usage_request WHERE turn_id IN (${turnIds.map(() => "?").join(", ")})`, turnIds)) {
+      const list = map.get(String(row.turn_id)) ?? []; list.push(costOf(row)); map.set(String(row.turn_id), list);
+    }
+    return map;
+  };
+
   function requestRecord(row: Row): UsageRequestRecord {
     return {
+      costYuan: costOf(row),
       id: String(row.id), turnId: String(row.turn_id), source: String(row.source), channel: row.channel as UsageChannel, sdkModel: String(row.sdk_model), sentModel: String(row.sent_model),
       vendor: (row.vendor as string | null) ?? null, vendorBasis: String(row.vendor_basis), startedAt: Number(row.started_at), status: row.status as RequestStatus,
       httpStatus: num(row.http_status), responseId: (row.response_id as string | null) ?? null, upstreamModel: (row.upstream_model as string | null) ?? null,
@@ -118,7 +139,12 @@ export function createUsageStore(path: string): UsageStore {
           SUM(CASE WHEN r.status IN ('incomplete', 'interrupted') THEN 1 ELSE 0 END) AS incomplete
         FROM usage_turn t LEFT JOIN usage_request r ON r.turn_id = t.id WHERE ${sql} GROUP BY t.day, t.channel ORDER BY t.day, t.channel`, params)
         .map((row) => ({ day: String(row.day), channel: row.channel as UsageChannel, turns: Number(row.turns), requests: Number(row.requests), incompleteRequests: Number(row.incomplete ?? 0),
-          inputTokens: num(row.input), outputTokens: num(row.output), cacheReadTokens: num(row.cache_read), cacheWriteTokens: num(row.cache_write) }));
+          inputTokens: num(row.input), outputTokens: num(row.output), cacheReadTokens: num(row.cache_read), cacheWriteTokens: num(row.cache_write), costYuan: null as number | null, unpricedRequests: 0 }));
+      const dayCosts = new Map<string, Array<number | null>>();
+      for (const row of all(`SELECT t.day, r.* FROM usage_turn t JOIN usage_request r ON r.turn_id = t.id WHERE ${sql}`, params)) {
+        const key = `${row.day}|${row.channel}`; const list = dayCosts.get(key) ?? []; list.push(costOf(row)); dayCosts.set(key, list);
+      }
+      for (const day of days) Object.assign(day, total(dayCosts.get(`${day.day}|${day.channel}`) ?? []));
       const statuses = Object.fromEntries(TURN_STATUSES.map((status) => [status, 0])) as Record<TurnStatus, number>;
       for (const row of all(`SELECT t.status, COUNT(*) AS n FROM usage_turn t WHERE ${sql} GROUP BY t.status`, params)) statuses[row.status as TurnStatus] = Number(row.n);
       const models = all(`SELECT t.channel, COALESCE(r.upstream_model, r.sent_model) AS model, COUNT(*) AS requests, SUM(r.input_tokens) AS input, SUM(r.output_tokens) AS output
@@ -135,12 +161,14 @@ export function createUsageStore(path: string): UsageStore {
       if (!keys.length) return [];
       const rows = all(`SELECT t.*, (SELECT SUM(input_tokens) FROM usage_request r WHERE r.turn_id = t.id) AS input, (SELECT SUM(output_tokens) FROM usage_request r WHERE r.turn_id = t.id) AS output
         FROM usage_turn t WHERE t.conv_key IN (${keys.map(() => "?").join(", ")}) ORDER BY t.started_at`, keys);
+      const costs = costsByTurn(rows.map((row) => String(row.id)));
       return keys.map((key) => {
         const turns = rows.filter((row) => row.conv_key === key);
+        const cost = total(turns.flatMap((row) => costs.get(String(row.id)) ?? []));
         const sum = (field: string) => turns.reduce<number | null>((total, row) => row[field] === null ? total : (total ?? 0) + Number(row[field]), null);
         return {
           key, entry: turns[0].entry as UsageEntry, visitor: (turns[0].visitor as string | null) ?? null, title: String(turns[0].question).slice(0, 30), lastQuestion: String(turns.at(-1)!.question),
-          turns: turns.length, channels: [...new Set(turns.map((row) => row.channel as UsageChannel))], inputTokens: sum("input"), outputTokens: sum("output"),
+          turns: turns.length, channels: [...new Set(turns.map((row) => row.channel as UsageChannel))], inputTokens: sum("input"), outputTokens: sum("output"), ...cost,
           durationMs: turns.reduce((total, row) => total + (row.finished_at === null ? 0 : Number(row.finished_at) - Number(row.started_at)), 0),
           lastAt: Math.max(...turns.map((row) => Number(row.started_at))), internal: turns.some((row) => Number(row.internal) === 1),
         };
@@ -157,6 +185,7 @@ export function createUsageStore(path: string): UsageStore {
           internal: Number(row.internal) === 1, question: String(row.question), startedAt: Number(row.started_at), status: row.status as TurnStatus, sdkStarts: Number(row.sdk_starts),
           reply: (row.reply as string | null) ?? null, error: (row.error as string | null) ?? null, trace: row.trace_json ? JSON.parse(String(row.trace_json)) as TraceStep[] : undefined,
           finishedAt: row.finished_at === null ? undefined : Number(row.finished_at), requests: requests.filter((request) => request.turnId === row.id),
+          ...total(requests.filter((request) => request.turnId === row.id).map((request) => request.costYuan)),
         })),
       };
     },

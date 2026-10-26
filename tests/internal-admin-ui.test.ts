@@ -34,10 +34,9 @@ test("按渠道分组，不产生跨渠道合计", () => {
   assert.equal(CHANNEL_LABEL.juzi, "句子互动网关");
 });
 
-test("总览按渠道各一张表，费用列为「来源未接入」，没有合计行", () => {
+test("总览按渠道各一张表，没有跨渠道合计行", () => {
   const page = read("app/components/internal/stats-view.tsx");
   assert.match(page, /groupByChannel\(/);
-  assert.match(page, /来源未接入/);
   assert.doesNotMatch(page, /合计|总计/);
 });
 
@@ -93,4 +92,25 @@ test("统计总览和会话详情都不显示厂商", () => {
   for (const file of ["app/components/internal/stats-view.tsx", "app/components/internal/conversation-detail.tsx"]) {
     assert.doesNotMatch(read(file), /"厂商"|\.vendor/, `${file} 不显示厂商`);
   }
+});
+
+test("金额：元保留到分，小额不显示成 0，算不出写未定价，部分算不出写明", async () => {
+  const { yuanText } = await import("../app/lib/internal/format.ts");
+  assert.equal(yuanText(null, 0), "未定价");
+  assert.equal(yuanText(null, 3), "未定价");
+  assert.equal(yuanText(1234.5, 0), "¥1,234.50");
+  assert.equal(yuanText(0.0042, 0), "¥0.0042");
+  assert.equal(yuanText(0, 0), "¥0.00");
+  assert.equal(yuanText(2, 1), "¥2.00 起（1 次未定价）");
+});
+
+test("会话列表、会话详情和统计总览都显示估算费用", () => {
+  for (const file of ["app/components/internal/conversations-view.tsx", "app/components/internal/conversation-detail.tsx", "app/components/internal/stats-view.tsx"]) {
+    const source = read(file);
+    assert.match(source, /估算费用/, file);
+    assert.match(source, /yuanText\(/, file);
+  }
+  assert.doesNotMatch(read("app/components/internal/conversation-detail.tsx"), /会话不显示金额/);
+  assert.doesNotMatch(read("app/components/internal/stats-view.tsx"), /来源未接入/);
+  assert.match(read("agent/server.ts"), /createUsageStore\(.*createCostEstimator\(\)\)/);
 });

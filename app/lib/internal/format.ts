@@ -17,6 +17,12 @@ export const TURN_STATUS_HINT: Record<string, string> = {
 const REQUEST_STATUS: Record<string, string> = { running: "执行中", done: "完成", error: "出错", incomplete: "不完整", interrupted: "中断" };
 
 export const tokenText = (value: number | null | undefined) => value === null || value === undefined ? "未提供" : value.toLocaleString("en-US");
+// 估算费用（元）：保留到分；不到 1 分的小额保留两位有效数字，免得显示成 ¥0.00。
+export function yuanText(yuan: number | null | undefined, unpriced = 0) {
+  if (yuan === null || yuan === undefined) return "未定价";
+  const text = yuan !== 0 && Math.abs(yuan) < 0.01 ? `¥${Number(yuan.toPrecision(2))}` : `¥${yuan.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return unpriced > 0 ? `${text} 起（${unpriced} 次未定价）` : text;
+}
 export const turnStatusText = (status: string) => TURN_STATUS[status] ?? status;
 export const requestStatusText = (status: string) => REQUEST_STATUS[status] ?? status;
 

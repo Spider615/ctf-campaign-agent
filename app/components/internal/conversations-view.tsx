@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { internalGet } from "../../lib/internal/client";
-import { CHANNEL_LABEL, ENTRY_LABEL, durationText, timeText, tokenText } from "../../lib/internal/format";
+import { CHANNEL_LABEL, ENTRY_LABEL, durationText, timeText, tokenText, yuanText } from "../../lib/internal/format";
 import type { ConversationRow } from "../../lib/internal/types";
 import { UsageFilters, useUsageQuery } from "./filters";
 import { DataTable, InternalShell, Notice } from "./internal-shell";
@@ -35,7 +35,7 @@ export function ConversationsView() {
         {!loading && state.error ? <Notice tone="error">{state.error}</Notice> : null}
         {rows && !rows.length ? <Notice>没有符合条件的会话。</Notice> : null}
         {rows?.length ? (
-          <DataTable head={["最近提问时间", "入口", "访客", "会话", "最近问题", "轮数", "渠道", "输入 Token", "输出 Token", "执行耗时"]} minWidth={1100}>
+          <DataTable head={["最近提问时间", "入口", "访客", "会话", "最近问题", "轮数", "渠道", "输入 Token", "输出 Token", "估算费用", "执行耗时"]} minWidth={1180}>
             {rows.map((row) => (
               <tr key={row.key} className="hover:bg-[#f8fbff]">
                 <td className="whitespace-nowrap">{timeText(row.lastAt)}</td>
@@ -47,6 +47,7 @@ export function ConversationsView() {
                 <td className="whitespace-nowrap">{row.channels.map((channel) => CHANNEL_LABEL[channel]).join("、")}</td>
                 <td>{tokenText(row.inputTokens)}</td>
                 <td>{tokenText(row.outputTokens)}</td>
+                <td className="whitespace-nowrap font-medium">{yuanText(row.costYuan, row.unpricedRequests)}</td>
                 <td className="whitespace-nowrap">{durationText(row.durationMs)}</td>
               </tr>
             ))}
