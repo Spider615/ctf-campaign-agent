@@ -5,9 +5,9 @@ import { PLAN_ANSWER_V4_SCHEMA } from "../analytics/analysis-v2-types.ts";
 import { throwIfTurnCancelled } from "../cancellation.ts";
 
 // runId 让这次回答在服务端独立跑完：刷新页面只断开这条连接，之后用 resumeHistoryStream 接着收。
-export async function postHistoryStream(request: DatabaseExplainRequest, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, runId?: string) {
+export async function postHistoryStream(request: DatabaseExplainRequest, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, runId?: string, conversationId?: string) {
   throwIfTurnCancelled(signal);
-  const response = await fetch("/api/analytics/history", { method: "POST", credentials: "same-origin", signal, headers: { "content-type": "application/json", accept: "application/x-ndjson", "X-Analytics-Answer-Schema": PLAN_ANSWER_V4_SCHEMA, "X-Analytics-Visuals": VISUALIZATION_SCHEMA, ...(runId ? { "X-Analytics-Run-Id": runId } : {}) }, body: JSON.stringify(request) });
+  const response = await fetch("/api/analytics/history", { method: "POST", credentials: "same-origin", signal, headers: { "content-type": "application/json", accept: "application/x-ndjson", "X-Analytics-Answer-Schema": PLAN_ANSWER_V4_SCHEMA, "X-Analytics-Visuals": VISUALIZATION_SCHEMA, ...(runId ? { "X-Analytics-Run-Id": runId } : {}), ...(conversationId ? { "X-Conversation-Id": conversationId } : {}) }, body: JSON.stringify(request) });
   return readHistoryResponse(response, onProgress, signal);
 }
 

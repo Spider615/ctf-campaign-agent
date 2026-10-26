@@ -13,6 +13,7 @@ import { withKeepAlive } from "./keep-alive.ts";
 import { consumeAnalyticsStream, normalizeAnalyticsAnswerSchema, validateAnalyticsAnswerResult, type AnalyticsProgressEvent } from "../analytics/stream.ts";
 import { TurnError, type AgentTransientEvent, type TurnDeps } from "./turns.ts";
 import type { ConversationRequest } from "../attachments/types.ts";
+import { forwardedUsageHeaders } from "./usage-identity.ts";
 
 const DEFAULT_AGENT_URL = "http://127.0.0.1:8788";
 
@@ -29,7 +30,7 @@ export async function forwardAttachmentRequest(request: Request, owner: string, 
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
   const url = new URL(request.url); const suffix = body ? "/answer/stream" : url.pathname.slice("/api/analytics/attachments".length);
   if (!body && !/^\/(?:[0-9a-f-]{36}(?:\/(?:content|preview|retry|image\/i\d+))?)?$/.test(suffix || "/")) throw new Error("附件接口路径无效");
-  const headers = new Headers(agentHeaders()); headers.set("x-attachments-owner", owner);
+  const headers = new Headers({ ...agentHeaders(), ...(body ? forwardedUsageHeaders(request, { owner }) : {}) }); headers.set("x-attachments-owner", owner);
   headers.set("content-type", body ? "application/json" : request.headers.get("content-type") ?? "application/octet-stream");
   if (body) headers.set("X-Conversation-Answer-Schema", "conversation-answer/v1");
   const visuals = visualizationCapability(request.headers.get("X-Analytics-Visuals")); if (body && visuals) headers.set("X-Analytics-Visuals", visuals);
@@ -40,11 +41,11 @@ export async function forwardAttachmentRequest(request: Request, owner: string, 
 }
 
 
-async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest | DatabaseExplainRequest, accept?: string, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, run?: { id: string; owner: string }): Promise<Response> {
+async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainRequest | DatabaseExplainRequest, accept?: string, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, run?: { id: string; owner: string }, usageHeaders: Record<string, string> = {}): Promise<Response> {
   try {
     return await fetch(url, {
       method: "POST",
-      headers: { ...agentHeaders(), ...(accept ? { accept } : {}), ...(run ? { "x-analytics-run-id": run.id, "x-analytics-owner": run.owner } : {}), ...(normalizeAnalyticsAnswerSchema(answerSchema) ? { "X-Analytics-Answer-Schema": normalizeAnalyticsAnswerSchema(answerSchema)! } : {}), ...(visualizationCapability(visualizationSchema) ? { "X-Analytics-Visuals": visualizationCapability(visualizationSchema)! } : {}) },
+      headers: { ...agentHeaders(), ...usageHeaders, ...(accept ? { accept } : {}), ...(run ? { "x-analytics-run-id": run.id, "x-analytics-owner": run.owner } : {}), ...(normalizeAnalyticsAnswerSchema(answerSchema) ? { "X-Analytics-Answer-Schema": normalizeAnalyticsAnswerSchema(answerSchema)! } : {}), ...(visualizationCapability(visualizationSchema) ? { "X-Analytics-Visuals": visualizationCapability(visualizationSchema)! } : {}) },
       body: JSON.stringify(request),
       signal,
     });
@@ -76,23 +77,23 @@ export async function fetchInsightGraph(signal?: AbortSignal): Promise<Response>
 }
 
 // 图谱问答：请求体原样转给 Agent（Agent 侧校验）。
-export async function askInsightGraph(body: string, signal?: AbortSignal): Promise<Response> {
+export async function askInsightGraph(body: string, signal?: AbortSignal, usageHeaders: Record<string, string> = {}): Promise<Response> {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await fetch(`${base}/insight/ask`, { method: "POST", headers: agentHeaders(), body, signal });
+  const response = await fetch(`${base}/insight/ask`, { method: "POST", headers: { ...agentHeaders(), ...usageHeaders }, body, signal });
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8" } });
 }
 
-export async function explainHistoryDatabase(request: DatabaseExplainRequest, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string) {
+export async function explainHistoryDatabase(request: DatabaseExplainRequest, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, usageHeaders: Record<string, string> = {}) {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await agentFetch(`${base}/analytics/database/explain`, request, undefined, signal, answerSchema, visualizationSchema);
+  const response = await agentFetch(`${base}/analytics/database/explain`, request, undefined, signal, answerSchema, visualizationSchema, undefined, usageHeaders);
   if (!response.ok) throw await agentHttpError(response);
   return validateAnalyticsAnswerResult(await response.json());
 }
 
 // 带运行标识时 Agent 按运行登记：这条连接断了分析照常跑完，之后用同一标识重新连上。
-export async function explainHistoryDatabaseStream(request: DatabaseExplainRequest, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, run?: { id: string; owner: string }) {
+export async function explainHistoryDatabaseStream(request: DatabaseExplainRequest, onProgress: (event: AnalyticsProgressEvent) => void, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, run?: { id: string; owner: string }, usageHeaders: Record<string, string> = {}) {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await agentFetch(`${base}/analytics/database/explain/stream`, request, "application/x-ndjson", signal, answerSchema, visualizationSchema, run);
+  const response = await agentFetch(`${base}/analytics/database/explain/stream`, request, "application/x-ndjson", signal, answerSchema, visualizationSchema, run, usageHeaders);
   if (!response.ok) throw await agentHttpError(response);
   return consumeAnalyticsStream(response, onProgress, signal);
 }
@@ -117,8 +118,8 @@ async function agentHttpError(response: Response): Promise<Error> {
   return new Error(typeof body?.error === "string" ? body.error : `Agent 服务出错（${response.status}）`);
 }
 
-async function runAgentJson(base: string, request: AgentRequest, signal?: AbortSignal): Promise<AgentResult> {
-  const response = await agentFetch(`${base}/turn`, request, undefined, signal);
+async function runAgentJson(base: string, request: AgentRequest, signal?: AbortSignal, usageHeaders: Record<string, string> = {}): Promise<AgentResult> {
+  const response = await agentFetch(`${base}/turn`, request, undefined, signal, undefined, undefined, undefined, usageHeaders);
   if (!response.ok) throw await agentHttpError(response);
   return parseAgentResult(await response.json().catch(() => null));
 }
@@ -129,10 +130,11 @@ async function runAgentRemote(
   onTrace?: (event: AgentTraceEvent) => void,
   onProgress?: (event: AgentTransientEvent) => void,
   signal?: AbortSignal,
+  usageHeaders: Record<string, string> = {},
 ): Promise<AgentResult> {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await agentFetch(`${base}/turn/stream`, request, "application/x-ndjson", signal);
-  if (response.status === 404) return runAgentJson(base, request, signal);
+  const response = await agentFetch(`${base}/turn/stream`, request, "application/x-ndjson", signal, undefined, undefined, undefined, usageHeaders);
+  if (response.status === 404) return runAgentJson(base, request, signal, usageHeaders);
   if (!response.ok) throw await agentHttpError(response);
   if (!response.body) throw new Error("Agent 服务没有返回数据流");
 
@@ -188,11 +190,12 @@ export function runtimeDeps(
   emitTrace?: (event: AgentTraceEvent) => void,
   emitProgress?: (event: AgentTransientEvent) => void,
   signal?: AbortSignal,
+  usageHeaders: Record<string, string> = {},
 ): TurnDeps {
   return {
     store: createD1Store(getDbBinding()),
     runAgent: (request, onTrace, onProgress) =>
-      runAgentRemote(request, onTrace, onProgress, signal),
+      runAgentRemote(request, onTrace, onProgress, signal, usageHeaders),
     today: todayInShanghai(),
     signal,
     emitTrace,

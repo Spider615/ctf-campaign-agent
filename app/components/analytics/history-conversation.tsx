@@ -98,7 +98,7 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
         if (!owns(token)) return;
         setMessages((items) => items.map((m) => m.id !== replyId ? m : event.type === "trace" ? { ...m, trace: mergeTraceEvent(m.trace ?? [], event.event) } : event.type === "visualization" ? { ...m, visualizationState: reduceVisualizationProgress(m.visualizationState, event) } : { ...m, phase: event.phase }));
       };
-      const explanation = "attachmentIds" in request ? await postAttachmentStream(request, progress, controller.signal) : resume ? await resumeHistoryStream(resume.runId, progress, controller.signal) : await postHistoryStream(request, progress, controller.signal, runId);
+      const explanation = "attachmentIds" in request ? await postAttachmentStream(request, progress, controller.signal) : resume ? await resumeHistoryStream(resume.runId, progress, controller.signal) : await postHistoryStream(request, progress, controller.signal, runId, conversationId);
       if (owns(token)) setMessages((items) => items.map((m) => m.id === replyId ? { ...m, status: "done", answer: explanation, visualizationState: undefined, createdAt: new Date().toISOString(), durationMs: now() - clock,
         text: analyticsAnswerText(explanation) } : m));
     } catch (caught) {

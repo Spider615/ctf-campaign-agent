@@ -1,11 +1,14 @@
 import { isTurnCancelled, relayAbort } from "../../../../lib/cancellation.ts";
 import { errorResponse, publicTurnError, runtimeDeps } from "../../../../lib/server/runtime.ts";
 import { runTurn } from "../../../../lib/server/turns.ts";
+import { forwardedUsageHeaders } from "../../../../lib/server/usage-identity.ts";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await context.params;
     const body = await request.json().catch(() => null);
+    // 活动没有访客 cookie（Path 只到 /api/analytics），会话按活动编号归。
+    const usageHeaders = forwardedUsageHeaders(request, { conversation: id });
     if (request.headers.get("accept")?.includes("application/x-ndjson")) {
       const encoder = new TextEncoder();
       let active = true;
@@ -43,6 +46,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
               (event) => emit({ type: "trace", event }),
               (event) => emit(event),
               turnController.signal,
+              usageHeaders,
             ),
           )
             .then((snapshot) => emit({ type: "snapshot", snapshot }))
@@ -70,7 +74,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         },
       });
     }
-    return Response.json(await runTurn(id, body, runtimeDeps(undefined, undefined, request.signal)));
+    return Response.json(await runTurn(id, body, runtimeDeps(undefined, undefined, request.signal, usageHeaders)));
   } catch (error) {
     return errorResponse(error, "没保存成功，可以重试");
   }
