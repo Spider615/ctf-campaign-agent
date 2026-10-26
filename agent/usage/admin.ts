@@ -5,7 +5,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { beijingDay, type TurnStatus, type UsageChannel, type UsageEntry, type UsageFilter } from "./store.ts";
 
 export const ADMIN_SESSION_SECONDS = 12 * 3600;
-export type AdminAuth = { configured: boolean; login(password: string): string | null; verify(token: string | undefined): boolean };
+export type AdminAuth = { configured: boolean; locked(): boolean; login(password: string): string | null; verify(token: string | undefined): boolean };
+// 登录限速：连续输错 5 次锁 5 分钟（共享密码，防暴力猜测）。
+const LOGIN_LIMIT = 5; const LOGIN_LOCK_MS = 5 * 60_000;
 
 const sameText = (a: string, b: string) => {
   const left = Buffer.from(a); const right = Buffer.from(b);
@@ -14,11 +16,18 @@ const sameText = (a: string, b: string) => {
 
 export function createAdminAuth({ password, secret, now = Date.now }: { password?: string; secret?: string; now?: () => number }): AdminAuth {
   const configured = Boolean(password) && Boolean(secret && secret.length >= 32);
+  const failures = { count: 0, lockedUntil: 0 };
   const sign = (expires: string) => createHmac("sha256", secret ?? "").update(`ctf-internal:${expires}`).digest("base64url");
   return {
     configured,
+    locked: () => now() < failures.lockedUntil,
     login(input) {
-      if (!configured || !input || !sameText(input, password!)) return null;
+      if (!configured || now() < failures.lockedUntil) return null;
+      if (!input || !sameText(input, password!)) {
+        if (++failures.count >= LOGIN_LIMIT) { failures.count = 0; failures.lockedUntil = now() + LOGIN_LOCK_MS; }
+        return null;
+      }
+      failures.count = 0;
       const expires = String(now() + ADMIN_SESSION_SECONDS * 1000);
       return `${expires}.${sign(expires)}`;
     },

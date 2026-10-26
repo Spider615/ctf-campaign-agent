@@ -6,6 +6,7 @@ import { AnalyticsError } from "../../../../../lib/server/analytics-store.ts";
 import { explainAnalytics } from "../../../../../lib/server/runtime.ts";
 import { encodeAnalyticsStreamEvent, normalizeAnalyticsAnswerSchema, type AnalyticsStreamEvent } from "../../../../../lib/analytics/stream.ts";
 import { relayAbort } from "../../../../../lib/cancellation.ts";
+import { forwardedUsageHeaders } from "../../../../../lib/server/usage-identity.ts";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -19,6 +20,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (dataset.version !== report.datasetVersion) throw new AnalyticsError("报告与数据版本不一致，不能采用其他版本", 409);
     const answerSchema = normalizeAnalyticsAnswerSchema(request.headers.get("X-Analytics-Answer-Schema"));
     const visualizationSchema = visualizationCapability(request.headers.get("X-Analytics-Visuals"));
+    // 同一份报告上的追问归到同一个会话。
+    const usageHeaders = forwardedUsageHeaders(request, { owner, conversation: `report-${id}` });
     if (request.headers.get("accept")?.includes("application/x-ndjson")) {
       const controller = new AbortController(); const stopRelay = relayAbort(request.signal, controller); const encoder = new TextEncoder(); let open = true;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -31,7 +34,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           // Node 返回核验后的整份回答；空行只用于静默期间及时检测浏览器断连。
           const keepAlive = () => { if ((output.desiredSize ?? 0) > 0) write("\n"); };
           keepAlive(); heartbeat = setInterval(keepAlive, 250);
-          try { const result = await explainAnalytics({ report, dataset, question }, controller.signal, answerSchema, visualizationSchema); emit({ type: "result", result }); }
+          try { const result = await explainAnalytics({ report, dataset, question }, controller.signal, answerSchema, visualizationSchema, usageHeaders); emit({ type: "result", result }); }
           catch (error) { emit({ type: "error", error: error instanceof Error ? error.message : "报告分析暂未完成，可以重试" }); }
           finally { stopRelay(); clearInterval(heartbeat); controller.signal.removeEventListener("abort", stop); if (open) { open = false; output.close(); } }
         },
@@ -39,6 +42,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       });
       return new Response(stream, { headers: { "content-type": "application/x-ndjson; charset=utf-8" } });
     }
-    return { explanation: await explainAnalytics({ report, dataset, question }, request.signal, answerSchema, visualizationSchema) };
+    return { explanation: await explainAnalytics({ report, dataset, question }, request.signal, answerSchema, visualizationSchema, usageHeaders) };
   });
 }

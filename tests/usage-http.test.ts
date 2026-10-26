@@ -83,6 +83,13 @@ test("同一会话两次提问是两轮", async (t) => {
   assert.ok(detail?.turns.every((turn) => turn.requests.length === 1));
 });
 
+test("暂无法回答记为失败而不是部分", async (t) => {
+  const { store } = await setup(t);
+  const base = await listen(t, analyticsHandler(store, async () => ({ ...simulatedPlanAnswerV4(), status: "unavailable" })));
+  await (await ask(base, "八月")).text();
+  assert.equal(store.conversation(`analysis:${CONVERSATION}`)?.turns[0].status, "failed");
+});
+
 test("部分回答记为部分", async (t) => {
   const { store } = await setup(t);
   const base = await listen(t, analyticsHandler(store, async () => ({ ...simulatedPlanAnswerV4(), status: "partial" })));

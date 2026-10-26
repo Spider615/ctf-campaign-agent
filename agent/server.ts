@@ -31,8 +31,10 @@ const TOKEN = process.env.AGENT_SERVICE_TOKEN || "";
 const { channel: CHANNEL, model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, apiKeyEnvName: API_KEY_ENV_NAME } = await modelConfigFromEnv();
 // 内部用量库：客户问题和执行记录只存在仓库外的私有目录。
 const USAGE_PATH = process.env.USAGE_DB_PATH || join(homedir(), "Library/Application Support/ctf-campaign-agent/usage/usage.sqlite");
-const usage = createUsageStore(join(privateAnalyticsDirectory(dirname(USAGE_PATH)), basename(USAGE_PATH)));
-setUsageRecorder(usage);
+// 用量库打不开（目录不可写、路径在仓库内）时只关掉记录和管理端，客户问答照常。
+let usage: ReturnType<typeof createUsageStore> | undefined;
+try { usage = createUsageStore(join(privateAnalyticsDirectory(dirname(USAGE_PATH)), basename(USAGE_PATH))); setUsageRecorder(usage); }
+catch (error) { console.error(`内部用量库没有打开，本次不记录用量：${error instanceof Error ? error.message : error}`); }
 // 管理端共享密码和签名密钥只在 Agent 环境里；没配时管理端接口返回 503。
 const admin = createAdminAuth({ password: process.env.INTERNAL_ADMIN_PASSWORD, secret: process.env.INTERNAL_SESSION_SECRET });
 // AGENT_DEBUG=1 时打印每次工具调用的参数和结果；里面有活动内容，只在本地排查时打开。

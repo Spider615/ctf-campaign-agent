@@ -24,11 +24,19 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
     if (!force && status && Date.now() < status.expires) return status.models;
     try {
       const response = await request(`${base}/models/status`, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) });
-      if (!response.ok) return status?.models ?? [];
+      if (!response.ok) return keepStale();
       const body = await response.json() as { data?: ModelStatus[]; poll_interval_seconds?: number };
       status = { models: body.data ?? [], expires: Date.now() + (body.poll_interval_seconds ?? 60) * 1000 };
       return status.models;
-    } catch { return status?.models ?? []; }
+    } catch { return keepStale(); }
+  }
+  // 读不到状态时沿用旧列表并顺延 60 秒，免得状态接口出问题时每个请求都去重试。
+  function keepStale() { status = { models: status?.models ?? [], expires: Date.now() + 60_000 }; return status.models; }
+  // 记录用量只用已缓存的状态，过期了在后台刷新，不让模型请求等它。
+  let refreshing: Promise<unknown> | undefined;
+  function cachedVendor(model: string, apiKey: string): string | null {
+    if (!status || Date.now() >= status.expires) refreshing ??= loadStatus(apiKey, false).finally(() => { refreshing = undefined; });
+    return status?.models.find((entry) => sameModel(entry, model))?.owned_by ?? null;
   }
 
   const sameModel = (entry: ModelStatus, model: string) => entry.id === model || Boolean(entry.aliases?.includes(model));
@@ -65,10 +73,8 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
     const model = String(body.model ?? "");
     const controller = new AbortController();
     // 每次真实上游请求一条记录；回退重试是独立的一条。厂商取 /models/status 的 owned_by，查不到不猜。
-    // 只在记录用量时读模型状态（按 poll_interval 缓存，读失败返回空列表，厂商记为未确认）。
-    const vendorOf = async (sentModel: string) => (await loadStatus(apiKey, false)).find((entry) => sameModel(entry, sentModel))?.owned_by ?? null;
-    const record = async (sentModel: string) => turnId && source ? startModelRequest({ turnId, source, channel: "juzi", sdkModel: model, sentModel,
-      vendor: await vendorOf(sentModel), vendorBasis: "网关模型状态 owned_by" }) : undefined;
+    const record = (sentModel: string) => turnId && source ? startModelRequest({ turnId, source, channel: "juzi", sdkModel: model, sentModel,
+      vendor: cachedVendor(sentModel, apiKey), vendorBasis: "网关模型状态 owned_by" }) : undefined;
     const usage = { responseId: null as string | null, upstreamModel: null as string | null, inputTokens: null as number | null, outputTokens: null as number | null, cacheReadTokens: null as number | null, cacheWriteTokens: null as number | null };
     // 网关不返回缓存写入，记 null；缓存命中只有上游给了才记。
     const takeUsage = (chunk: { id?: unknown; model?: unknown; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }) => {
@@ -80,12 +86,16 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
       usage.inputTokens = typeof chunk.usage.prompt_tokens === "number" ? Math.max(0, chunk.usage.prompt_tokens - (cached ?? 0)) : null;
       usage.outputTokens = typeof chunk.usage.completion_tokens === "number" ? chunk.usage.completion_tokens : null;
     };
-    let finish = await record(model);
+    let finish = record(model);
     let httpStatus: number | null = null;
     response.on("close", () => {
       if (response.writableFinished) return;
       controller.abort(); finish?.({ status: "incomplete", httpStatus, ...usage });
     });
+    // 上游连接断开、读流出错等任何异常：先把当前这条记为不完整，再交给外层回 502 或结束响应。
+    try { await relay(); } catch (error) { finish?.({ status: "incomplete", httpStatus, ...usage }); throw error; }
+
+    async function relay() {
     let upstream = await call(toOpenAIRequest(body, model, maxOutputTokens), apiKey, controller.signal);
     httpStatus = upstream.status;
     if (upstream.status === 404 || upstream.status === 503) {
@@ -94,7 +104,7 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
       const next = await fallbackFor(model, apiKey);
       if (!next) return fail(upstream.status, detail.slice(0, 500));
       log(`模型网关：${model} 返回 ${upstream.status}，改用 ${next} 重试一次`);
-      finish = await record(next);
+      finish = record(next);
       upstream = await call(toOpenAIRequest(body, next, maxOutputTokens), apiKey, controller.signal);
       httpStatus = upstream.status;
     }
@@ -119,7 +129,7 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     const translator = createStreamTranslator(model);
     const decoder = new TextDecoder();
-    let buffer = "";
+    let buffer = ""; let usageSeen = false;
     for await (const piece of upstream.body as unknown as AsyncIterable<Uint8Array>) {
       buffer += decoder.decode(piece, { stream: true });
       let newline: number;
@@ -128,11 +138,13 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (!data || data === "[DONE]") continue;
-        try { const chunk = JSON.parse(data); takeUsage(chunk); response.write(translator.push(chunk)); } catch { /* 单个坏块跳过，不中断整轮 */ }
+        try { const chunk = JSON.parse(data); if (chunk.usage) usageSeen = true; takeUsage(chunk); response.write(translator.push(chunk)); } catch { /* 单个坏块跳过，不中断整轮 */ }
       }
     }
     response.end(translator.finish());
-    finish?.({ status: "done", httpStatus, ...usage });
+    // 流结束了却没等到用量块，用量不可信，记不完整。
+    finish?.({ status: usageSeen ? "done" : "incomplete", httpStatus, ...usage });
+    }
   }
 
   const server = createServer((incoming, response) => {

@@ -116,3 +116,24 @@ test("Workers 登录接口只接受同源 POST 并设 HttpOnly cookie", () => {
   const access = readFileSync(new URL("../app/lib/server/analytics-access.ts", import.meta.url), "utf8");
   assert.match(access, /export function assertSameOrigin/);
 });
+
+test("坏的会话编号和查询出错都只返回错误，不让进程崩", async (t) => {
+  const { base, admin } = await start(t, "pw-123456");
+  const headers = { "x-ctf-admin": admin.login("pw-123456")! };
+  assert.equal((await fetch(`${base}/internal/conversations/%E0%A4%A`, { headers })).status, 400);
+  assert.equal((await fetch(`${base}/health`)).status, 200);
+});
+
+test("连续输错密码后暂时锁定登录", async (t) => {
+  const { base } = await start(t, "pw-123456");
+  const login = (password: string) => fetch(`${base}/internal/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
+  for (let i = 0; i < 5; i++) assert.equal((await login("x")).status, 401);
+  const locked = await login("pw-123456");
+  assert.equal(locked.status, 429);
+  assert.deepEqual(await locked.json(), { error: "密码错误次数太多，请稍后再试" });
+});
+
+test("用量库打不开时 Agent 照常服务客户", () => {
+  const server = readFileSync(new URL("../agent/server.ts", import.meta.url), "utf8");
+  assert.match(server, /try \{ usage = createUsageStore\([\s\S]*?\ncatch \(error\)/);
+});

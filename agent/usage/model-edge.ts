@@ -40,8 +40,8 @@ export function createModelEdge({ upstream, fetch: request = fetch }: Options) {
     const takeStart = (message: { id?: unknown; model?: unknown; usage?: Usage } | undefined) => {
       if (!message) return;
       if (typeof message.id === "string") known.responseId = message.id;
-      // 兼容接口会原样回显请求里的 claude-* 别名，那不是上游确认的模型，不记。
-      if (typeof message.model === "string" && message.model !== sdkModel) known.upstreamModel = message.model;
+      // 兼容接口会原样回显请求里的 claude-* 别名，那不是上游确认的模型，不记；deepseek-* 是真实名字，照记。
+      if (typeof message.model === "string" && !(message.model === sdkModel && message.model.startsWith("claude-"))) known.upstreamModel = message.model;
       known.inputTokens = count(message.usage?.input_tokens) ?? known.inputTokens;
       known.cacheReadTokens = count(message.usage?.cache_read_input_tokens) ?? known.cacheReadTokens;
       known.cacheWriteTokens = count(message.usage?.cache_creation_input_tokens) ?? known.cacheWriteTokens;
@@ -54,6 +54,10 @@ export function createModelEdge({ upstream, fetch: request = fetch }: Options) {
       controller.abort();
       finish?.({ status: "incomplete", httpStatus, ...known });
     });
+    // 上游连接断开、读流出错等任何异常：先把这条记为不完整（只记一次），再交给外层回 502 或结束响应。
+    try { await relay(); } catch (error) { finish?.({ status: "incomplete", httpStatus, ...known }); throw error; }
+
+    async function relay() {
     const upstreamResponse = await request(`${base}${rest}${url.search}`, { method: incoming.method, headers, body: ["GET", "HEAD"].includes(incoming.method ?? "") ? undefined : body, signal: controller.signal });
     httpStatus = upstreamResponse.status;
     const outgoing: Record<string, string> = {};
@@ -95,6 +99,7 @@ export function createModelEdge({ upstream, fetch: request = fetch }: Options) {
     read(buffer.trim());
     response.end();
     finish?.({ status: delta ? "done" : "incomplete", httpStatus, ...known });
+    }
   }
 
   const server = createServer((incoming, response) => {

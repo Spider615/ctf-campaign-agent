@@ -55,9 +55,9 @@ async function agentFetch(url: string, request: AgentRequest | AnalyticsExplainR
   }
 }
 
-export async function explainAnalytics(request: AnalyticsExplainRequest, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string) {
+export async function explainAnalytics(request: AnalyticsExplainRequest, signal?: AbortSignal, answerSchema?: string, visualizationSchema?: string, usageHeaders: Record<string, string> = {}) {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
-  const response = await agentFetch(`${base}/analytics/explain`, request, undefined, signal, answerSchema, visualizationSchema);
+  const response = await agentFetch(`${base}/analytics/explain`, request, undefined, signal, answerSchema, visualizationSchema, usageHeaders);
   if (!response.ok) throw await agentHttpError(response);
   return validateAnalyticsAnswerResult(await response.json(), request.report);
 }

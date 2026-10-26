@@ -165,10 +165,77 @@ test("网关正常请求也按模型状态记厂商", async (t) => {
   };
   const gateway = createModelGateway({ baseUrl: "https://gw.example/models/v1", fetch: fake, log: () => {} });
   const base = await gateway.listen(); t.after(() => gateway.close());
-  for (let i = 0; i < 2; i++) await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "claude-sonnet-5-5", messages: [] }) })).json();
-  await until(() => requests(store, T1).length === 2 && requests(store, T1).every((item) => item.status === "done"));
-  assert.deepEqual(requests(store, T1).map((item) => item.vendor), ["anthropic", "anthropic"]);
+  const send = async () => { await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "claude-sonnet-5-5", messages: [] }) })).json(); };
+  // 第一次请求不等模型状态（后台刷新），厂商先记未确认；状态到手后的请求记上厂商。
+  await send(); await until(() => statusCalls === 1); await new Promise((resolve) => setTimeout(resolve, 10));
+  await send(); await send();
+  await until(() => requests(store, T1).length === 3 && requests(store, T1).every((item) => item.status === "done"));
+  assert.deepEqual(requests(store, T1).map((item) => item.vendor), [null, "anthropic", "anthropic"]);
   assert.equal(statusCalls, 1, "模型状态按间隔缓存");
+});
+
+test("上游连接断开时请求记为不完整，不留在执行中", async (t) => {
+  const store = setup(t);
+  const encoder = new TextEncoder();
+  let mode: "before" | "during" = "before";
+  const edge = createModelEdge({ upstream: "https://api.deepseek.com/anthropic", fetch: async () => {
+    if (mode === "before") throw new TypeError("fetch failed");
+    return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(encoder.encode(sse([{ type: "message_start", message: { id: "msg_r", model: "deepseek-flash", usage: { input_tokens: 9 } } }])));
+      setTimeout(() => controller.error(new TypeError("terminated")), 10);
+    } }), { headers: { "content-type": "text/event-stream" } });
+  } });
+  const base = await edge.listen(); t.after(() => edge.close());
+  assert.equal((await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", body: SDK_BODY })).status, 502);
+  mode = "during";
+  await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", body: SDK_BODY })).text().catch(() => "");
+  await until(() => requests(store, T1).length === 2 && requests(store, T1).every((item) => item.status !== "running"));
+  assert.deepEqual(requests(store, T1).map((item) => [item.status, item.inputTokens]), [["incomplete", null], ["incomplete", 9]]);
+});
+
+test("DeepSeek 返回的真实模型名与请求同名时照样记", async (t) => {
+  const store = setup(t);
+  const edge = createModelEdge({ upstream: "https://api.deepseek.com/anthropic", fetch: async () => Response.json({ id: "m", model: "deepseek-flash", usage: { input_tokens: 1, output_tokens: 1 } }) });
+  const base = await edge.listen(); t.after(() => edge.close());
+  await (await fetch(`${base}/t/${T1}/campaign/v1/messages`, { method: "POST", body: JSON.stringify({ model: "deepseek-flash" }) })).json();
+  await until(() => requests(store, T1)[0]?.status === "done");
+  assert.equal(requests(store, T1)[0].upstreamModel, "deepseek-flash");
+});
+
+test("网关：模型状态读不到时不拖慢请求，也不重复去读", async (t) => {
+  const store = setup(t);
+  let statusCalls = 0;
+  const fake: typeof fetch = async (input, init) => {
+    if (String(input).endsWith("/models/status")) {
+      statusCalls++;
+      return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("timeout", "TimeoutError"))));
+    }
+    return Response.json({ id: "c", model: "m", choices: [{ finish_reason: "stop", message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
+  };
+  const gateway = createModelGateway({ baseUrl: "https://gw.example/models/v1", fetch: fake, log: () => {} });
+  const base = await gateway.listen(); t.after(() => gateway.close());
+  const started = performance.now();
+  for (let i = 0; i < 2; i++) await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "m", messages: [] }) })).json();
+  assert.ok(performance.now() - started < 1000, "记录用量不能等模型状态");
+  assert.ok(statusCalls <= 1);
+  await until(() => requests(store, T1).length === 2 && requests(store, T1).every((item) => item.status === "done"));
+});
+
+test("网关：上游连接断开时记为不完整；流式没等到用量块也算不完整", async (t) => {
+  const store = setup(t);
+  let mode: "throw" | "nousage" = "throw";
+  const fake: typeof fetch = async (input) => {
+    if (String(input).endsWith("/models/status")) return Response.json({ data: [] });
+    if (mode === "throw") throw new TypeError("fetch failed");
+    return new Response(`data: ${JSON.stringify({ id: "c", choices: [{ delta: { content: "好" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  };
+  const gateway = createModelGateway({ baseUrl: "https://gw.example/models/v1", fetch: fake, log: () => {} });
+  const base = await gateway.listen(); t.after(() => gateway.close());
+  await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "m", messages: [] }) })).text();
+  mode = "nousage";
+  await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "m", stream: true, messages: [] }) })).text();
+  await until(() => requests(store, T1).length === 2 && requests(store, T1).every((item) => item.status !== "running"));
+  assert.deepEqual(requests(store, T1).map((item) => item.status), ["incomplete", "incomplete"]);
 });
 
 test("并发两轮的请求各归各的", async (t) => {

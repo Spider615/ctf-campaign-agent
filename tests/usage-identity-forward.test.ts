@@ -34,4 +34,5 @@ test("四个入口都把身份交给 Agent 请求", () => {
   assert.match(read("app/api/analytics/insight/ask/route.ts"), /forwardedUsageHeaders\(request, \{ owner \}\)/);
   assert.match(read("app/lib/server/runtime.ts"), /forwardedUsageHeaders\(request, \{ owner \}\)/, "附件问答转发");
   assert.match(read("app/api/sessions/[id]/turns/route.ts"), /forwardedUsageHeaders\(request, \{ conversation: id \}\)/);
+  assert.match(read("app/api/analytics/reports/[id]/explain/route.ts"), /forwardedUsageHeaders\(request, \{ owner, conversation: /, "报告解读按报告归会话");
 });

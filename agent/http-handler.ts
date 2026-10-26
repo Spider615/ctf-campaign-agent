@@ -40,7 +40,17 @@ type AgentHttpOptions = {
 };
 
 // 管理端接口：登录换凭据；其余只读查询都要有效凭据，未登录时不返回任何客户内容。
-async function handleInternal(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined) {
+// 任何异常只回错误，不让未捕获的拒绝打崩整个 Agent 进程。
+async function handleInternal(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined, logger: Pick<Console, "error">) {
+  try { await internalRoutes(request, response, usage, admin); }
+  catch (error) {
+    if (error instanceof URIError) return send(response, 400, { error: "会话编号不正确" });
+    logger.error(`[internal] 查询失败：${error instanceof Error ? error.message : error}`);
+    send(response, 500, { error: "管理端查询失败，可以重试" });
+  }
+}
+
+async function internalRoutes(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined) {
   if (!admin?.configured || !usage) return send(response, 503, { error: "管理端未配置" });
   const url = new URL(request.url ?? "/", "http://local");
   if (url.pathname === "/internal/login") {
@@ -48,6 +58,7 @@ async function handleInternal(request: IncomingMessage, response: ServerResponse
     let password = "";
     try { const body = await readJson(request) as { password?: unknown }; password = typeof body?.password === "string" ? body.password : ""; }
     catch { return send(response, 400, { error: "请求不是有效的 JSON" }); }
+    if (admin.locked()) return send(response, 429, { error: "密码错误次数太多，请稍后再试" });
     const issued = admin.login(password);
     return issued ? send(response, 200, { token: issued, maxAge: ADMIN_SESSION_SECONDS }) : send(response, 401, { error: "密码不对" });
   }
@@ -100,7 +111,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
 
 export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns(), usage, channel = "deepseek", admin }: AgentHttpOptions) {
   const isInternal = admin ? (value: string | undefined) => admin.verify(value) : undefined;
-  const internalApi = (request: IncomingMessage, response: ServerResponse) => handleInternal(request, response, usage, admin);
+  const internalApi = (request: IncomingMessage, response: ServerResponse) => handleInternal(request, response, usage, admin, logger);
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const identity = () => usageIdentity(request, isInternal);
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
@@ -194,7 +205,8 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
         const started = performance.now();
         // signal 是这一轮自己的停止信号：登记的运行用运行的信号（断开连接不算取消，只有点停止才算），其余用连接的信号。
         const record = <T,>(work: (emitTrace: (event: AgentTraceEvent) => void) => Promise<T>, signal: AbortSignal = requestController.signal) => recordTurn(usage, { ...identity(), entry: "analysis", channel, question: analyticsRequest.question }, work,
-          (result) => ({ status: (result as { status?: string }).status === "answered" || (result as { status?: string }).status === undefined ? "answered" : "partial", reply: analyticsAnswerText(result as Parameters<typeof analyticsAnswerText>[0]) }),
+          // v4 的 unavailable 是没答上，记失败；partial 才是部分回答。
+          (result) => { const status = (result as { status?: string }).status; return { status: status === "partial" ? "partial" : status === "unavailable" ? "failed" : "answered", reply: analyticsAnswerText(result as Parameters<typeof analyticsAnswerText>[0]) }; },
           signal, publicError);
         const runId = request.headers["x-analytics-run-id"];
         if (isDatabaseStream && typeof runId === "string") {
