@@ -13,7 +13,7 @@ export type TraceStep = { title: string; status: string; summary?: string; start
 export type TurnStart = { id: string; entry: UsageEntry; channel: UsageChannel; visitor: string | null; conversationId: string | null; internal: boolean; question: string; startedAt: number };
 export type TurnFinish = { status: Exclude<TurnStatus, "running" | "interrupted">; reply: string | null; error: string | null; trace: TraceStep[]; finishedAt: number };
 export type ModelRequestStart = { id: string; turnId: string; source: string; channel: UsageChannel; sdkModel: string; sentModel: string; vendor: string | null; vendorBasis: string; startedAt: number };
-export type ModelRequestFinish = { status: Exclude<RequestStatus, "running" | "interrupted">; httpStatus: number | null; responseId: string | null; upstreamModel: string | null; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; finishedAt: number };
+export type ModelRequestFinish = { status: Exclude<RequestStatus, "running" | "interrupted">; httpStatus: number | null; responseId: string | null; upstreamModel: string | null; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; finishedAt: number; vendor?: string };
 export type UsageFilter = { from: string; to: string; entry?: UsageEntry; channel?: UsageChannel; model?: string; status?: TurnStatus; keyword?: string };
 type Tokens = { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null };
 export type UsageOverview = {
@@ -23,7 +23,7 @@ export type UsageOverview = {
   durations: { turnsMs: { p50: number | null; p90: number | null } };
 };
 export type UsageConversationRow = { key: string; entry: UsageEntry; visitor: string | null; title: string; lastQuestion: string; turns: number; channels: UsageChannel[]; inputTokens: number | null; outputTokens: number | null; durationMs: number; lastAt: number; internal: boolean };
-export type UsageRequestRecord = ModelRequestStart & Partial<Omit<ModelRequestFinish, "status">> & { status: RequestStatus };
+export type UsageRequestRecord = ModelRequestStart & Partial<Omit<ModelRequestFinish, "status" | "vendor">> & { status: RequestStatus };
 export type UsageTurnRecord = TurnStart & Partial<Omit<TurnFinish, "status">> & { status: TurnStatus; sdkStarts: number; requests: UsageRequestRecord[] };
 export type UsageConversationDetail = { key: string; entry: UsageEntry; visitor: string | null; turns: UsageTurnRecord[] };
 export type UsageStore = {
@@ -107,8 +107,9 @@ export function createUsageStore(path: string): UsageStore {
         .run(request.id, request.turnId, request.source, request.channel, request.sdkModel, request.sentModel, request.vendor, request.vendorBasis, request.startedAt);
     },
     finishRequest(id, result) {
-      db.prepare("UPDATE usage_request SET status = ?, http_status = ?, response_id = ?, upstream_model = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, finished_at = ? WHERE id = ? AND status = 'running'")
-        .run(result.status, result.httpStatus, result.responseId, result.upstreamModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens, result.finishedAt, id);
+      // 厂商只在开始时未确认、收尾时才拿到时补上，不覆盖已记的值。
+      db.prepare("UPDATE usage_request SET status = ?, http_status = ?, response_id = ?, upstream_model = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, finished_at = ?, vendor = COALESCE(vendor, ?) WHERE id = ? AND status = 'running'")
+        .run(result.status, result.httpStatus, result.responseId, result.upstreamModel, result.inputTokens, result.outputTokens, result.cacheReadTokens, result.cacheWriteTokens, result.finishedAt, result.vendor ?? null, id);
     },
     overview(filter) {
       const { sql, params } = where(filter);

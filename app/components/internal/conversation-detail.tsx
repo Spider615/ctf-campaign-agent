@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { internalGet } from "../../lib/internal/client";
+import { MarkdownText } from "../chat/markdown-text";
 import { CHANNEL_LABEL, ENTRY_LABEL, durationText, requestStatusText, timeText, tokenText, turnStatusText } from "../../lib/internal/format";
 import type { ConversationDetail as Detail, TurnRecord } from "../../lib/internal/types";
 import { DataTable, InternalShell, Notice, Panel } from "./internal-shell";
@@ -15,9 +16,9 @@ function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
   return (
     <Panel title={`第 ${index + 1} 轮`} note={`${timeText(turn.startedAt)} · ${CHANNEL_LABEL[turn.channel]} · 耗时 ${durationText(elapsed)} · SDK 启动 ${turn.sdkStarts} 次`}>
       <div className="space-y-3 text-sm">
-        <p className={`font-medium ${statusTone(turn.status)}`}>{turnStatusText(turn.status)}{turn.internal ? " · 内部测试" : ""}</p>
+        <p className={`font-medium ${statusTone(turn.status)}`}>{turnStatusText(turn.status)}</p>
         <div className="rounded-xl bg-[#f1f7ff] px-4 py-3"><p className="text-[12px] text-[#637a95]">客户提问</p><p className="mt-1 whitespace-pre-wrap text-[#20314d]">{turn.question}</p></div>
-        {turn.reply ? <div className="rounded-xl border border-[#d9e7f6] px-4 py-3"><p className="text-[12px] text-[#637a95]">公开回复</p><p className="mt-1 whitespace-pre-wrap leading-6 text-[#293b54]">{turn.reply}</p></div> : null}
+        {turn.reply ? <div className="rounded-xl border border-[#d9e7f6] px-4 py-3"><p className="text-[12px] text-[#637a95]">公开回复</p><MarkdownText text={turn.reply} /></div> : null}
         {turn.error ? <Notice tone="error">{turn.error}</Notice> : null}
         {turn.trace?.length ? (
           <details className="rounded-xl border border-[#d9e7f6] px-4 py-2">
@@ -30,28 +31,20 @@ function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
           </details>
         ) : null}
         {turn.requests.length ? (
-          <DataTable head={["开始", "来源", "厂商", "发送模型", "上游返回模型", "状态", "输入", "输出", "缓存命中", "缓存写入", "耗时", "技术详情"]} minWidth={1150}>
+          <DataTable head={["开始", "来源", "厂商", "模型", "状态", "输入", "输出", "缓存命中", "缓存写入", "耗时"]} minWidth={900}>
             {turn.requests.map((request) => (
               <tr key={request.id}>
                 <td className="whitespace-nowrap">{timeText(request.startedAt)}</td>
                 <td>{request.source}</td>
                 <td>{request.vendor ?? "未确认"}</td>
-                <td className="font-mono text-[12px]">{request.sentModel}</td>
-                <td className="font-mono text-[12px]">{request.upstreamModel ?? "未返回"}</td>
+                {/* 只显示实际用的模型：上游返回了就用它，没返回用实际发出去的名字。 */}
+                <td className="font-mono text-[12px] whitespace-nowrap">{request.upstreamModel ?? request.sentModel}</td>
                 <td className={statusTone(request.status)}>{requestStatusText(request.status)}{request.httpStatus && request.httpStatus !== 200 ? ` ${request.httpStatus}` : ""}</td>
                 <td>{tokenText(request.inputTokens)}</td>
                 <td>{tokenText(request.outputTokens)}</td>
                 <td>{tokenText(request.cacheReadTokens)}</td>
                 <td>{tokenText(request.cacheWriteTokens)}</td>
                 <td className="whitespace-nowrap">{durationText(request.finishedAt ? request.finishedAt - request.startedAt : undefined)}</td>
-                <td>
-                  <details className="text-[12px] text-[#637a95]">
-                    <summary className="cursor-pointer">展开</summary>
-                    <p>SDK 模型名：<span className="font-mono">{request.sdkModel}</span></p>
-                    <p>响应编号：<span className="font-mono">{request.responseId ?? "未返回"}</span></p>
-                    <p>厂商依据：{request.vendorBasis}</p>
-                  </details>
-                </td>
               </tr>
             ))}
           </DataTable>

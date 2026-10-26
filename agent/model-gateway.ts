@@ -73,8 +73,12 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
     const model = String(body.model ?? "");
     const controller = new AbortController();
     // 每次真实上游请求一条记录；回退重试是独立的一条。厂商取 /models/status 的 owned_by，查不到不猜。
-    const record = (sentModel: string) => turnId && source ? startModelRequest({ turnId, source, channel: "juzi", sdkModel: model, sentModel,
-      vendor: cachedVendor(sentModel, apiKey), vendorBasis: "网关模型状态 owned_by" }) : undefined;
+    // 开始时厂商读缓存（不等状态接口）；收尾时缓存已有就补上，免得刚启动的第一条记成未确认。
+    const record = (sentModel: string) => {
+      if (!turnId || !source) return undefined;
+      const finishRow = startModelRequest({ turnId, source, channel: "juzi", sdkModel: model, sentModel, vendor: cachedVendor(sentModel, apiKey), vendorBasis: "网关模型状态 owned_by" });
+      return (result: Parameters<typeof finishRow>[0]) => finishRow({ ...result, vendor: cachedVendor(sentModel, apiKey) ?? undefined });
+    };
     const usage = { responseId: null as string | null, upstreamModel: null as string | null, inputTokens: null as number | null, outputTokens: null as number | null, cacheReadTokens: null as number | null, cacheWriteTokens: null as number | null };
     // 网关不返回缓存写入，记 null；缓存命中只有上游给了才记。
     const takeUsage = (chunk: { id?: unknown; model?: unknown; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }) => {
@@ -157,6 +161,8 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
   });
 
   return {
+    // 启动时预读一次模型状态，第一条请求就能记上厂商。
+    warm: (apiKey: string) => loadStatus(apiKey, false).then(() => undefined),
     // 只听回环地址、端口随机；返回给 SDK 用的 ANTHROPIC_BASE_URL。unref：转换层不单独撑住进程，脚本跑完能正常退出。
     listen: () => new Promise<string>((resolve) => server.listen(0, "127.0.0.1", () => { server.unref(); resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`); })),
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),

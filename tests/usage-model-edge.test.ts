@@ -166,11 +166,11 @@ test("网关正常请求也按模型状态记厂商", async (t) => {
   const gateway = createModelGateway({ baseUrl: "https://gw.example/models/v1", fetch: fake, log: () => {} });
   const base = await gateway.listen(); t.after(() => gateway.close());
   const send = async () => { await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "claude-sonnet-5-5", messages: [] }) })).json(); };
-  // 第一次请求不等模型状态（后台刷新），厂商先记未确认；状态到手后的请求记上厂商。
+  // 第一次请求不等模型状态（后台刷新）；状态在请求结束前回来时，收尾把厂商补上。
   await send(); await until(() => statusCalls === 1); await new Promise((resolve) => setTimeout(resolve, 10));
   await send(); await send();
   await until(() => requests(store, T1).length === 3 && requests(store, T1).every((item) => item.status === "done"));
-  assert.deepEqual(requests(store, T1).map((item) => item.vendor), [null, "anthropic", "anthropic"]);
+  assert.deepEqual(requests(store, T1).map((item) => item.vendor), ["anthropic", "anthropic", "anthropic"]);
   assert.equal(statusCalls, 1, "模型状态按间隔缓存");
 });
 
@@ -236,6 +236,14 @@ test("网关：上游连接断开时记为不完整；流式没等到用量块�
   await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "m", stream: true, messages: [] }) })).text();
   await until(() => requests(store, T1).length === 2 && requests(store, T1).every((item) => item.status !== "running"));
   assert.deepEqual(requests(store, T1).map((item) => item.status), ["incomplete", "incomplete"]);
+});
+
+test("网关可在启动时预读模型状态", async (t) => {
+  let statusCalls = 0;
+  const gateway = createModelGateway({ baseUrl: "https://gw.example/models/v1", fetch: async (input) => { if (String(input).endsWith("/models/status")) statusCalls++; return Response.json({ data: [] }); }, log: () => {} });
+  t.after(() => gateway.close());
+  await gateway.warm("k1");
+  assert.equal(statusCalls, 1);
 });
 
 test("并发两轮的请求各归各的", async (t) => {

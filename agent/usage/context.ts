@@ -35,8 +35,10 @@ export function parseTurnPath(path: string): { turnId?: string; source?: string;
 export function startModelRequest(start: Omit<ModelRequestStart, "id" | "startedAt">) {
   const id = crypto.randomUUID(); let open = true;
   safely(() => recorder?.startRequest({ ...start, id, startedAt: Date.now() }));
-  return (finish: Omit<ModelRequestFinish, "finishedAt">) => {
+  // vendor：开始时没确认、收尾时才拿到的厂商；undefined 表示沿用开始时记的值。
+  return (finish: Omit<ModelRequestFinish, "finishedAt"> & { vendor?: string }) => {
     if (!open) return; open = false;
-    safely(() => recorder?.finishRequest(id, { ...finish, finishedAt: Date.now() }));
+    const { vendor, ...result } = finish;
+    safely(() => recorder?.finishRequest(id, { ...result, finishedAt: Date.now(), ...(vendor ? { vendor } : {}) }));
   };
 }

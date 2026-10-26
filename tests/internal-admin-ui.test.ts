@@ -51,12 +51,6 @@ test("Token 都经 tokenText 渲染，401 跳到登录页", () => {
   assert.match(api, /\/internal\/login/);
 });
 
-test("会话详情展示真实厂商和模型，SDK 别名放在技术详情里", () => {
-  const detail = read("app/components/internal/conversation-detail.tsx");
-  assert.match(detail, /sentModel/);
-  assert.match(detail, /upstreamModel/);
-  assert.match(detail, /<details[\s\S]*sdkModel/);
-});
 
 test("管理端页面不套客户侧栏", () => {
   assert.match(read("app/components/app-shell.tsx"), /pathname\.startsWith\("\/internal\/stats"\)/);
@@ -77,4 +71,13 @@ test("设置页：列出渠道、未配置的不能选、切换后提示从下�
   assert.match(read("app/components/internal/internal-shell.tsx"), /\/internal\/settings/);
   assert.match(read("app/api/internal/[...path]/route.ts"), /export async function POST/);
   assert.match(read("app/api/internal/[...path]/route.ts"), /assertSameOrigin\(request\)/);
+});
+
+test("会话详情：回复按 Markdown 渲染，不显示内部测试和技术详情，模型只显示实际用的", () => {
+  const detail = read("app/components/internal/conversation-detail.tsx");
+  assert.match(detail, /<MarkdownText text=\{turn\.reply\}/);
+  assert.doesNotMatch(detail, /内部测试/);
+  assert.doesNotMatch(detail, /技术详情|sdkModel|SDK 模型名/);
+  assert.match(detail, /request\.upstreamModel \?\? request\.sentModel/);
+  assert.doesNotMatch(detail, /"发送模型"|"上游返回模型"/);
 });

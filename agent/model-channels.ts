@@ -30,6 +30,8 @@ export async function createModelChannels({ env = process.env, statePath, fetch:
     const gateway = createModelGateway({ baseUrl: env.MODEL_GATEWAY_URL || DEFAULT_MODEL_GATEWAY_URL, maxOutputTokens: Number(env.MODEL_MAX_OUTPUT_TOKENS) || 8192, ...(request ? { fetch: request } : {}) });
     ready.set("juzi", { channel: "juzi", model: sdkModelName(env.AGENT_MODEL || DEFAULT_AGENT_MODEL), modelBaseUrl: await gateway.listen(), apiKey: juziKey });
     closers.push(gateway.close);
+    // 后台预读模型状态，第一条请求就能记上厂商；失败不影响启动。
+    void gateway.warm(juziKey).catch(() => undefined);
   }
 
   const preferred = (env.AGENT_PROVIDER?.trim() || DEFAULT_AGENT_PROVIDER) as UsageChannel;
