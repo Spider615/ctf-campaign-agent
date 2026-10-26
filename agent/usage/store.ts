@@ -19,7 +19,7 @@ type Tokens = { inputTokens: number | null; outputTokens: number | null; cacheRe
 export type UsageOverview = {
   days: Array<{ day: string; channel: UsageChannel; turns: number; requests: number; incompleteRequests: number } & Tokens>;
   statuses: Record<TurnStatus, number>;
-  models: Array<{ channel: UsageChannel; vendor: string | null; model: string; requests: number; inputTokens: number | null; outputTokens: number | null }>;
+  models: Array<{ channel: UsageChannel; model: string; requests: number; inputTokens: number | null; outputTokens: number | null }>;
   durations: { turnsMs: { p50: number | null; p90: number | null } };
 };
 export type UsageConversationRow = { key: string; entry: UsageEntry; visitor: string | null; title: string; lastQuestion: string; turns: number; channels: UsageChannel[]; inputTokens: number | null; outputTokens: number | null; durationMs: number; lastAt: number; internal: boolean };
@@ -121,9 +121,9 @@ export function createUsageStore(path: string): UsageStore {
           inputTokens: num(row.input), outputTokens: num(row.output), cacheReadTokens: num(row.cache_read), cacheWriteTokens: num(row.cache_write) }));
       const statuses = Object.fromEntries(TURN_STATUSES.map((status) => [status, 0])) as Record<TurnStatus, number>;
       for (const row of all(`SELECT t.status, COUNT(*) AS n FROM usage_turn t WHERE ${sql} GROUP BY t.status`, params)) statuses[row.status as TurnStatus] = Number(row.n);
-      const models = all(`SELECT t.channel, r.vendor, COALESCE(r.upstream_model, r.sent_model) AS model, COUNT(*) AS requests, SUM(r.input_tokens) AS input, SUM(r.output_tokens) AS output
-        FROM usage_turn t JOIN usage_request r ON r.turn_id = t.id WHERE ${sql} GROUP BY t.channel, r.vendor, model ORDER BY t.channel, requests DESC`, params)
-        .map((row) => ({ channel: row.channel as UsageChannel, vendor: (row.vendor as string | null) ?? null, model: String(row.model), requests: Number(row.requests), inputTokens: num(row.input), outputTokens: num(row.output) }));
+      const models = all(`SELECT t.channel, COALESCE(r.upstream_model, r.sent_model) AS model, COUNT(*) AS requests, SUM(r.input_tokens) AS input, SUM(r.output_tokens) AS output
+        FROM usage_turn t JOIN usage_request r ON r.turn_id = t.id WHERE ${sql} GROUP BY t.channel, model ORDER BY t.channel, requests DESC`, params)
+        .map((row) => ({ channel: row.channel as UsageChannel, model: String(row.model), requests: Number(row.requests), inputTokens: num(row.input), outputTokens: num(row.output) }));
       const spans = all(`SELECT t.finished_at - t.started_at AS ms FROM usage_turn t WHERE ${sql} AND t.finished_at IS NOT NULL ORDER BY ms`, params).map((row) => Number(row.ms));
       return { days, statuses, models, durations: { turnsMs: { p50: percentile(spans, 0.5), p90: percentile(spans, 0.9) } } };
     },

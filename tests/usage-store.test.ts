@@ -113,3 +113,12 @@ test("轮次收尾保存公开回复和轨迹，详情按时间排序", () => wi
   assert.equal(store.conversation("analysis:none"), null);
   assert.ok(readFileSync(path).length > 0);
 }));
+
+test("按模型汇总不按厂商拆行", () => withStore((store) => {
+  store.startTurn(turn("t1", { channel: "juzi" }));
+  store.startRequest({ id: "r1", turnId: "t1", source: "analysis", channel: "juzi", sdkModel: "m", sentModel: "claude-sonnet-5-5", vendor: null, vendorBasis: "x", startedAt: at("2026-10-20T02:00:01Z") });
+  store.finishRequest("r1", { ...done, upstreamModel: "claude-5.5-sonnet", inputTokens: 1 });
+  store.startRequest({ id: "r2", turnId: "t1", source: "analysis", channel: "juzi", sdkModel: "m", sentModel: "claude-sonnet-5-5", vendor: "anthropic", vendorBasis: "x", startedAt: at("2026-10-20T02:00:02Z") });
+  store.finishRequest("r2", { ...done, upstreamModel: "claude-5.5-sonnet", inputTokens: 2 });
+  assert.deepEqual(store.overview(DAY).models.map((row) => [row.model, row.requests, row.inputTokens]), [["claude-5.5-sonnet", 2, 3]]);
+}));

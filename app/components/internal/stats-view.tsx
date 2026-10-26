@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { internalGet } from "../../lib/internal/client";
-import { CHANNEL_LABEL, durationText, groupByChannel, tokenText, turnStatusText } from "../../lib/internal/format";
+import { CHANNEL_LABEL, TURN_STATUS_HINT, durationText, groupByChannel, tokenText, turnStatusText } from "../../lib/internal/format";
 import type { Overview } from "../../lib/internal/types";
 import { UsageFilters, useUsageQuery } from "./filters";
 import { DataTable, InternalShell, Notice, Panel } from "./internal-shell";
@@ -32,11 +32,12 @@ export function StatsView() {
             <Panel title="问答轮次" note={`轮次耗时 p50 ${durationText(overview.durations.turnsMs.p50)} · p90 ${durationText(overview.durations.turnsMs.p90)}`}>
               <div className="flex flex-wrap gap-2">
                 {Object.entries(overview.statuses).map(([status, count]) => (
-                  <span key={status} className="rounded-lg border border-[#d9e7f6] bg-white px-3 py-1.5 text-sm text-[#293b54]">
+                  <span key={status} title={TURN_STATUS_HINT[status]} className="cursor-help rounded-lg border border-[#d9e7f6] bg-white px-3 py-1.5 text-sm text-[#293b54]">
                     {turnStatusText(status)} <b className="ml-1">{count}</b>
                   </span>
                 ))}
               </div>
+              <p className="mt-3 text-[13px] leading-6 text-[#71869f]">「答了，有保留」：{TURN_STATUS_HINT.partial}。</p>
             </Panel>
             {overview.days.length === 0 ? <Notice>这段时间没有记录。</Notice> : null}
             {groupByChannel(overview.days).map((group) => (
@@ -60,11 +61,10 @@ export function StatsView() {
             ))}
             {overview.models.length ? (
               <Panel title="按模型" note="模型取上游返回的名字，没有返回时取实际发送的名字">
-                <DataTable head={["渠道", "厂商", "模型", "请求", "输入 Token", "输出 Token"]}>
+                <DataTable head={["渠道", "模型", "请求", "输入 Token", "输出 Token"]}>
                   {overview.models.map((row) => (
-                    <tr key={`${row.channel}-${row.vendor}-${row.model}`}>
+                    <tr key={`${row.channel}-${row.model}`}>
                       <td>{CHANNEL_LABEL[row.channel]}</td>
-                      <td>{row.vendor ?? "未确认"}</td>
                       <td className="font-mono text-[13px]">{row.model}</td>
                       <td>{row.requests}</td>
                       <td>{tokenText(row.inputTokens)}</td>

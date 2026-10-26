@@ -31,12 +31,11 @@ function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
           </details>
         ) : null}
         {turn.requests.length ? (
-          <DataTable head={["开始", "来源", "厂商", "模型", "状态", "输入", "输出", "缓存命中", "缓存写入", "耗时"]} minWidth={900}>
+          <DataTable head={["开始", "来源", "模型", "状态", "输入", "输出", "缓存命中", "缓存写入", "耗时"]} minWidth={820}>
             {turn.requests.map((request) => (
               <tr key={request.id}>
                 <td className="whitespace-nowrap">{timeText(request.startedAt)}</td>
                 <td>{request.source}</td>
-                <td>{request.vendor ?? "未确认"}</td>
                 {/* 只显示实际用的模型：上游返回了就用它，没返回用实际发出去的名字。 */}
                 <td className="font-mono text-[12px] whitespace-nowrap">{request.upstreamModel ?? request.sentModel}</td>
                 <td className={statusTone(request.status)}>{requestStatusText(request.status)}{request.httpStatus && request.httpStatus !== 200 ? ` ${request.httpStatus}` : ""}</td>

@@ -3,7 +3,7 @@ import type { InternalChannel } from "./format";
 
 type Tokens = { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null };
 export type OverviewDay = { day: string; channel: InternalChannel; turns: number; requests: number; incompleteRequests: number } & Tokens;
-export type OverviewModel = { channel: InternalChannel; vendor: string | null; model: string; requests: number; inputTokens: number | null; outputTokens: number | null };
+export type OverviewModel = { channel: InternalChannel; model: string; requests: number; inputTokens: number | null; outputTokens: number | null };
 export type Overview = { days: OverviewDay[]; statuses: Record<string, number>; models: OverviewModel[]; durations: { turnsMs: { p50: number | null; p90: number | null } } };
 export type ConversationRow = { key: string; entry: string; visitor: string | null; title: string; lastQuestion: string; turns: number; channels: InternalChannel[]; inputTokens: number | null; outputTokens: number | null; durationMs: number; lastAt: number; internal: boolean };
 export type TraceStep = { title: string; status: string; summary?: string; startedAt: number; durationMs?: number };

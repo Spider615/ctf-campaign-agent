@@ -81,3 +81,16 @@ test("会话详情：回复按 Markdown 渲染，不显示内部测试和技术�
   assert.match(detail, /request\.upstreamModel \?\? request\.sentModel/);
   assert.doesNotMatch(detail, /"发送模型"|"上游返回模型"/);
 });
+
+test("问答轮次的状态带说明，部分回答讲清楚是什么", () => {
+  assert.equal(turnStatusText("partial"), "答了，有保留");
+  const stats = read("app/components/internal/stats-view.tsx");
+  assert.match(stats, /TURN_STATUS_HINT/);
+  assert.match(read("app/lib/internal/format.ts"), /partial: "[^"]*数据[^"]*"/);
+});
+
+test("统计总览和会话详情都不显示厂商", () => {
+  for (const file of ["app/components/internal/stats-view.tsx", "app/components/internal/conversation-detail.tsx"]) {
+    assert.doesNotMatch(read(file), /"厂商"|\.vendor/, `${file} 不显示厂商`);
+  }
+});
