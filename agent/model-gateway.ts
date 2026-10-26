@@ -65,8 +65,10 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
     const model = String(body.model ?? "");
     const controller = new AbortController();
     // 每次真实上游请求一条记录；回退重试是独立的一条。厂商取 /models/status 的 owned_by，查不到不猜。
-    const record = (sentModel: string) => turnId && source ? startModelRequest({ turnId, source, channel: "juzi", sdkModel: model, sentModel,
-      vendor: status?.models.find((entry) => sameModel(entry, sentModel))?.owned_by ?? null, vendorBasis: "网关模型状态 owned_by" }) : undefined;
+    // 只在记录用量时读模型状态（按 poll_interval 缓存，读失败返回空列表，厂商记为未确认）。
+    const vendorOf = async (sentModel: string) => (await loadStatus(apiKey, false)).find((entry) => sameModel(entry, sentModel))?.owned_by ?? null;
+    const record = async (sentModel: string) => turnId && source ? startModelRequest({ turnId, source, channel: "juzi", sdkModel: model, sentModel,
+      vendor: await vendorOf(sentModel), vendorBasis: "网关模型状态 owned_by" }) : undefined;
     const usage = { responseId: null as string | null, upstreamModel: null as string | null, inputTokens: null as number | null, outputTokens: null as number | null, cacheReadTokens: null as number | null, cacheWriteTokens: null as number | null };
     // 网关不返回缓存写入，记 null；缓存命中只有上游给了才记。
     const takeUsage = (chunk: { id?: unknown; model?: unknown; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }) => {
@@ -78,7 +80,7 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
       usage.inputTokens = typeof chunk.usage.prompt_tokens === "number" ? Math.max(0, chunk.usage.prompt_tokens - (cached ?? 0)) : null;
       usage.outputTokens = typeof chunk.usage.completion_tokens === "number" ? chunk.usage.completion_tokens : null;
     };
-    let finish = record(model);
+    let finish = await record(model);
     let httpStatus: number | null = null;
     response.on("close", () => {
       if (response.writableFinished) return;
@@ -92,7 +94,7 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
       const next = await fallbackFor(model, apiKey);
       if (!next) return fail(upstream.status, detail.slice(0, 500));
       log(`模型网关：${model} 返回 ${upstream.status}，改用 ${next} 重试一次`);
-      finish = record(next);
+      finish = await record(next);
       upstream = await call(toOpenAIRequest(body, next, maxOutputTokens), apiKey, controller.signal);
       httpStatus = upstream.status;
     }

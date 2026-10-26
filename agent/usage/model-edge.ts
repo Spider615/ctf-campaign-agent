@@ -40,7 +40,8 @@ export function createModelEdge({ upstream, fetch: request = fetch }: Options) {
     const takeStart = (message: { id?: unknown; model?: unknown; usage?: Usage } | undefined) => {
       if (!message) return;
       if (typeof message.id === "string") known.responseId = message.id;
-      if (typeof message.model === "string") known.upstreamModel = message.model;
+      // 兼容接口会原样回显请求里的 claude-* 别名，那不是上游确认的模型，不记。
+      if (typeof message.model === "string" && message.model !== sdkModel) known.upstreamModel = message.model;
       known.inputTokens = count(message.usage?.input_tokens) ?? known.inputTokens;
       known.cacheReadTokens = count(message.usage?.cache_read_input_tokens) ?? known.cacheReadTokens;
       known.cacheWriteTokens = count(message.usage?.cache_creation_input_tokens) ?? known.cacheWriteTokens;

@@ -57,3 +57,7 @@ test("会话详情展示真实厂商和模型，SDK 别名放在技术详情里"
   assert.match(detail, /upstreamModel/);
   assert.match(detail, /<details[\s\S]*sdkModel/);
 });
+
+test("管理端页面不套客户侧栏", () => {
+  assert.match(read("app/components/app-shell.tsx"), /pathname\.startsWith\("\/internal\/stats"\)/);
+});

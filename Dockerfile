@@ -42,6 +42,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && mysqld --version
 ENV ATTACHMENTS_PYTHON=/opt/attachment-python/bin/python3
 ENV ATTACHMENTS_DIR=/data/attachments
+ENV USAGE_DB_PATH=/data/usage/usage.sqlite
 
 # 先装依赖再拷源码，只改代码时不用重装。根目录和 agent/ 是两套独立依赖；
 # wrangler 在 devDependencies 里，但运行时要用，所以不裁剪开发依赖。

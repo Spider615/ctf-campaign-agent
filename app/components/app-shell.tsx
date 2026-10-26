@@ -48,6 +48,8 @@ function Brand() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  // 管理端（用量与执行记录）只给内部同学，不带客户的对话侧栏。
+  if (pathname.startsWith("/internal/stats") || pathname.startsWith("/internal/conversations") || pathname.startsWith("/internal/login")) return <div className="min-h-screen bg-background">{children}</div>;
   return <WorkspaceShell marketing={pathname === "/" || pathname === "/analysis" || pathname === "/campaign/new"}>{children}</WorkspaceShell>;
 }
 

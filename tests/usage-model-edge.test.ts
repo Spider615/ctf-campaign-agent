@@ -71,6 +71,18 @@ test("DeepSeek 流式取 message_start 与 message_delta 的最终用量", async
   assert.deepEqual([record.inputTokens, record.outputTokens, record.cacheReadTokens, record.cacheWriteTokens, record.responseId], [20, 7, 4, null, "msg_2"]);
 });
 
+test("DeepSeek 回显请求里的兼容别名时，不当作上游返回的模型", async (t) => {
+  const store = setup(t);
+  const edge = createModelEdge({ upstream: "https://api.deepseek.com/anthropic", fetch: async () => Response.json({ id: "msg_9", model: "claude-sonnet-4-6", usage: { input_tokens: 1, output_tokens: 1 } }) });
+  const base = await edge.listen(); t.after(() => edge.close());
+  await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", body: SDK_BODY })).json();
+  await until(() => requests(store, T1)[0]?.status === "done");
+  const [record] = requests(store, T1);
+  assert.equal(record.upstreamModel, null);
+  assert.equal(record.sentModel, "deepseek-flash");
+  assert.equal(store.overview({ from: "2000-01-01", to: "2100-01-01" }).models[0].model, "deepseek-flash");
+});
+
 test("流式中途断开记为不完整", async (t) => {
   const store = setup(t);
   const encoder = new TextEncoder();
@@ -142,6 +154,21 @@ test("网关流式取最后一块的用量", async (t) => {
   await until(() => requests(store, T1)[0]?.status === "done");
   const [record] = requests(store, T1);
   assert.deepEqual([record.inputTokens, record.outputTokens, record.cacheReadTokens, record.upstreamModel, record.vendor], [9, 2, null, "claude-5.5-sonnet", null]);
+});
+
+test("网关正常请求也按模型状态记厂商", async (t) => {
+  const store = setup(t);
+  let statusCalls = 0;
+  const fake: typeof fetch = async (input) => {
+    if (String(input).endsWith("/models/status")) { statusCalls++; return Response.json({ poll_interval_seconds: 60, data: [{ id: "claude-5.5-sonnet", aliases: ["claude-sonnet-5-5"], kind: "chat", owned_by: "anthropic", status: "available" }] }); }
+    return Response.json({ id: "c3", model: "claude-5.5-sonnet", choices: [{ finish_reason: "stop", message: { content: "ok" } }], usage: { prompt_tokens: 3, completion_tokens: 1 } });
+  };
+  const gateway = createModelGateway({ baseUrl: "https://gw.example/models/v1", fetch: fake, log: () => {} });
+  const base = await gateway.listen(); t.after(() => gateway.close());
+  for (let i = 0; i < 2; i++) await (await fetch(`${base}/t/${T1}/analysis/v1/messages`, { method: "POST", headers: { "x-api-key": "k1" }, body: JSON.stringify({ model: "claude-sonnet-5-5", messages: [] }) })).json();
+  await until(() => requests(store, T1).length === 2 && requests(store, T1).every((item) => item.status === "done"));
+  assert.deepEqual(requests(store, T1).map((item) => item.vendor), ["anthropic", "anthropic"]);
+  assert.equal(statusCalls, 1, "模型状态按间隔缓存");
 });
 
 test("并发两轮的请求各归各的", async (t) => {
