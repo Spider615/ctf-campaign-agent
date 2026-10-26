@@ -1,9 +1,8 @@
-# 选择公司统一模型网关（juzi）时填写对应的 key
-JUZI_MODELS_KEY=
-# 本地也可显式选择官方接口：AGENT_PROVIDER=deepseek，并填写对应密钥；原网关配置保留
-AGENT_PROVIDER=juzi
+# 模型服务，默认 deepseek（官方接口，填 DEEPSEEK_API_KEY）；改成 juzi 走公司统一模型网关，填 JUZI_MODELS_KEY
+AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-flash
+JUZI_MODELS_KEY=
 # 可选：模型名和网关地址，默认 claude-5.5-sonnet、https://unified-kiro-gateway.juzibot.com/models/v1
 AGENT_MODEL=
 MODEL_GATEWAY_URL=

@@ -121,10 +121,11 @@ export const DEFAULT_MODEL_GATEWAY_URL = "https://unified-kiro-gateway.juzibot.c
 export const DEFAULT_AGENT_MODEL = "claude-5.5-sonnet";
 export const DEEPSEEK_ANTHROPIC_URL = "https://api.deepseek.com/anthropic";
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash";
+export const DEFAULT_AGENT_PROVIDER = "deepseek";
 
 // 复用已选服务的官方接口；原公司网关配置独立保留，密钥只从环境读取。
 export async function modelConfigFromEnv(env: NodeJS.ProcessEnv = process.env) {
-  const provider = env.AGENT_PROVIDER?.trim() || "juzi";
+  const provider = env.AGENT_PROVIDER?.trim() || DEFAULT_AGENT_PROVIDER;
   if (provider === "deepseek") return { model: env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL, modelBaseUrl: DEEPSEEK_ANTHROPIC_URL,
     apiKey: env.DEEPSEEK_API_KEY?.trim() ?? "", apiKeyEnvName: "DEEPSEEK_API_KEY", close: async () => {} };
   if (provider !== "juzi") throw new Error(`不支持的 AGENT_PROVIDER：${provider}，请填写 juzi 或 deepseek`);

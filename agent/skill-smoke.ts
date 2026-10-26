@@ -144,7 +144,7 @@ async function main(): Promise<void> {
   if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
   const gateway = await modelConfigFromEnv();
   if (!gateway.apiKey) {
-    throw new Error("缺少 JUZI_MODELS_KEY：请先在仓库根目录的 .dev.vars 中填写，再运行真实 Skill smoke。");
+    throw new Error(`缺少 ${gateway.apiKeyEnvName}：请先在仓库根目录的 .dev.vars 中填写，再运行真实 Skill smoke。`);
   }
 
   const catalog = loadSkillCatalog(PLUGIN_DIR);
