@@ -54,9 +54,6 @@ export function UsageFilters({ withKeyword = false, withStatus = false }: { with
         </label>
       ) : null}
       {withKeyword ? <label className="grid gap-1 text-[13px] text-[#637a95]">问题关键词<Input value={draft.keyword ?? ""} onChange={(event) => set("keyword", event.target.value)} className="h-9 w-[180px]" /></label> : null}
-      <label className="flex h-9 items-center gap-1.5 text-[13px] text-[#4f6681]">
-        <input type="checkbox" checked={draft.internal === "1"} onChange={(event) => set("internal", event.target.checked ? "1" : "")} />含内部测试
-      </label>
       <Button type="submit" size="sm" className="h-9">查询</Button>
     </form>
   );

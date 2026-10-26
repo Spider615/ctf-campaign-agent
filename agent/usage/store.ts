@@ -14,7 +14,7 @@ export type TurnStart = { id: string; entry: UsageEntry; channel: UsageChannel; 
 export type TurnFinish = { status: Exclude<TurnStatus, "running" | "interrupted">; reply: string | null; error: string | null; trace: TraceStep[]; finishedAt: number };
 export type ModelRequestStart = { id: string; turnId: string; source: string; channel: UsageChannel; sdkModel: string; sentModel: string; vendor: string | null; vendorBasis: string; startedAt: number };
 export type ModelRequestFinish = { status: Exclude<RequestStatus, "running" | "interrupted">; httpStatus: number | null; responseId: string | null; upstreamModel: string | null; inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; finishedAt: number };
-export type UsageFilter = { from: string; to: string; entry?: UsageEntry; channel?: UsageChannel; model?: string; status?: TurnStatus; keyword?: string; includeInternal?: boolean };
+export type UsageFilter = { from: string; to: string; entry?: UsageEntry; channel?: UsageChannel; model?: string; status?: TurnStatus; keyword?: string };
 type Tokens = { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null };
 export type UsageOverview = {
   days: Array<{ day: string; channel: UsageChannel; turns: number; requests: number; incompleteRequests: number } & Tokens>;
@@ -69,7 +69,6 @@ export function createUsageStore(path: string): UsageStore {
 
   function where(filter: UsageFilter, alias = "t") {
     const clauses = [`${alias}.day BETWEEN ? AND ?`]; const params: Param[] = [filter.from, filter.to];
-    if (!filter.includeInternal) clauses.push(`${alias}.internal = 0`);
     if (filter.entry) { clauses.push(`${alias}.entry = ?`); params.push(filter.entry); }
     if (filter.channel) { clauses.push(`${alias}.channel = ?`); params.push(filter.channel); }
     if (filter.status) { clauses.push(`${alias}.status = ?`); params.push(filter.status); }

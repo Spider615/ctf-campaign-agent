@@ -65,7 +65,6 @@ export function parseUsageQuery(params: URLSearchParams): UsageFilter & { offset
   const status = pick("status", STATUSES); if (status) filter.status = status;
   const model = params.get("model")?.trim(); if (model) { if (model.length > 100) throw new Error("模型名太长"); filter.model = model; }
   const keyword = params.get("keyword")?.trim(); if (keyword) { if (keyword.length > 100) throw new Error("关键词最多 100 字"); filter.keyword = keyword; }
-  if (params.get("internal") === "1") filter.includeInternal = true;
   const offset = params.get("offset");
   if (offset) { const value = Number(offset); if (!Number.isSafeInteger(value) || value < 0 || value > 100_000) throw new Error("分页参数不正确"); filter.offset = value; }
   return filter;

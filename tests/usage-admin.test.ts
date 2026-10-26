@@ -45,8 +45,8 @@ test("没配密码或密钥太短时视为未配置", () => {
 });
 
 test("查询参数越界返回错误", () => {
-  assert.deepEqual(parseUsageQuery(new URLSearchParams("from=2026-10-01&to=2026-10-07&channel=juzi&keyword=金&internal=1&offset=50")),
-    { from: "2026-10-01", to: "2026-10-07", channel: "juzi", keyword: "金", includeInternal: true, offset: 50 });
+  assert.deepEqual(parseUsageQuery(new URLSearchParams("from=2026-10-01&to=2026-10-07&channel=juzi&keyword=金&offset=50")),
+    { from: "2026-10-01", to: "2026-10-07", channel: "juzi", keyword: "金", offset: 50 });
   for (const query of ["from=2026-10-08&to=2026-10-07", "from=2026-01-01&to=2026-04-04", "from=2026-10-01&to=2026-10-02&channel=openai", "from=x&to=2026-10-02", "from=2026-10-01&to=2026-10-02&keyword=" + "金".repeat(101), "from=2026-10-01&to=2026-10-02&status=done"])
     assert.throws(() => parseUsageQuery(new URLSearchParams(query)), /./, query);
 });
@@ -102,9 +102,7 @@ test("管理员凭据让这一轮记为内部流量，伪造的不算", async (t
   const ask = (credential: string, conversation: string) => fetch(`${base}/insight/ask`, { method: "POST", headers: { "content-type": "application/json", "x-ctf-admin": credential, "x-ctf-conversation": conversation }, body: JSON.stringify({ question: "哪个因素最强" }) }).then((response) => response.text());
   await ask(token, "a"); await ask("1.forged", "b");
   const headers = { "x-ctf-admin": token };
-  const rows = await (await fetch(`${base}/internal/conversations?from=2000-01-01&to=2000-03-01`, { headers })).json() as { conversations: unknown[] };
-  assert.equal(rows.conversations.length, 0);
-  const all = await (await fetch(`${base}/internal/conversations?internal=1`, { headers })).json() as { conversations: Array<{ internal: boolean; entry: string }> };
+  const all = await (await fetch(`${base}/internal/conversations`, { headers })).json() as { conversations: Array<{ internal: boolean; entry: string }> };
   const insight = all.conversations.filter((row) => row.entry === "insight");
   assert.deepEqual(insight.map((row) => row.internal).sort(), [false, true]);
 });

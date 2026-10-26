@@ -94,12 +94,10 @@ test("同一会话两轮合成一行，洞察问答每次单独一行", () => wi
   assert.equal(store.conversation("insight:turn:t3")?.turns.length, 1);
 }));
 
-test("内部流量默认不计入", () => withStore((store) => {
+test("内部流量照常计入，只打标记", () => withStore((store) => {
   store.startTurn(turn("t1", { internal: true }));
-  assert.equal(store.overview(DAY).days.length, 0);
-  assert.equal(store.conversations(DAY).length, 0);
-  assert.equal(store.overview({ ...DAY, includeInternal: true }).days.length, 1);
-  assert.equal(store.conversations({ ...DAY, includeInternal: true })[0].internal, true);
+  assert.equal(store.overview(DAY).days.length, 1);
+  assert.equal(store.conversations(DAY)[0].internal, true);
 }));
 
 test("轮次收尾保存公开回复和轨迹，详情按时间排序", () => withStore((store, path) => {
