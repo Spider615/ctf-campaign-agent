@@ -40,6 +40,7 @@ import {
   skillOf,
 } from "./skills.ts";
 import { runCampaignToolWithSkillGate } from "./tool-gate.ts";
+import { turnBaseUrl } from "./usage/context.ts";
 
 export type AgentRuntimeConfig = {
   model: string;
@@ -282,7 +283,7 @@ export function createAgentRunner(
             PATH: process.env.PATH,
             HOME: process.env.HOME,
             CLAUDE_CONFIG_DIR: config.runtimeDir,
-            ANTHROPIC_BASE_URL: config.modelBaseUrl,
+            ANTHROPIC_BASE_URL: turnBaseUrl(config.modelBaseUrl, "campaign"),
             ANTHROPIC_API_KEY: config.apiKey,
             CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
           },

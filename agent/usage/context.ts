@@ -17,10 +17,11 @@ export function safely(action: () => void) {
   try { action(); } catch (error) { console.error(`[usage] 用量记录写入失败：${error instanceof Error ? error.message : error}`); }
 }
 
-export function turnBaseUrl(base: string, source: string): string {
+// countSdkStart：SDK query 启动时为 true；运行器自己 fetch 的直连请求（如图片读取）传 false。
+export function turnBaseUrl(base: string, source: string, countSdkStart = true): string {
   const turnId = storage.getStore();
   if (!turnId) return base;
-  safely(() => recorder?.countSdkStart(turnId));
+  if (countSdkStart) safely(() => recorder?.countSdkStart(turnId));
   return `${base.replace(/\/+$/, "")}/t/${turnId}/${source}`;
 }
 

@@ -15,6 +15,9 @@ import type { InsightGraphService } from "./insight-graph.ts";
 import type { InsightAskRunner } from "./insight-ask.ts";
 import { parseAskBody } from "../app/lib/insight/ask.ts";
 import { ANALYTICS_RUN_ID, createAnalyticsRuns, type AnalyticsRuns } from "./analytics-runs.ts";
+import { analyticsAnswerText } from "../app/lib/analytics/stream.ts";
+import { recordTurn, usageIdentity } from "./usage/turns.ts";
+import type { UsageChannel, UsageStore } from "./usage/store.ts";
 
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
@@ -29,6 +32,10 @@ type AgentHttpOptions = {
   insight?: InsightGraphService;
   insightAsk?: InsightAskRunner;
   analyticsRuns?: AnalyticsRuns;
+  // 内部用量记录；没配时入口行为不变。isInternal 校验管理员凭据，判定内部流量。
+  usage?: UsageStore;
+  channel?: UsageChannel;
+  isInternal?: (token: string | undefined) => boolean;
 };
 
 function send(response: ServerResponse, status: number, body: unknown) {
@@ -63,8 +70,9 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns() }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns(), usage, channel = "deepseek", isInternal }: AgentHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const identity = () => usageIdentity(request, isInternal);
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
     const isTurn = request.method === "POST" && request.url === "/turn";
     const isStream = request.method === "POST" && request.url === "/turn/stream";
@@ -105,7 +113,9 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
       try {
         // 图谱命中缓存，问答只读已算好的内容。
         const graph = await insight.graph();
-        return send(response, 200, await insightAsk(body, graph, controller.signal));
+        // 洞察问答没有会话概念，每次提问单独一轮。
+        return send(response, 200, await recordTurn(usage, { ...identity(), conversationId: null, entry: "insight", channel, question: body.question },
+          () => insightAsk(body, graph, controller.signal), (result) => ({ status: "answered", reply: result.body }), controller.signal, publicError));
       } catch (error) {
         if (controller.signal.aborted || isTurnCancelled(error)) return;
         logger.error(`[insight] 问答失败：${error instanceof Error ? error.message : error}`);
@@ -147,11 +157,15 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
         if ((isDatabase || isDatabaseStream) && !database) return send(response, 503, { error: "历史数据库尚未启用" });
         if (!runner) return send(response, 503, { error: "营销分析解读服务尚未启动" });
         const started = performance.now();
+        // signal 是这一轮自己的停止信号：登记的运行用运行的信号（断开连接不算取消，只有点停止才算），其余用连接的信号。
+        const record = <T,>(work: (emitTrace: (event: AgentTraceEvent) => void) => Promise<T>, signal: AbortSignal = requestController.signal) => recordTurn(usage, { ...identity(), entry: "analysis", channel, question: analyticsRequest.question }, work,
+          (result) => ({ status: (result as { status?: string }).status === "answered" || (result as { status?: string }).status === undefined ? "answered" : "partial", reply: analyticsAnswerText(result as Parameters<typeof analyticsAnswerText>[0]) }),
+          signal, publicError);
         const runId = request.headers["x-analytics-run-id"];
         if (isDatabaseStream && typeof runId === "string") {
           if (!owner || !ANALYTICS_RUN_ID.test(runId)) return send(response, 400, { error: "回答标识无效" });
           const fresh = analyticsRuns.start(runId, owner, async (signal, emit) => {
-            try { return { type: "result", result: await runner(analyticsRequest, signal, emit) }; }
+            try { return { type: "result", result: await record((emitTrace) => runner(analyticsRequest, signal, (event) => { if (event.type === "trace") emitTrace(event.event); emit(event); }), signal) }; }
             catch (error) {
               if (signal.aborted || isTurnCancelled(error)) return null;
               const detail = error instanceof Error ? error.message : "本次分析暂未完成";
@@ -168,7 +182,7 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
           response.flushHeaders();
           const emit = (event: AnalyticsStreamEvent) => { if (!requestController.signal.aborted && !response.destroyed && !response.writableEnded) response.write(encodeAnalyticsStreamEvent(event)); };
           try {
-            const result = await runner(analyticsRequest, requestController.signal, emit);
+            const result = await record((emitTrace) => runner(analyticsRequest, requestController.signal, (event) => { if (event.type === "trace") emitTrace(event.event); emit(event); }));
             if (!requestController.signal.aborted) { emit({ type: "result", result }); response.end(); }
           } catch (error) {
             if (!requestController.signal.aborted && !isTurnCancelled(error)) {
@@ -180,7 +194,7 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
           return;
         }
         try {
-          const result = await runner(analyticsRequest, requestController.signal, undefined);
+          const result = await record(() => runner(analyticsRequest, requestController.signal, undefined));
           if (!requestController.signal.aborted) send(response, 200, result);
         } catch (error) {
           if (!requestController.signal.aborted && !isTurnCancelled(error)) send(response, 502, { error: publicError(error instanceof Error ? error.message : "AI 解读失败") });
@@ -191,6 +205,9 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
 
       const started = Date.now();
       const startedMonotonic = performance.now();
+      const agentBody = body;
+      const record = (work: (emitTrace: (event: AgentTraceEvent) => void) => ReturnType<AgentTurnRunner>) => recordTurn(usage, { ...identity(), entry: "campaign", channel, question: agentBody.trigger.text }, work,
+        (result) => ({ status: "answered", reply: result.reply }), requestController.signal, publicError);
       if (isStream) {
         response.writeHead(200, {
           "content-type": "application/x-ndjson; charset=utf-8",
@@ -207,7 +224,7 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
           traceEvents = mergeTraceEvent(traceEvents, event);
         };
         try {
-          const result = await runAgentTurn(body, emitTrace, writeEvent, requestController.signal);
+          const result = await record((recordTrace) => runAgentTurn(agentBody, (event) => { recordTrace(event); emitTrace(event); }, writeEvent, requestController.signal));
           if (requestController.signal.aborted) throw new TurnCancelledError();
           logger.log(`[agent] ${body.trigger.kind} ${Date.now() - started}ms 工具：${result.tools.join(" → ") || "无"}${result.dropped.length ? ` 丢弃 ${result.dropped.length} 项` : ""}`);
           if (writeEvent({ type: "result", result })) response.end();
@@ -235,7 +252,7 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
         return;
       }
       try {
-        const result = await runAgentTurn(body, undefined, undefined, requestController.signal);
+        const result = await record(() => runAgentTurn(agentBody, undefined, undefined, requestController.signal));
         if (requestController.signal.aborted) throw new TurnCancelledError();
         logger.log(`[agent] ${body.trigger.kind} ${Date.now() - started}ms 工具：${result.tools.join(" → ") || "无"}${result.dropped.length ? ` 丢弃 ${result.dropped.length} 项` : ""}`);
         send(response, 200, result);

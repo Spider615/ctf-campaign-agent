@@ -11,6 +11,7 @@ import { selectionLabel } from "../app/lib/insight/context.ts";
 import type { InsightGraph } from "../app/lib/insight/types.ts";
 import type { AgentQuery } from "./run-turn.ts";
 import { analyticsSdkModel } from "./analytics-model.ts";
+import { turnBaseUrl } from "./usage/context.ts";
 
 type Config = { model: string; modelBaseUrl: string; apiKey: string; runtimeDir: string };
 export type InsightAskRunner = (request: InsightAskRequest, graph: InsightGraph, signal?: AbortSignal) => Promise<InsightAskResult>;
@@ -57,7 +58,7 @@ export function createInsightAskRunner(config: Config, dependencies: { query: Ag
         model: sdkModel, effort: "low", thinking: { type: "disabled" }, systemPrompt: SYSTEM,
         tools: [], allowedTools: [], mcpServers: { insight: server }, settingSources: [], persistSession: false, maxTurns: 3, abortController: controller,
         canUseTool: async (name, input) => name === "mcp__insight__submit_insight_answer" ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "只能提交回答" },
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: config.runtimeDir, ANTHROPIC_BASE_URL: config.modelBaseUrl, ANTHROPIC_API_KEY: config.apiKey, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ENABLE_TOOL_SEARCH: "false" },
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: config.runtimeDir, ANTHROPIC_BASE_URL: turnBaseUrl(config.modelBaseUrl, "insight"), ANTHROPIC_API_KEY: config.apiKey, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ENABLE_TOOL_SEARCH: "false" },
       } });
       for await (const message of messages) {
         if (submitted) break;

@@ -25,6 +25,7 @@ import { PLAN_ANALYTICS_TOOL_LABELS, type PlanAnalyticsToolName } from "../app/l
 import type { AnalyticsProgressEvent } from "../app/lib/analytics/stream.ts";
 import { relayAbort, throwIfTurnCancelled, TurnCancelledError } from "../app/lib/cancellation.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, startTraceEvent, type AgentTraceEvent, type ToolInitiator } from "../app/lib/tool-trace.ts";
+import { turnBaseUrl } from "./usage/context.ts";
 
 export type PlanAnalyticsRunner = (request: DatabaseExplainRequest | AnalyticsExplainRequest, signal?: AbortSignal, onProgress?: (event: AnalyticsProgressEvent) => void) => Promise<PlanAnswerV4 | AnalyticsExplainResult>;
 type Config = AgentRuntimeConfig & { database?: AnalyticsDatabase; auditDirectory?: string };
@@ -207,7 +208,7 @@ export function createPlanAnalyticsRunner(config: Config, dependencies: Dependen
         model: sdkModel, effort: "low", thinking: options.thinking ? { type: "enabled" } : { type: "disabled" }, systemPrompt,
         tools: [], allowedTools: [], mcpServers: { analytics }, settingSources: [], persistSession: false, maxTurns: 3, abortController: stepController,
         canUseTool: async (name, input) => permitted.has(name) ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "仅可使用本步骤的提交工具" },
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: config.runtimeDir, ANTHROPIC_BASE_URL: config.modelBaseUrl, ANTHROPIC_API_KEY: config.apiKey, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ENABLE_TOOL_SEARCH: "false" },
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: config.runtimeDir, ANTHROPIC_BASE_URL: turnBaseUrl(config.modelBaseUrl, "analysis-plan"), ANTHROPIC_API_KEY: config.apiKey, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ENABLE_TOOL_SEARCH: "false" },
       } });
       const iterator = messages[Symbol.asyncIterator]();
       try {

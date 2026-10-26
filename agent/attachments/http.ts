@@ -6,6 +6,10 @@ import { ATTACHMENT_LIMITS, attachmentTableRows, validAttachmentId, type Convers
 import { validateConversationAnswer, validateConversationRequest } from "../../app/lib/attachments/answer.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsProgressEvent, type AnalyticsStreamEvent } from "../../app/lib/analytics/stream.ts";
 import type { AttachmentScope, AttachmentStore } from "./store.ts";
+import { publicAgentError } from "../../app/lib/agent/service-errors.ts";
+import { analyticsAnswerText } from "../../app/lib/analytics/stream.ts";
+import { recordTurn, usageIdentity } from "../usage/turns.ts";
+import type { UsageChannel, UsageStore } from "../usage/store.ts";
 
 export type ConversationRunner = (scope: AttachmentScope, request: ConversationRequest, signal?: AbortSignal, emit?: (event: AnalyticsProgressEvent) => void, visualizationSchema?: string) => Promise<ConversationAnswer>;
 const json = (response: ServerResponse, status: number, body: unknown) => { if (response.destroyed || response.writableEnded) return; response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }); response.end(JSON.stringify(body)); };
@@ -16,7 +20,9 @@ async function readJson(request: IncomingMessage) {
   try { return JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { throw new Error("文件对话请求不是有效 JSON"); }
 }
 
-export function createAttachmentsHttpHandler({ store, runConversation }: { store: AttachmentStore; runConversation?: ConversationRunner }) {
+type AttachmentsHttpOptions = { store: AttachmentStore; runConversation?: ConversationRunner; usage?: UsageStore; channel?: UsageChannel; isInternal?: (token: string | undefined) => boolean };
+
+export function createAttachmentsHttpHandler({ store, runConversation, usage, channel = "deepseek", isInternal }: AttachmentsHttpOptions) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? "/", "http://localhost");
     const owner = request.headers["x-attachments-owner"]; const conversationId = url.searchParams.get("conversationId");
@@ -32,14 +38,19 @@ export function createAttachmentsHttpHandler({ store, runConversation }: { store
         if (body.conversationId !== conversationId) throw new Error("文件问题的会话标识不一致");
         if (!runConversation) return json(response, 503, { error: "文件问答服务尚未启动" });
         for (const attachmentId of body.attachmentIds) await store.get(scope, attachmentId);
+        // 附件问答里嵌套的历史分析调用同在这一轮，不另算客户问题。
+        const visuals = visualizationCapability(typeof request.headers["x-analytics-visuals"] === "string" ? request.headers["x-analytics-visuals"] : undefined);
+        const answer = (emit?: (event: AnalyticsProgressEvent) => void) => recordTurn(usage, { ...usageIdentity(request, isInternal), conversationId, entry: "attachments", channel, question: body.question },
+          (emitTrace) => runConversation(scope, body, controller.signal, emit && ((event) => { if (event.type === "trace") emitTrace(event.event); emit(event); }), visuals),
+          (result) => ({ status: result.status === "partial" ? "partial" : "answered", reply: analyticsAnswerText(result) }), controller.signal, publicAgentError);
         if (parts[1] === "stream") {
           streaming = true; response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" }); response.flushHeaders();
           heartbeat = setInterval(() => { if (!controller.signal.aborted && !response.destroyed && !response.writableEnded) response.write("\n"); }, 5000);
           const emit = (event: AnalyticsStreamEvent) => { if (!controller.signal.aborted && !response.destroyed && !response.writableEnded) response.write(encodeAnalyticsStreamEvent(event)); };
-          const result = validateConversationAnswer(await runConversation(scope, body, controller.signal, emit, visualizationCapability(typeof request.headers["x-analytics-visuals"] === "string" ? request.headers["x-analytics-visuals"] : undefined)));
+          const result = validateConversationAnswer(await answer(emit));
           emit({ type: "result", result }); if (!controller.signal.aborted) response.end(); return;
         }
-        return json(response, 200, { answer: validateConversationAnswer(await runConversation(scope, body, controller.signal, undefined, visualizationCapability(typeof request.headers["x-analytics-visuals"] === "string" ? request.headers["x-analytics-visuals"] : undefined))) });
+        return json(response, 200, { answer: validateConversationAnswer(await answer()) });
       }
       if (parts.length === 0) {
         if (request.method === "POST") {

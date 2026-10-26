@@ -13,6 +13,7 @@ import { composeAdvice } from "../app/lib/analytics/advisor.ts";
 import { ANALYTICS_SKILL_TRACE_TOOL, ANALYTICS_TOOL_LABELS } from "../app/lib/analytics/tool-names.ts";
 import type { AnalyticsProgressEvent } from "../app/lib/analytics/stream.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, startTraceEvent, type AgentTraceEvent, type TraceToolName, type ToolInitiator } from "../app/lib/tool-trace.ts";
+import { turnBaseUrl } from "./usage/context.ts";
 
 export type AnalyticsRunner = (request: AnalyticsExplainRequest | DatabaseExplainRequest, signal?: AbortSignal, onProgress?: (event: AnalyticsProgressEvent) => void) => Promise<AnalyticsExplainResult>;
 
@@ -122,7 +123,7 @@ export function createAnalyticsRunner(config: AgentRuntimeConfig & { historyDire
             { type: "object", properties: { kind: { enum: ["hypothesis", "question"] }, text: { type: "string", minLength: 1, maxLength: 500 }, evidenceIds: { type: "array", maxItems: 3, items: { type: "string" } } }, required: ["kind", "text", "evidenceIds"], additionalProperties: false },
             { type: "object", properties: { kind: { const: "recommendation" }, text: { type: "string", minLength: 1, maxLength: 500 }, evidenceIds: { type: "array", maxItems: 3, items: { type: "string" } }, target: { type: "object", properties: { sourceId: { type: "string" }, label: { type: "string" } }, required: ["sourceId", "label"], additionalProperties: false } }, required: ["kind", "text", "evidenceIds"], additionalProperties: false },
           ] } } }, required: ["insightIds", "nextDimensions", "advice"], additionalProperties: false } },
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: config.runtimeDir, ANTHROPIC_BASE_URL: config.modelBaseUrl, ANTHROPIC_API_KEY: config.apiKey, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ENABLE_TOOL_SEARCH: "false" },
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: config.runtimeDir, ANTHROPIC_BASE_URL: turnBaseUrl(config.modelBaseUrl, "analysis-legacy"), ANTHROPIC_API_KEY: config.apiKey, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ENABLE_TOOL_SEARCH: "false" },
       },
     });
     const iterator = messages[Symbol.asyncIterator](); let finished = false;

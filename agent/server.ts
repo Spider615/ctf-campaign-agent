@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { createAgentHttpHandler } from "./http-handler.ts";
 import { createAgentRunner } from "./run-turn.ts";
@@ -15,6 +15,9 @@ import { createConversationRunner } from "./attachments/run-turn.ts";
 import { createInsightGraphService } from "./insight-graph.ts";
 import { createInsightAskRunner } from "./insight-ask.ts";
 import { modelConfigFromEnv } from "./model-gateway.ts";
+import { privateAnalyticsDirectory } from "./analytics-private-records.ts";
+import { setUsageRecorder } from "./usage/context.ts";
+import { createUsageStore } from "./usage/store.ts";
 import mysql from "mysql2/promise";
 
 const envFile = fileURLToPath(new URL("../.dev.vars", import.meta.url));
@@ -24,7 +27,11 @@ const HOST = process.env.AGENT_HOST || "127.0.0.1";
 const PORT = Number(process.env.AGENT_PORT || 8788);
 const TOKEN = process.env.AGENT_SERVICE_TOKEN || "";
 // SDK使用Anthropic协议：公司网关模式走本机转换层，官方兼容模式直接连接所选接口。
-const { model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, apiKeyEnvName: API_KEY_ENV_NAME } = await modelConfigFromEnv();
+const { channel: CHANNEL, model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, apiKeyEnvName: API_KEY_ENV_NAME } = await modelConfigFromEnv();
+// 内部用量库：客户问题和执行记录只存在仓库外的私有目录。
+const USAGE_PATH = process.env.USAGE_DB_PATH || join(homedir(), "Library/Application Support/ctf-campaign-agent/usage/usage.sqlite");
+const usage = createUsageStore(join(privateAnalyticsDirectory(dirname(USAGE_PATH)), basename(USAGE_PATH)));
+setUsageRecorder(usage);
 // AGENT_DEBUG=1 时打印每次工具调用的参数和结果；里面有活动内容，只在本地排查时打开。
 const DEBUG = process.env.AGENT_DEBUG === "1";
 // SDK 子进程的配置目录，和本机 ~/.claude 隔离：不读用户自己的设置、插件和钩子。
@@ -55,7 +62,7 @@ const insight = process.env.CTF_MYSQL_HOST ? createInsightGraphService({ table: 
   cacheDir: process.env.CTF_INSIGHT_CACHE_DIR || join(homedir(), "Library/Application Support/ctf-campaign-agent/insight-cache"),
   connect: () => mysql.createConnection({ host: process.env.CTF_MYSQL_HOST, port: Number(process.env.CTF_MYSQL_PORT || 3306), user: process.env.CTF_MYSQL_USER || "root", password: process.env.CTF_MYSQL_PASSWORD || "", database: process.env.CTF_MYSQL_DATABASE || "ctf_sales_202508", charset: "utf8mb4", connectTimeout: 5000, supportBigNumbers: true, bigNumberStrings: true }) }) : undefined;
 const insightAsk = createInsightAskRunner({ model: MODEL, modelBaseUrl: MODEL_BASE_URL, apiKey: API_KEY, runtimeDir: RUNTIME_DIR });
-const server = createServer(createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation }), insight, insightAsk }));
+const server = createServer(createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token: TOKEN, model: MODEL, attachmentHandler: createAttachmentsHttpHandler({ store: attachmentStore, runConversation, usage, channel: CHANNEL }), insight, insightAsk, usage, channel: CHANNEL }));
 
 if (!API_KEY) {
   console.error(`缺少 ${API_KEY_ENV_NAME}：本地在仓库根目录的 .dev.vars 里填写，容器部署时配成环境变量。`);

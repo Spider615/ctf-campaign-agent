@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createUsageStore, type TurnStart, type UsageStore } from "../agent/usage/store.ts";
+import { createUsageStore, type ModelRequestFinish, type TurnStart, type UsageStore } from "../agent/usage/store.ts";
 
 const DAY = { from: "2026-10-01", to: "2026-10-31" };
 const at = (iso: string) => Date.parse(iso);
@@ -17,9 +17,9 @@ function withStore(run: (store: UsageStore, path: string) => void) {
 }
 
 const turn = (id: string, extra: Partial<TurnStart> = {}): TurnStart => ({ id, entry: "analysis", channel: "deepseek", visitor: "abc123def456", conversationId: "c1", internal: false, question: "八月销售额多少", startedAt: at("2026-10-20T02:00:00Z"), ...extra });
-const done = { status: "done" as const, httpStatus: 200, responseId: "msg", upstreamModel: "deepseek-flash", inputTokens: 0, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null, finishedAt: at("2026-10-20T02:00:05Z") };
+const done: ModelRequestFinish = { status: "done", httpStatus: 200, responseId: "msg", upstreamModel: "deepseek-flash", inputTokens: 0, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null, finishedAt: at("2026-10-20T02:00:05Z") };
 
-function request(store: UsageStore, id: string, turnId: string, tokens: Partial<typeof done>, channel: "deepseek" | "juzi" = "deepseek") {
+function request(store: UsageStore, id: string, turnId: string, tokens: Partial<ModelRequestFinish>, channel: "deepseek" | "juzi" = "deepseek") {
   store.startRequest({ id, turnId, source: "analysis", channel, sdkModel: "claude-sonnet-4-6", sentModel: "deepseek-flash", vendor: channel === "deepseek" ? "DeepSeek" : "anthropic", vendorBasis: "官方兼容接口", startedAt: at("2026-10-20T02:00:01Z") });
   store.finishRequest(id, { ...done, ...tokens });
 }

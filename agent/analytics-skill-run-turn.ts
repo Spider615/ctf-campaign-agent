@@ -20,6 +20,7 @@ import { ANALYTICS_QA_TOOLS, ANALYTICS_QA_TOOL_LABELS, ANALYTICS_SKILL_TRACE_TOO
 import { publicAnalyticsTrace } from "../app/lib/analytics/trace.ts";
 import { finishTraceEvent, harnessTimingSummary, mergeTraceEvent, startTraceEvent, type AgentTraceEvent } from "../app/lib/tool-trace.ts";
 import { isTurnCancelled, relayAbort, throwIfTurnCancelled, TurnCancelledError } from "../app/lib/cancellation.ts";
+import { turnBaseUrl } from "./usage/context.ts";
 
 type Config = AgentRuntimeConfig & { database?: AnalyticsDatabase; auditDirectory?: string };
 type Dependencies = { query: AgentQuery; provider?: AnalysisDataProvider };
@@ -122,7 +123,7 @@ export function createAnalyticsSkillRunner(config: Config, dependencies: Depende
         cwd: config.runtimeDir, settingSources: [], persistSession: false, abortController: controller,
         settings: { skillOverrides: { doctor: "off" }, disableBundledSkills: true },
         canUseTool: async (name, input) => allowed.has(name) || name === "Skill" && isSkillAllowed(input.skill) ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "本回合仅允许所列只读问答工具及两份可用Skill" },
-        env: { ANTHROPIC_API_KEY: config.apiKey, ANTHROPIC_BASE_URL: config.modelBaseUrl, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1", ENABLE_TOOL_SEARCH: "false", CLAUDE_CONFIG_DIR: config.runtimeDir },
+        env: { ANTHROPIC_API_KEY: config.apiKey, ANTHROPIC_BASE_URL: turnBaseUrl(config.modelBaseUrl, "analysis"), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1", ENABLE_TOOL_SEARCH: "false", CLAUDE_CONFIG_DIR: config.runtimeDir },
       } });
       iterator = messages[Symbol.asyncIterator]();
       while (true) {
