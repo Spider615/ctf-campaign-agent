@@ -7,6 +7,9 @@ import type { AddressInfo } from "node:net";
 import { modelQuotaMessage } from "../app/lib/agent/service-errors.ts";
 
 import { anthropicErrorType, createStreamTranslator, sdkModelName, toAnthropicMessage, toOpenAIRequest } from "./openai-bridge.ts";
+import { parseTurnPath, startModelRequest } from "./usage/context.ts";
+import { createModelEdge } from "./usage/model-edge.ts";
+import type { UsageChannel } from "./usage/store.ts";
 
 type ModelStatus = { id: string; aliases?: string[]; kind?: string; owned_by?: string; status?: string; recommendation?: string };
 type Options = { baseUrl: string; maxOutputTokens?: number; fetch?: typeof fetch; log?: (line: string) => void };
@@ -45,7 +48,8 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
   });
 
   async function handle(incoming: IncomingMessage, response: ServerResponse): Promise<void> {
-    const path = new URL(incoming.url ?? "/", "http://local").pathname;
+    // 路径带 /t/<轮次>/<来源> 时按轮次记录用量，其余照旧。
+    const { turnId, source, rest: path } = parseTurnPath(new URL(incoming.url ?? "/", "http://local").pathname);
     const fail = (code: number, message: string) => {
       if (response.headersSent) { response.end(); return; }
       response.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify({ type: "error", error: { type: anthropicErrorType(code), message } }));
@@ -60,16 +64,40 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
 
     const model = String(body.model ?? "");
     const controller = new AbortController();
-    response.on("close", () => { if (!response.writableFinished) controller.abort(); });
+    // 每次真实上游请求一条记录；回退重试是独立的一条。厂商取 /models/status 的 owned_by，查不到不猜。
+    const record = (sentModel: string) => turnId && source ? startModelRequest({ turnId, source, channel: "juzi", sdkModel: model, sentModel,
+      vendor: status?.models.find((entry) => sameModel(entry, sentModel))?.owned_by ?? null, vendorBasis: "网关模型状态 owned_by" }) : undefined;
+    const usage = { responseId: null as string | null, upstreamModel: null as string | null, inputTokens: null as number | null, outputTokens: null as number | null, cacheReadTokens: null as number | null, cacheWriteTokens: null as number | null };
+    // 网关不返回缓存写入，记 null；缓存命中只有上游给了才记。
+    const takeUsage = (chunk: { id?: unknown; model?: unknown; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }) => {
+      if (typeof chunk.id === "string") usage.responseId = chunk.id;
+      if (typeof chunk.model === "string") usage.upstreamModel = chunk.model;
+      if (!chunk.usage) return;
+      const cached = chunk.usage.prompt_tokens_details?.cached_tokens;
+      usage.cacheReadTokens = typeof cached === "number" ? cached : null;
+      usage.inputTokens = typeof chunk.usage.prompt_tokens === "number" ? Math.max(0, chunk.usage.prompt_tokens - (cached ?? 0)) : null;
+      usage.outputTokens = typeof chunk.usage.completion_tokens === "number" ? chunk.usage.completion_tokens : null;
+    };
+    let finish = record(model);
+    let httpStatus: number | null = null;
+    response.on("close", () => {
+      if (response.writableFinished) return;
+      controller.abort(); finish?.({ status: "incomplete", httpStatus, ...usage });
+    });
     let upstream = await call(toOpenAIRequest(body, model, maxOutputTokens), apiKey, controller.signal);
+    httpStatus = upstream.status;
     if (upstream.status === 404 || upstream.status === 503) {
       const detail = await upstream.text();
+      finish?.({ status: "error", httpStatus, ...usage });
       const next = await fallbackFor(model, apiKey);
       if (!next) return fail(upstream.status, detail.slice(0, 500));
       log(`模型网关：${model} 返回 ${upstream.status}，改用 ${next} 重试一次`);
+      finish = record(next);
       upstream = await call(toOpenAIRequest(body, next, maxOutputTokens), apiKey, controller.signal);
+      httpStatus = upstream.status;
     }
     if (!upstream.ok) {
+      finish?.({ status: "error", httpStatus, ...usage });
       const detail = await upstream.text();
       const headers: Record<string, string> = { "content-type": "application/json" };
       const retryAfter = upstream.headers.get("retry-after");
@@ -80,7 +108,10 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
       return;
     }
     if (!body.stream) {
-      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(toAnthropicMessage(await upstream.json() as Record<string, unknown>, model)));
+      const message = await upstream.json() as Record<string, unknown>;
+      takeUsage(message);
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(toAnthropicMessage(message, model)));
+      finish?.({ status: "done", httpStatus, ...usage });
       return;
     }
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
@@ -95,10 +126,11 @@ export function createModelGateway({ baseUrl, maxOutputTokens = 8192, fetch: req
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (!data || data === "[DONE]") continue;
-        try { response.write(translator.push(JSON.parse(data))); } catch { /* 单个坏块跳过，不中断整轮 */ }
+        try { const chunk = JSON.parse(data); takeUsage(chunk); response.write(translator.push(chunk)); } catch { /* 单个坏块跳过，不中断整轮 */ }
       }
     }
     response.end(translator.finish());
+    finish?.({ status: "done", httpStatus, ...usage });
   }
 
   const server = createServer((incoming, response) => {
@@ -124,11 +156,15 @@ export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash";
 export const DEFAULT_AGENT_PROVIDER = "deepseek";
 
 // 复用已选服务的官方接口；原公司网关配置独立保留，密钥只从环境读取。
-export async function modelConfigFromEnv(env: NodeJS.ProcessEnv = process.env) {
+// 两个渠道都经本机回环：DeepSeek 走只透传的出口，句子互动走转换层，两处都按轮次记录用量。
+export async function modelConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<{ channel: UsageChannel; model: string; modelBaseUrl: string; apiKey: string; apiKeyEnvName: string; close: () => Promise<void> }> {
   const provider = env.AGENT_PROVIDER?.trim() || DEFAULT_AGENT_PROVIDER;
-  if (provider === "deepseek") return { model: env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL, modelBaseUrl: DEEPSEEK_ANTHROPIC_URL,
-    apiKey: env.DEEPSEEK_API_KEY?.trim() ?? "", apiKeyEnvName: "DEEPSEEK_API_KEY", close: async () => {} };
+  if (provider === "deepseek") {
+    const edge = createModelEdge({ upstream: DEEPSEEK_ANTHROPIC_URL });
+    return { channel: "deepseek", model: env.DEEPSEEK_MODEL?.trim() || DEFAULT_DEEPSEEK_MODEL, modelBaseUrl: await edge.listen(),
+      apiKey: env.DEEPSEEK_API_KEY?.trim() ?? "", apiKeyEnvName: "DEEPSEEK_API_KEY", close: edge.close };
+  }
   if (provider !== "juzi") throw new Error(`不支持的 AGENT_PROVIDER：${provider}，请填写 juzi 或 deepseek`);
   const gateway = createModelGateway({ baseUrl: env.MODEL_GATEWAY_URL || DEFAULT_MODEL_GATEWAY_URL, maxOutputTokens: Number(env.MODEL_MAX_OUTPUT_TOKENS) || 8192 });
-  return { model: sdkModelName(env.AGENT_MODEL || DEFAULT_AGENT_MODEL), modelBaseUrl: await gateway.listen(), apiKey: env.JUZI_MODELS_KEY?.trim() ?? "", apiKeyEnvName: "JUZI_MODELS_KEY", close: gateway.close };
+  return { channel: "juzi", model: sdkModelName(env.AGENT_MODEL || DEFAULT_AGENT_MODEL), modelBaseUrl: await gateway.listen(), apiKey: env.JUZI_MODELS_KEY?.trim() ?? "", apiKeyEnvName: "JUZI_MODELS_KEY", close: gateway.close };
 }

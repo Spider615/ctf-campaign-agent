@@ -123,7 +123,7 @@ export function createConversationRunner(config: Config, dependencies: Dependenc
       catch (error) { const failed = finishTraceEvent(event, { status: "failed", summary: "本步骤暂未完成", at: Date.now() }); trace.push(failed); emit?.({ type: "trace", event: failed }); throw error; }
     };
     const options = (mcpServers: NonNullable<Parameters<AgentQuery>[0]["options"]>["mcpServers"], systemPrompt: string, maxTurns = 12, model = config.model, drafting = false, reviewing = false) => ({
-      model: analyticsSdkModel(model, config.modelBaseUrl), systemPrompt, tools: [] as string[], allowedTools: [], plugins: [], skills: [], mcpServers, settingSources: [] as [], persistSession: false, maxTurns, cwd: config.runtimeDir, abortController: controller,
+      model: analyticsSdkModel(model), systemPrompt, tools: [] as string[], allowedTools: [], plugins: [], skills: [], mcpServers, settingSources: [] as [], persistSession: false, maxTurns, cwd: config.runtimeDir, abortController: controller,
       ...(drafting ? { effort: "low" as const, thinking: { type: "disabled" as const } } : reviewing ? { effort: "low" as const } : {}),
       canUseTool: async (name: string, input: Record<string, unknown>) => name.startsWith("mcp__attachments__") || name.startsWith("mcp__attachment_review__") ? { behavior: "allow" as const, updatedInput: input } : { behavior: "deny" as const, message: "本回合只允许授权文件的只读工具" },
       env: { PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_CONFIG_DIR: config.runtimeDir, ANTHROPIC_BASE_URL: config.modelBaseUrl, ANTHROPIC_API_KEY: config.apiKey, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", ENABLE_TOOL_SEARCH: "false" },

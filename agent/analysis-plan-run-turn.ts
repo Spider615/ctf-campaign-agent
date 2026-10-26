@@ -142,7 +142,7 @@ function reviewRefs(body: string, execution: PlanExecution, capabilities: Analys
 }
 
 export function createPlanAnalyticsRunner(config: Config, dependencies: Dependencies = { query }): PlanAnalyticsRunner {
-  const sdkModel = analyticsSdkModel(config.model, config.modelBaseUrl);
+  const sdkModel = analyticsSdkModel(config.model);
   return async (request, externalSignal, onProgress) => {
     throwIfTurnCancelled(externalSignal);
     const quick = quickAnalyticsReply(request.question); if (quick) return quick;

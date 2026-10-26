@@ -7,10 +7,11 @@ test("已选官方模型接口时使用对应密钥，不启动原网关转换�
   const config = await modelConfigFromEnv({ NODE_ENV: "test", AGENT_PROVIDER: "deepseek", DEEPSEEK_API_KEY: "synthetic-provider-key", JUZI_MODELS_KEY: "other-key", DEEPSEEK_MODEL: "deepseek-flash" });
   try {
     assert.equal(config.model, "deepseek-flash");
-    assert.equal(config.modelBaseUrl, "https://api.deepseek.com/anthropic");
+    assert.match(config.modelBaseUrl, /^http:\/\/127\.0\.0\.1:/, "经本机出口记录用量");
+    assert.equal(config.channel, "deepseek");
     assert.equal(config.apiKey, "synthetic-provider-key");
     assert.equal(config.apiKeyEnvName, "DEEPSEEK_API_KEY");
-    assert.equal(analyticsSdkModel(config.model, config.modelBaseUrl), "claude-sonnet-4-6");
+    assert.equal(analyticsSdkModel(config.model), "claude-sonnet-4-6");
   } finally { await config.close(); }
 });
 
@@ -18,7 +19,7 @@ test("没写服务选择时默认走官方接口", async () => {
   const config = await modelConfigFromEnv({ NODE_ENV: "test", DEEPSEEK_API_KEY: "synthetic-provider-key", JUZI_MODELS_KEY: "other-key" });
   try {
     assert.equal(config.model, "deepseek-flash");
-    assert.equal(config.modelBaseUrl, "https://api.deepseek.com/anthropic");
+    assert.equal(config.channel, "deepseek");
     assert.equal(config.apiKeyEnvName, "DEEPSEEK_API_KEY");
   } finally { await config.close(); }
 });
@@ -30,6 +31,7 @@ test("原网关配置保持兼容，未知服务选择明确失败", async () =>
     assert.match(config.modelBaseUrl, /^http:\/\/127\.0\.0\.1:/);
     assert.equal(config.apiKey, "synthetic-gateway-key");
     assert.equal(config.apiKeyEnvName, "JUZI_MODELS_KEY");
+    assert.equal(config.channel, "juzi");
   } finally { await config.close(); }
   await assert.rejects(modelConfigFromEnv({ NODE_ENV: "test", AGENT_PROVIDER: "unsupported" }), /不支持/);
 });

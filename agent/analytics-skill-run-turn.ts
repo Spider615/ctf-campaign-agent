@@ -117,7 +117,7 @@ export function createAnalyticsSkillRunner(config: Config, dependencies: Depende
       audit("question", { request, runtime: "skill-qa/v1", sdkQueries: 1 });
       emit({ type: "phase", phase: "analyzing", at: now() });
       const messages = dependencies.query({ prompt: userPrompt, options: {
-        model: analyticsSdkModel(config.model, config.modelBaseUrl), systemPrompt: buildAnalyticsSkillSystemPrompt(new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai" }).format(new Date())),
+        model: analyticsSdkModel(config.model), systemPrompt: buildAnalyticsSkillSystemPrompt(new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai" }).format(new Date())),
         tools: ["Skill"], plugins: [{ type: "local", path: plugin.path }], skills: [...qualified], mcpServers: { analytics: tools.server }, allowedTools: [],
         cwd: config.runtimeDir, settingSources: [], persistSession: false, abortController: controller,
         settings: { skillOverrides: { doctor: "off" }, disableBundledSkills: true },
