@@ -10,6 +10,7 @@ import { publicAgentError } from "../../app/lib/agent/service-errors.ts";
 import { analyticsAnswerText } from "../../app/lib/analytics/stream.ts";
 import { recordTurn, usageIdentity } from "../usage/turns.ts";
 import type { UsageChannel, UsageStore } from "../usage/store.ts";
+import type { AdminAuth } from "../usage/admin.ts";
 
 export type ConversationRunner = (scope: AttachmentScope, request: ConversationRequest, signal?: AbortSignal, emit?: (event: AnalyticsProgressEvent) => void, visualizationSchema?: string) => Promise<ConversationAnswer>;
 const json = (response: ServerResponse, status: number, body: unknown) => { if (response.destroyed || response.writableEnded) return; response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }); response.end(JSON.stringify(body)); };
@@ -20,9 +21,10 @@ async function readJson(request: IncomingMessage) {
   try { return JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { throw new Error("文件对话请求不是有效 JSON"); }
 }
 
-type AttachmentsHttpOptions = { store: AttachmentStore; runConversation?: ConversationRunner; usage?: UsageStore; channel?: UsageChannel; isInternal?: (token: string | undefined) => boolean };
+type AttachmentsHttpOptions = { store: AttachmentStore; runConversation?: ConversationRunner; usage?: UsageStore; channel?: UsageChannel; admin?: AdminAuth };
 
-export function createAttachmentsHttpHandler({ store, runConversation, usage, channel = "deepseek", isInternal }: AttachmentsHttpOptions) {
+export function createAttachmentsHttpHandler({ store, runConversation, usage, channel = "deepseek", admin }: AttachmentsHttpOptions) {
+  const isInternal = admin ? (value: string | undefined) => admin.verify(value) : undefined;
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? "/", "http://localhost");
     const owner = request.headers["x-attachments-owner"]; const conversationId = url.searchParams.get("conversationId");

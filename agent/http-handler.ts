@@ -18,6 +18,7 @@ import { ANALYTICS_RUN_ID, createAnalyticsRuns, type AnalyticsRuns } from "./ana
 import { analyticsAnswerText } from "../app/lib/analytics/stream.ts";
 import { recordTurn, usageIdentity } from "./usage/turns.ts";
 import type { UsageChannel, UsageStore } from "./usage/store.ts";
+import { ADMIN_SESSION_SECONDS, parseUsageQuery, type AdminAuth } from "./usage/admin.ts";
 
 type AgentHttpOptions = {
   runAgentTurn: AgentTurnRunner;
@@ -32,11 +33,38 @@ type AgentHttpOptions = {
   insight?: InsightGraphService;
   insightAsk?: InsightAskRunner;
   analyticsRuns?: AnalyticsRuns;
-  // 内部用量记录；没配时入口行为不变。isInternal 校验管理员凭据，判定内部流量。
+  // 内部用量记录；没配时入口行为不变。admin 校验管理员凭据，也用来判定内部流量。
   usage?: UsageStore;
   channel?: UsageChannel;
-  isInternal?: (token: string | undefined) => boolean;
+  admin?: AdminAuth;
 };
+
+// 管理端接口：登录换凭据；其余只读查询都要有效凭据，未登录时不返回任何客户内容。
+async function handleInternal(request: IncomingMessage, response: ServerResponse, usage: UsageStore | undefined, admin: AdminAuth | undefined) {
+  if (!admin?.configured || !usage) return send(response, 503, { error: "管理端未配置" });
+  const url = new URL(request.url ?? "/", "http://local");
+  if (url.pathname === "/internal/login") {
+    if (request.method !== "POST") return send(response, 405, { error: "只支持 POST" });
+    let password = "";
+    try { const body = await readJson(request) as { password?: unknown }; password = typeof body?.password === "string" ? body.password : ""; }
+    catch { return send(response, 400, { error: "请求不是有效的 JSON" }); }
+    const issued = admin.login(password);
+    return issued ? send(response, 200, { token: issued, maxAge: ADMIN_SESSION_SECONDS }) : send(response, 401, { error: "密码不对" });
+  }
+  const credential = request.headers["x-ctf-admin"];
+  if (!admin.verify(typeof credential === "string" ? credential : undefined)) return send(response, 401, { error: "请先登录管理端" });
+  if (request.method !== "GET") return send(response, 405, { error: "只支持 GET" });
+  if (url.pathname.startsWith("/internal/conversations/")) {
+    const key = decodeURIComponent(url.pathname.slice("/internal/conversations/".length));
+    const conversation = key.length <= 200 ? usage.conversation(key) : null;
+    return conversation ? send(response, 200, { conversation }) : send(response, 404, { error: "没有这个会话" });
+  }
+  let filter;
+  try { filter = parseUsageQuery(url.searchParams); } catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "查询参数不正确" }); }
+  if (url.pathname === "/internal/overview") return send(response, 200, { overview: usage.overview(filter), billing: "来源未接入" });
+  if (url.pathname === "/internal/conversations") return send(response, 200, { conversations: usage.conversations(filter) });
+  return send(response, 404, { error: "没有这个接口" });
+}
 
 function send(response: ServerResponse, status: number, body: unknown) {
   if (response.destroyed || response.writableEnded) return;
@@ -70,7 +98,9 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns(), usage, channel = "deepseek", isInternal }: AgentHttpOptions) {
+export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, database, token, model, logger = console, attachmentHandler, insight, insightAsk, analyticsRuns = createAnalyticsRuns(), usage, channel = "deepseek", admin }: AgentHttpOptions) {
+  const isInternal = admin ? (value: string | undefined) => admin.verify(value) : undefined;
+  const internalApi = (request: IncomingMessage, response: ServerResponse) => handleInternal(request, response, usage, admin);
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const identity = () => usageIdentity(request, isInternal);
     if (request.method === "GET" && request.url === "/health") return send(response, 200, { ok: true, model });
@@ -86,6 +116,11 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
     const isRunStream = request.method === "GET" && runRoute?.[2] === "stream";
     const isRunCancel = request.method === "POST" && runRoute?.[2] === "cancel";
     const isAttachment = Boolean(attachmentHandler) && /^\/attachments(?:[/?]|$)/.test(request.url ?? "");
+    const isInternalApi = /^\/internal\/(?:login|overview|conversations)(?:[/?]|$)/.test(request.url ?? "");
+    if (isInternalApi) {
+      if (token && request.headers.authorization !== `Bearer ${token}`) return send(response, 401, { error: "Agent 服务鉴权失败" });
+      return internalApi(request, response);
+    }
     if (!isTurn && !isStream && !isAnalytics && !isDatabase && !isDatabaseStream && !isDatabaseInfo && !isAttachment && !isInsight && !isInsightAsk && !isRunStream && !isRunCancel) return send(response, 404, { error: "没有这个接口" });
     if (token && request.headers.authorization !== `Bearer ${token}`) return send(response, 401, { error: "Agent 服务鉴权失败" });
     // 运行只归开始它的访问标识所有，别人拿到 id 也读不到、停不了。

@@ -113,6 +113,18 @@ export async function cancelHistoryRun(run: { id: string; owner: string }) {
   await fetch(`${base}/analytics/runs/${encodeURIComponent(run.id)}/cancel`, { method: "POST", headers: { ...agentHeaders(), "x-analytics-owner": run.owner } }).catch(() => undefined);
 }
 
+// 管理端：浏览器 cookie 里的凭据转成 x-ctf-admin，Agent 验签；Workers 不保存密码。
+export async function forwardInternalRequest(path: string, init: { method: "GET" | "POST"; token?: string; body?: string; signal?: AbortSignal }): Promise<Response> {
+  const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
+  const headers: Record<string, string> = { ...agentHeaders(), ...(init.token ? { "x-ctf-admin": init.token } : {}) };
+  try {
+    const response = await fetch(`${base}${path}`, { method: init.method, headers, body: init.body, signal: init.signal });
+    return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8", "cache-control": "no-store" } });
+  } catch {
+    return Response.json({ error: "连不上 Agent 服务" }, { status: 502, headers: { "cache-control": "no-store" } });
+  }
+}
+
 async function agentHttpError(response: Response): Promise<Error> {
   const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
   return new Error(typeof body?.error === "string" ? body.error : `Agent 服务出错（${response.status}）`);

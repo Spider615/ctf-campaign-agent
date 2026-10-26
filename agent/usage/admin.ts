@@ -1,0 +1,63 @@
+// 管理端登录：一个共享密码，签发 12 小时的 HMAC 凭据「<过期毫秒>.<签名>」。
+// 密码和签名密钥只在 Agent 环境里读取，Workers 只转发 cookie。
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+import { beijingDay, type TurnStatus, type UsageChannel, type UsageEntry, type UsageFilter } from "./store.ts";
+
+export const ADMIN_SESSION_SECONDS = 12 * 3600;
+export type AdminAuth = { configured: boolean; login(password: string): string | null; verify(token: string | undefined): boolean };
+
+const sameText = (a: string, b: string) => {
+  const left = Buffer.from(a); const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+};
+
+export function createAdminAuth({ password, secret, now = Date.now }: { password?: string; secret?: string; now?: () => number }): AdminAuth {
+  const configured = Boolean(password) && Boolean(secret && secret.length >= 32);
+  const sign = (expires: string) => createHmac("sha256", secret ?? "").update(`ctf-internal:${expires}`).digest("base64url");
+  return {
+    configured,
+    login(input) {
+      if (!configured || !input || !sameText(input, password!)) return null;
+      const expires = String(now() + ADMIN_SESSION_SECONDS * 1000);
+      return `${expires}.${sign(expires)}`;
+    },
+    verify(token) {
+      if (!configured || !token) return false;
+      const match = /^(\d{1,16})\.([A-Za-z0-9_-]{1,128})$/.exec(token);
+      if (!match || Number(match[1]) < now()) return false;
+      return sameText(match[2], sign(match[1]));
+    },
+  };
+}
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ENTRIES: UsageEntry[] = ["analysis", "attachments", "campaign", "insight"];
+const CHANNELS: UsageChannel[] = ["deepseek", "juzi"];
+const STATUSES: TurnStatus[] = ["running", "answered", "partial", "failed", "cancelled", "interrupted"];
+
+// 默认最近 7 天（北京时间）；跨度最多 92 天。
+export function parseUsageQuery(params: URLSearchParams): UsageFilter & { offset?: number } {
+  const today = beijingDay(Date.now());
+  const from = params.get("from") ?? beijingDay(Date.now() - 6 * 86400_000);
+  const to = params.get("to") ?? today;
+  if (!DATE.test(from) || !DATE.test(to) || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) throw new Error("日期格式应为 YYYY-MM-DD");
+  if (from > to) throw new Error("开始日期不能晚于结束日期");
+  if ((Date.parse(to) - Date.parse(from)) / 86400_000 > 91) throw new Error("一次最多查 92 天");
+  const filter: UsageFilter & { offset?: number } = { from, to };
+  const pick = <T extends string>(name: string, allowed: T[]) => {
+    const value = params.get(name);
+    if (value === null || value === "") return undefined;
+    if (!allowed.includes(value as T)) throw new Error(`不支持的筛选：${name}`);
+    return value as T;
+  };
+  const entry = pick("entry", ENTRIES); if (entry) filter.entry = entry;
+  const channel = pick("channel", CHANNELS); if (channel) filter.channel = channel;
+  const status = pick("status", STATUSES); if (status) filter.status = status;
+  const model = params.get("model")?.trim(); if (model) { if (model.length > 100) throw new Error("模型名太长"); filter.model = model; }
+  const keyword = params.get("keyword")?.trim(); if (keyword) { if (keyword.length > 100) throw new Error("关键词最多 100 字"); filter.keyword = keyword; }
+  if (params.get("internal") === "1") filter.includeInternal = true;
+  const offset = params.get("offset");
+  if (offset) { const value = Number(offset); if (!Number.isSafeInteger(value) || value < 0 || value > 100_000) throw new Error("分页参数不正确"); filter.offset = value; }
+  return filter;
+}

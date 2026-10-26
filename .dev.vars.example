@@ -32,3 +32,9 @@ ATTACHMENTS_PYTHON=
 ATTACHMENTS_LIBREOFFICE=
 # 可选：图片读取模型，留空复用 AGENT_MODEL
 ATTACHMENTS_VISION_MODEL=
+
+# 管理端（/internal/stats）：共享登录密码和凭据签名密钥（至少 32 位），只在 Agent 服务读取；不配则管理端不可用。
+INTERNAL_ADMIN_PASSWORD=
+INTERNAL_SESSION_SECRET=
+# 内部用量库位置（默认 ~/Library/Application Support/ctf-campaign-agent/usage/usage.sqlite，必须在仓库外）
+# USAGE_DB_PATH=

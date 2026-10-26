@@ -19,12 +19,18 @@ const sameHost = (origin: string, url: URL) => {
   try { const o = new URL(origin); return o.hostname === url.hostname && o.port === url.port; } catch { return false; }
 };
 
+// 写请求必须来自同源页面；管理端登录也用这条规则。
+export function assertSameOrigin(request: Request) {
+  if (["GET", "HEAD"].includes(request.method)) return;
+  const origin = request.headers.get("origin");
+  if (origin && !sameHost(origin, publicUrl(request))) throw new AnalyticsError("数据写入必须来自同源页面", 403);
+}
+
+export function isHttps(request: Request) { return publicUrl(request).protocol === "https:"; }
+
 export function analyticsAccess(request: Request, bootstrap = false) {
   const url = publicUrl(request);
-  if (!["GET", "HEAD"].includes(request.method)) {
-    const origin = request.headers.get("origin");
-    if (origin && !sameHost(origin, url)) throw new AnalyticsError("数据写入必须来自同源页面", 403);
-  }
+  assertSameOrigin(request);
   const owner = /(?:^|;\s*)ctf_analytics_owner=([0-9a-f-]{36})(?:;|$)/.exec(request.headers.get("cookie") ?? "")?.[1];
   const issue = (id: string) => `ctf_analytics_owner=${id}; Path=/api/analytics; HttpOnly; SameSite=Lax; Max-Age=31536000${url.protocol === "https:" ? "; Secure" : ""}`;
   // 对话记录挂在这个标识上：打开页面（bootstrap 读取）时续期，常用的浏览器不会因为过期丢记录。
