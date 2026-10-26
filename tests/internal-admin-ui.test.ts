@@ -61,3 +61,9 @@ test("会话详情展示真实厂商和模型，SDK 别名放在技术详情里"
 test("管理端页面不套客户侧栏", () => {
   assert.match(read("app/components/app-shell.tsx"), /pathname\.startsWith\("\/internal\/stats"\)/);
 });
+
+test("管理端用左侧菜单导航，退出放在菜单底部", () => {
+  const shell = read("app/components/internal/internal-shell.tsx");
+  assert.match(shell, /<aside[\s\S]*<nav[\s\S]*NAV\.map[\s\S]*退出[\s\S]*<\/aside>/);
+  assert.doesNotMatch(shell, /<header[\s\S]*<nav/, "菜单不再放在顶部");
+});
