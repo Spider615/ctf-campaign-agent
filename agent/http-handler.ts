@@ -17,7 +17,7 @@ import { parseAskBody } from "../app/lib/insight/ask.ts";
 import { ANALYTICS_RUN_ID, createAnalyticsRuns, type AnalyticsRuns } from "./analytics-runs.ts";
 import { analyticsAnswerText } from "../app/lib/analytics/stream.ts";
 import { recordTurn, usageIdentity, type UsageChannelSource } from "./usage/turns.ts";
-import type { UsageChannel, UsageStore } from "./usage/store.ts";
+import { DEFAULT_PAGE_SIZE, type UsageStore } from "./usage/store.ts";
 import { ADMIN_SESSION_SECONDS, parseUsageQuery, type AdminAuth } from "./usage/admin.ts";
 import type { ModelChannels } from "./model-channels.ts";
 
@@ -88,7 +88,10 @@ async function internalRoutes(request: IncomingMessage, response: ServerResponse
   let filter;
   try { filter = parseUsageQuery(url.searchParams); } catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "查询参数不正确" }); }
   if (url.pathname === "/internal/overview") return send(response, 200, { overview: usage.overview(filter) });
-  if (url.pathname === "/internal/conversations") return send(response, 200, { conversations: usage.conversations(filter) });
+  if (url.pathname === "/internal/conversations") {
+    const { rows, total } = usage.conversations(filter);
+    return send(response, 200, { conversations: rows, total, page: filter.page ?? 1, pageSize: filter.pageSize ?? DEFAULT_PAGE_SIZE });
+  }
   return send(response, 404, { error: "没有这个接口" });
 }
 

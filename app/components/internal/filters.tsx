@@ -24,7 +24,7 @@ export function UsageFilters({ withKeyword = false, withStatus = false }: { with
   const set = (name: string, value: string) => setDraft((current) => ({ ...current, [name]: value }));
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const next = new URLSearchParams(Object.entries(draft).filter(([name, value]) => value && name !== "offset"));
+    const next = new URLSearchParams(Object.entries(draft).filter(([name, value]) => value && name !== "page"));
     router.push(`${pathname}?${next.toString()}`);
   };
   const select = "h-9 rounded-md border border-[#d6e6f7] bg-white px-2 text-sm text-[#293b54]";

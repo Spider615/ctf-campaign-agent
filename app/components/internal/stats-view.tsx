@@ -7,6 +7,7 @@ import { CHANNEL_LABEL, TURN_STATUS_HINT, durationText, groupByChannel, tokenTex
 import type { Overview } from "../../lib/internal/types";
 import { UsageFilters, useUsageQuery } from "./filters";
 import { DataTable, InternalShell, Notice, Panel } from "./internal-shell";
+import { PagedRows } from "./pager";
 
 // 统计总览：两个渠道各一块，各自按天列 Token 和估算费用（Token × 单价），两个渠道不相加。
 export function StatsView() {
@@ -42,8 +43,9 @@ export function StatsView() {
             {overview.days.length === 0 ? <Notice>这段时间没有记录。</Notice> : null}
             {groupByChannel(overview.days).map((group) => (
               <Panel key={group.channel} title={CHANNEL_LABEL[group.channel]} note="按北京时间切天；估算费用按 Token × 单价算，以官方账单为准">
+                <PagedRows rows={[...group.rows].reverse()} render={(pageRows) => (
                 <DataTable head={["日期", "轮次", "模型请求", "输入 Token", "输出 Token", "缓存命中", "缓存写入", "不完整请求", "估算费用"]} minWidth={900}>
-                  {group.rows.map((row) => (
+                  {pageRows.map((row) => (
                     <tr key={row.day}>
                       <td className="whitespace-nowrap">{row.day}</td>
                       <td>{row.turns}</td>
@@ -57,12 +59,14 @@ export function StatsView() {
                     </tr>
                   ))}
                 </DataTable>
+                )} />
               </Panel>
             ))}
             {overview.models.length ? (
               <Panel title="按模型" note="模型取上游返回的名字，没有返回时取实际发送的名字">
+                <PagedRows rows={overview.models} render={(pageRows) => (
                 <DataTable head={["渠道", "模型", "请求", "输入 Token", "输出 Token"]}>
-                  {overview.models.map((row) => (
+                  {pageRows.map((row) => (
                     <tr key={`${row.channel}-${row.model}`}>
                       <td>{CHANNEL_LABEL[row.channel]}</td>
                       <td className="font-mono text-[13px]">{row.model}</td>
@@ -72,6 +76,7 @@ export function StatsView() {
                     </tr>
                   ))}
                 </DataTable>
+                )} />
               </Panel>
             ) : null}
           </>

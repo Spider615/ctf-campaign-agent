@@ -8,6 +8,7 @@ import { MarkdownText } from "../chat/markdown-text";
 import { CHANNEL_LABEL, ENTRY_LABEL, durationText, requestStatusText, timeText, tokenText, turnStatusText, yuanText } from "../../lib/internal/format";
 import type { ConversationDetail as Detail, TurnRecord } from "../../lib/internal/types";
 import { DataTable, InternalShell, Notice, Panel } from "./internal-shell";
+import { PagedRows } from "./pager";
 
 const statusTone = (status: string) => status === "answered" || status === "done" ? "text-[#26785e]" : status === "partial" || status === "running" ? "text-[#a0610b]" : "text-[#b2443b]";
 
@@ -31,8 +32,9 @@ function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
           </details>
         ) : null}
         {turn.requests.length ? (
+          <PagedRows rows={turn.requests} render={(pageRows) => (
           <DataTable head={["开始", "来源", "模型", "状态", "输入", "输出", "缓存命中", "缓存写入", "估算费用", "耗时"]} minWidth={900}>
-            {turn.requests.map((request) => (
+            {pageRows.map((request) => (
               <tr key={request.id}>
                 <td className="whitespace-nowrap">{timeText(request.startedAt)}</td>
                 <td>{request.source}</td>
@@ -48,6 +50,7 @@ function Turn({ turn, index }: { turn: TurnRecord; index: number }) {
               </tr>
             ))}
           </DataTable>
+          )} />
         ) : <p className="text-[13px] text-[#71869f]">这一轮没有模型请求记录。</p>}
       </div>
     </Panel>
@@ -72,7 +75,8 @@ export function ConversationDetailView({ conversationKey }: { conversationKey: s
         {detail ? (
           <>
             <p className="text-sm text-[#4f6681]">{ENTRY_LABEL[detail.entry] ?? detail.entry} · 访客 <span className="font-mono">{detail.visitor ?? "—"}</span> · {detail.turns.length} 轮 · 估算费用 {yuanText(detail.turns.some((turn) => turn.costYuan !== null) ? Math.round(detail.turns.reduce((sum, turn) => sum + (turn.costYuan ?? 0), 0) * 1e6) / 1e6 : null, detail.turns.reduce((sum, turn) => sum + turn.unpricedRequests, 0))}（按 Token × 单价算，以官方账单为准）</p>
-            {detail.turns.map((turn, index) => <Turn key={turn.id} turn={turn} index={index} />)}
+            {/* 轮次多的会话按页看；序号按整个会话算，不随翻页从 1 重新数。 */}
+            <PagedRows rows={detail.turns.map((turn, index) => ({ turn, index }))} render={(pageRows) => <div className="space-y-4">{pageRows.map(({ turn, index }) => <Turn key={turn.id} turn={turn} index={index} />)}</div>} />
           </>
         ) : null}
       </div>

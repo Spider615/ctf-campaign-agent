@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { internalGet } from "../../lib/internal/client";
@@ -8,24 +9,27 @@ import { CHANNEL_LABEL, ENTRY_LABEL, durationText, timeText, tokenText, yuanText
 import type { ConversationRow } from "../../lib/internal/types";
 import { UsageFilters, useUsageQuery } from "./filters";
 import { DataTable, InternalShell, Notice } from "./internal-shell";
-
-const PAGE = 50;
+import { Pager } from "./pager";
 
 // 会话列表：会话不显示金额，账单按天对账。访客编号是浏览器标识的哈希，不等于真实客户。
 export function ConversationsView() {
+  const router = useRouter(); const pathname = usePathname();
   const params = useUsageQuery();
-  const offset = Number(params.get("offset") ?? 0) || 0;
   const query = params.toString();
-  const [state, setState] = useState<{ query: string; rows?: ConversationRow[]; error?: string }>({ query: "" });
+  const [state, setState] = useState<{ query: string; rows?: ConversationRow[]; total?: number; page?: number; pageSize?: number; error?: string }>({ query: "" });
   useEffect(() => {
     const controller = new AbortController();
-    internalGet<{ conversations: ConversationRow[] }>(`conversations?${query}`, controller.signal)
-      .then(({ conversations }) => setState({ query, rows: conversations }), (error: Error) => { if (!controller.signal.aborted) setState({ query, error: error.message }); });
+    internalGet<{ conversations: ConversationRow[]; total: number; page: number; pageSize: number }>(`conversations?${query}`, controller.signal)
+      .then((result) => setState({ query, rows: result.conversations, total: result.total, page: result.page, pageSize: result.pageSize }), (error: Error) => { if (!controller.signal.aborted) setState({ query, error: error.message }); });
     return () => controller.abort();
   }, [query]);
   const loading = state.query !== query;
   const rows = loading ? undefined : state.rows;
-  const page = (next: number) => { const copy = new URLSearchParams(query); copy.set("offset", String(next)); return `/internal/conversations?${copy.toString()}`; };
+  // 翻页和改每页条数都写进 URL，刷新和分享链接保留位置。
+  const goTo = (next: { page: number; pageSize: number }) => {
+    const copy = new URLSearchParams(query); copy.set("page", String(next.page)); copy.set("pageSize", String(next.pageSize));
+    router.push(`${pathname}?${copy.toString()}`);
+  };
 
   return (
     <InternalShell active="/internal/conversations" title="会话">
@@ -53,12 +57,7 @@ export function ConversationsView() {
             ))}
           </DataTable>
         ) : null}
-        {rows ? (
-          <div className="flex gap-3 text-sm">
-            {offset > 0 ? <Link className="text-[#2470cc]" href={page(Math.max(0, offset - PAGE))}>上一页</Link> : null}
-            {rows.length === PAGE ? <Link className="text-[#2470cc]" href={page(offset + PAGE)}>下一页</Link> : null}
-          </div>
-        ) : null}
+        {rows && state.total !== undefined ? <Pager page={state.page ?? 1} pageSize={state.pageSize ?? 20} total={state.total} onChange={goTo} /> : null}
       </div>
     </InternalShell>
   );

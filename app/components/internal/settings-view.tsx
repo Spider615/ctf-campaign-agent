@@ -7,6 +7,7 @@ import { internalGet, internalPost } from "../../lib/internal/client";
 import { CHANNEL_LABEL, timeText } from "../../lib/internal/format";
 import type { InternalChannel } from "../../lib/internal/format";
 import { DataTable, InternalShell, Notice, Panel } from "./internal-shell";
+import { PagedRows } from "./pager";
 
 type ChannelState = {
   active: InternalChannel;
@@ -56,8 +57,9 @@ export function SettingsView() {
             </Panel>
             <Panel title="切换记录" note="共用一个管理密码，操作人记为管理员">
               {state.history.length ? (
+                <PagedRows rows={state.history} render={(pageRows) => (
                 <DataTable head={["时间", "从", "切到", "操作人"]}>
-                  {state.history.map((item) => (
+                  {pageRows.map((item) => (
                     <tr key={item.at}>
                       <td className="whitespace-nowrap">{timeText(item.at)}</td>
                       <td>{CHANNEL_LABEL[item.from]}</td>
@@ -66,6 +68,7 @@ export function SettingsView() {
                     </tr>
                   ))}
                 </DataTable>
+                )} />
               ) : <p className="text-[13px] text-[#71869f]">还没有切换过。</p>}
             </Panel>
           </>

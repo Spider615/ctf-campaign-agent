@@ -114,3 +114,26 @@ test("会话列表、会话详情和统计总览都显示估算费用", () => {
   assert.doesNotMatch(read("app/components/internal/stats-view.tsx"), /来源未接入/);
   assert.match(read("agent/server.ts"), /createUsageStore\(.*createCostEstimator\(\)\)/);
 });
+
+test("分页页码：首尾和当前页附近显示，中间用省略号", async () => {
+  const { pageCount, pageWindow, pageSlice } = await import("../app/lib/internal/format.ts");
+  assert.equal(pageCount(0, 20), 1);
+  assert.equal(pageCount(41, 20), 3);
+  assert.deepEqual(pageWindow(1, 3), [1, 2, 3]);
+  assert.deepEqual(pageWindow(1, 10), [1, 2, 3, "…", 10]);
+  assert.deepEqual(pageWindow(5, 10), [1, "…", 4, 5, 6, "…", 10]);
+  assert.deepEqual(pageWindow(10, 10), [1, "…", 8, 9, 10]);
+  assert.deepEqual(pageSlice([1, 2, 3, 4, 5], 2, 2), [3, 4]);
+  assert.deepEqual(pageSlice([1, 2, 3], 9, 2), [3], "页码超出时落到最后一页");
+});
+
+test("所有列表都用统一的分页条", () => {
+  const pager = read("app/components/internal/pager.tsx");
+  assert.match(pager, /共 \{total\} 条/);
+  assert.match(pager, /每页/);
+  for (const file of ["conversations-view.tsx", "stats-view.tsx", "settings-view.tsx", "conversation-detail.tsx"]) {
+    assert.match(read(`app/components/internal/${file}`), /<(?:Pager|PagedRows) /, `${file} 要分页`);
+  }
+  const conversations = read("app/components/internal/conversations-view.tsx");
+  assert.doesNotMatch(conversations, /上一页<\/Link>|offset/, "会话列表改用页码，不再用 offset");
+});

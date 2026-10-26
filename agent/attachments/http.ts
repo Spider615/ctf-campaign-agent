@@ -9,7 +9,7 @@ import type { AttachmentScope, AttachmentStore } from "./store.ts";
 import { publicAgentError } from "../../app/lib/agent/service-errors.ts";
 import { analyticsAnswerText } from "../../app/lib/analytics/stream.ts";
 import { recordTurn, usageIdentity, type UsageChannelSource } from "../usage/turns.ts";
-import type { UsageChannel, UsageStore } from "../usage/store.ts";
+import type { UsageStore } from "../usage/store.ts";
 import type { AdminAuth } from "../usage/admin.ts";
 
 export type ConversationRunner = (scope: AttachmentScope, request: ConversationRequest, signal?: AbortSignal, emit?: (event: AnalyticsProgressEvent) => void, visualizationSchema?: string) => Promise<ConversationAnswer>;

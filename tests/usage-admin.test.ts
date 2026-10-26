@@ -45,9 +45,9 @@ test("没配密码或密钥太短时视为未配置", () => {
 });
 
 test("查询参数越界返回错误", () => {
-  assert.deepEqual(parseUsageQuery(new URLSearchParams("from=2026-10-01&to=2026-10-07&channel=juzi&keyword=金&offset=50")),
-    { from: "2026-10-01", to: "2026-10-07", channel: "juzi", keyword: "金", offset: 50 });
-  for (const query of ["from=2026-10-08&to=2026-10-07", "from=2026-01-01&to=2026-04-04", "from=2026-10-01&to=2026-10-02&channel=openai", "from=x&to=2026-10-02", "from=2026-10-01&to=2026-10-02&keyword=" + "金".repeat(101), "from=2026-10-01&to=2026-10-02&status=done"])
+  assert.deepEqual(parseUsageQuery(new URLSearchParams("from=2026-10-01&to=2026-10-07&channel=juzi&keyword=金&page=3&pageSize=50")),
+    { from: "2026-10-01", to: "2026-10-07", channel: "juzi", keyword: "金", page: 3, pageSize: 50 });
+  for (const query of ["from=2026-10-08&to=2026-10-07", "from=2026-01-01&to=2026-04-04", "from=2026-10-01&to=2026-10-02&channel=openai", "from=x&to=2026-10-02", "from=2026-10-01&to=2026-10-02&keyword=" + "金".repeat(101), "from=2026-10-01&to=2026-10-02&status=done", "from=2026-10-01&to=2026-10-02&page=0", "from=2026-10-01&to=2026-10-02&pageSize=500"])
     assert.throws(() => parseUsageQuery(new URLSearchParams(query)), /./, query);
 });
 
@@ -78,8 +78,9 @@ test("内部接口：未登录 401 且不含客户内容，登录后可查", asy
   const wrong = await fetch(`${base}/internal/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: "x" }) });
   assert.equal(wrong.status, 401);
   const headers = { "x-ctf-admin": token };
-  const list = await (await fetch(`${base}/internal/conversations?from=2026-10-01&to=2026-10-31`, { headers })).json() as { conversations: Array<{ key: string }> };
+  const list = await (await fetch(`${base}/internal/conversations?from=2026-10-01&to=2026-10-31`, { headers })).json() as { conversations: Array<{ key: string }>; total: number; page: number; pageSize: number };
   assert.deepEqual(list.conversations.map((row) => row.key), ["analysis:c1"]);
+  assert.deepEqual([list.total, list.page, list.pageSize], [1, 1, 20]);
   const detail = await (await fetch(`${base}/internal/conversations/analysis%3Ac1`, { headers })).json() as { conversation: { turns: Array<{ question: string }> } };
   assert.equal(detail.conversation.turns[0].question, "客户的问题");
   assert.equal((await fetch(`${base}/internal/conversations/analysis%3Anone`, { headers })).status, 404);

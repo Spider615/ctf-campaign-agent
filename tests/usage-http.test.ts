@@ -178,7 +178,7 @@ test("访客只存哈希", async (t) => {
   const { store, path } = await setup(t);
   const base = await listen(t, analyticsHandler(store, async () => simulatedPlanAnswerV4()));
   await (await ask(base, "八月")).text();
-  const visitor = store.conversations(DAY)[0].visitor;
+  const visitor = store.conversations(DAY).rows[0].visitor;
   assert.match(visitor ?? "", /^[0-9a-f]{12}$/);
   const files = [path, `${path}-wal`].filter((file) => { try { readFileSync(file); return true; } catch { return false; } });
   assert.ok(files.length > 0);
@@ -189,7 +189,7 @@ test("会话编号不合法时不记会话，按单轮显示", async (t) => {
   const { store } = await setup(t);
   const base = await listen(t, analyticsHandler(store, async () => simulatedPlanAnswerV4()));
   await (await ask(base, "八月", { "x-ctf-conversation": "../../etc" })).text();
-  const [row] = store.conversations(DAY);
+  const [row] = store.conversations(DAY).rows;
   assert.match(row.key, /^analysis:turn:/);
 });
 

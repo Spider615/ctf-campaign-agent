@@ -45,3 +45,21 @@ export function groupByChannel<T extends { channel: InternalChannel }>(rows: T[]
 export function beijingDate(offsetDays = 0) {
   return new Date(Date.now() + 8 * 3600_000 + offsetDays * 86400_000).toISOString().slice(0, 10);
 }
+
+// 分页：页码从 1 开始。
+export const PAGE_SIZES = [10, 20, 50, 100];
+export const pageCount = (total: number, pageSize: number) => Math.max(1, Math.ceil(total / pageSize));
+// 要显示的页码：首页、尾页、当前页前后各一页，中间断开处用省略号。
+export function pageWindow(page: number, pages: number): Array<number | "…"> {
+  const keep = new Set([1, pages, page - 1, page, page + 1].filter((value) => value >= 1 && value <= pages));
+  if (page <= 3) [2, 3].forEach((value) => value <= pages && keep.add(value));
+  if (page >= pages - 2) [pages - 2, pages - 1].forEach((value) => value >= 1 && keep.add(value));
+  const sorted = [...keep].sort((a, b) => a - b);
+  return sorted.flatMap((value, index) => index > 0 && value - sorted[index - 1] > 1 ? ["…" as const, value] : [value]);
+}
+// 前端分页（数据已全部拿到时）：页码超出时落到最后一页。
+export function pageSlice<T>(rows: readonly T[], page: number, pageSize: number): T[] {
+  const last = pageCount(rows.length, pageSize);
+  const current = Math.min(Math.max(1, page), last);
+  return rows.slice((current - 1) * pageSize, current * pageSize);
+}

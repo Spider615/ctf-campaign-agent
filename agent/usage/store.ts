@@ -32,12 +32,14 @@ export type UsageConversationDetail = { key: string; entry: UsageEntry; visitor:
 export type UsageStore = {
   startTurn(turn: TurnStart): void; finishTurn(id: string, result: TurnFinish): void; countSdkStart(turnId: string): void;
   startRequest(request: ModelRequestStart): void; finishRequest(id: string, result: ModelRequestFinish): void;
-  overview(filter: UsageFilter): UsageOverview; conversations(filter: UsageFilter & { offset?: number }): UsageConversationRow[]; conversation(key: string): UsageConversationDetail | null;
+  overview(filter: UsageFilter): UsageOverview; conversations(filter: UsageFilter & UsagePage): { rows: UsageConversationRow[]; total: number }; conversation(key: string): UsageConversationDetail | null;
   close(): void;
 };
 
 const TURN_STATUSES: TurnStatus[] = ["running", "answered", "partial", "failed", "cancelled", "interrupted"];
-const PAGE = 50;
+// 会话列表分页：页码从 1 开始，默认每页 20 条。
+export type UsagePage = { page?: number; pageSize?: number };
+export const DEFAULT_PAGE_SIZE = 20;
 type Row = Record<string, unknown>;
 type Param = string | number | null;
 
@@ -156,13 +158,15 @@ export function createUsageStore(path: string, estimate: CostEstimator = () => n
     conversations(filter) {
       const { sql, params } = where(filter);
       // 先按筛选找到命中的会话，再汇总这些会话的全部轮次，免得关键词只命中一轮时轮数和 Token 被截掉。
-      const keys = all(`SELECT t.conv_key, MAX(t.started_at) AS last_at FROM usage_turn t WHERE ${sql} GROUP BY t.conv_key ORDER BY last_at DESC LIMIT ? OFFSET ?`, [...params, PAGE, Math.max(0, filter.offset ?? 0)])
+      const pageSize = filter.pageSize ?? DEFAULT_PAGE_SIZE; const page = Math.max(1, filter.page ?? 1);
+      const count = Number(all(`SELECT COUNT(DISTINCT t.conv_key) AS n FROM usage_turn t WHERE ${sql}`, params)[0]?.n ?? 0);
+      const keys = all(`SELECT t.conv_key, MAX(t.started_at) AS last_at FROM usage_turn t WHERE ${sql} GROUP BY t.conv_key ORDER BY last_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize])
         .map((row) => String(row.conv_key));
-      if (!keys.length) return [];
+      if (!keys.length) return { rows: [], total: count };
       const rows = all(`SELECT t.*, (SELECT SUM(input_tokens) FROM usage_request r WHERE r.turn_id = t.id) AS input, (SELECT SUM(output_tokens) FROM usage_request r WHERE r.turn_id = t.id) AS output
         FROM usage_turn t WHERE t.conv_key IN (${keys.map(() => "?").join(", ")}) ORDER BY t.started_at`, keys);
       const costs = costsByTurn(rows.map((row) => String(row.id)));
-      return keys.map((key) => {
+      return { total: count, rows: keys.map((key) => {
         const turns = rows.filter((row) => row.conv_key === key);
         const cost = total(turns.flatMap((row) => costs.get(String(row.id)) ?? []));
         const sum = (field: string) => turns.reduce<number | null>((total, row) => row[field] === null ? total : (total ?? 0) + Number(row[field]), null);
@@ -172,7 +176,7 @@ export function createUsageStore(path: string, estimate: CostEstimator = () => n
           durationMs: turns.reduce((total, row) => total + (row.finished_at === null ? 0 : Number(row.finished_at) - Number(row.started_at)), 0),
           lastAt: Math.max(...turns.map((row) => Number(row.started_at))), internal: turns.some((row) => Number(row.internal) === 1),
         };
-      });
+      }) };
     },
     conversation(key) {
       const turns = all("SELECT * FROM usage_turn WHERE conv_key = ? ORDER BY started_at", [key]);

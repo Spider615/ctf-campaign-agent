@@ -77,8 +77,8 @@ test("重开库时未收尾的记录标为中断", () => {
 test("关键词和渠道筛选", () => withStore((store) => {
   store.startTurn(turn("t1", { question: "金色星期二效果怎样" }));
   store.startTurn(turn("t2", { conversationId: "c2", channel: "juzi", question: "八月毛利" }));
-  assert.deepEqual(store.conversations({ ...DAY, keyword: "星期二" }).map((row) => row.key), ["analysis:c1"]);
-  assert.deepEqual(store.conversations({ ...DAY, channel: "juzi" }).map((row) => row.key), ["analysis:c2"]);
+  assert.deepEqual(store.conversations({ ...DAY, keyword: "星期二" }).rows.map((row) => row.key), ["analysis:c1"]);
+  assert.deepEqual(store.conversations({ ...DAY, channel: "juzi" }).rows.map((row) => row.key), ["analysis:c2"]);
   assert.deepEqual(store.overview({ ...DAY, channel: "juzi" }).days.map((row) => row.channel), ["juzi"]);
 }));
 
@@ -86,7 +86,7 @@ test("同一会话两轮合成一行，洞察问答每次单独一行", () => wi
   store.startTurn(turn("t1"));
   store.startTurn(turn("t2", { question: "那九月呢", startedAt: at("2026-10-20T03:00:00Z") }));
   store.startTurn(turn("t3", { entry: "insight", conversationId: null }));
-  const rows = store.conversations(DAY);
+  const rows = store.conversations(DAY).rows;
   const analysis = rows.find((row) => row.key === "analysis:c1");
   assert.equal(analysis?.turns, 2);
   assert.equal(analysis?.title, "八月销售额多少");
@@ -98,7 +98,7 @@ test("同一会话两轮合成一行，洞察问答每次单独一行", () => wi
 test("内部流量照常计入，只打标记", () => withStore((store) => {
   store.startTurn(turn("t1", { internal: true }));
   assert.equal(store.overview(DAY).days.length, 1);
-  assert.equal(store.conversations(DAY)[0].internal, true);
+  assert.equal(store.conversations(DAY).rows[0].internal, true);
 }));
 
 test("轮次收尾保存公开回复和轨迹，详情按时间排序", () => withStore((store, path) => {
@@ -139,9 +139,21 @@ test("估算费用：请求、轮次、会话、按天按渠道都带上，算�
     assert.equal(store.conversation("analysis:c1")?.turns[0].requests[0].costYuan, 2);
     assert.equal(store.conversation("analysis:c1")?.turns[0].costYuan, 2);
     assert.equal(store.conversation("analysis:c2")?.turns[0].costYuan, null);
-    const rows = store.conversations(filter);
+    const rows = store.conversations(filter).rows;
     assert.equal(rows.find((row) => row.key === "analysis:c1")?.costYuan, 2);
     assert.equal(rows.find((row) => row.key === "analysis:c2")?.costYuan, null);
     assert.deepEqual(store.overview(filter).days.map((row) => [row.channel, row.costYuan, row.unpricedRequests]), [["deepseek", 2, 0], ["juzi", null, 1]]);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("会话列表分页：返回总条数，按页取，超出最后一页为空", () => withStore((store) => {
+  for (let i = 0; i < 23; i++) store.startTurn(turn(`t${i}`, { conversationId: `c${i}`, startedAt: at("2026-10-20T02:00:00Z") + i * 1000 }));
+  const first = store.conversations({ ...DAY, page: 1, pageSize: 10 });
+  assert.equal(first.total, 23);
+  assert.equal(first.rows.length, 10);
+  assert.equal(first.rows[0].key, "analysis:c22", "按最近提问时间倒序");
+  const last = store.conversations({ ...DAY, page: 3, pageSize: 10 });
+  assert.deepEqual(last.rows.map((row) => row.key), ["analysis:c2", "analysis:c1", "analysis:c0"]);
+  assert.equal(store.conversations({ ...DAY, page: 4, pageSize: 10 }).rows.length, 0);
+  assert.equal(store.conversations(DAY).rows.length, 20, "默认每页 20 条");
+}));

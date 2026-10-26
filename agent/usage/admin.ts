@@ -2,7 +2,7 @@
 // 密码和签名密钥只在 Agent 环境里读取，Workers 只转发 cookie。
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { beijingDay, type TurnStatus, type UsageChannel, type UsageEntry, type UsageFilter } from "./store.ts";
+import { beijingDay, type TurnStatus, type UsageChannel, type UsageEntry, type UsageFilter, type UsagePage } from "./store.ts";
 
 export const ADMIN_SESSION_SECONDS = 12 * 3600;
 export type AdminAuth = { configured: boolean; locked(): boolean; login(password: string): string | null; verify(token: string | undefined): boolean };
@@ -46,14 +46,15 @@ const CHANNELS: UsageChannel[] = ["deepseek", "juzi"];
 const STATUSES: TurnStatus[] = ["running", "answered", "partial", "failed", "cancelled", "interrupted"];
 
 // 默认最近 7 天（北京时间）；跨度最多 92 天。
-export function parseUsageQuery(params: URLSearchParams): UsageFilter & { offset?: number } {
+const PAGE_SIZES = [10, 20, 50, 100];
+export function parseUsageQuery(params: URLSearchParams): UsageFilter & UsagePage {
   const today = beijingDay(Date.now());
   const from = params.get("from") ?? beijingDay(Date.now() - 6 * 86400_000);
   const to = params.get("to") ?? today;
   if (!DATE.test(from) || !DATE.test(to) || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) throw new Error("日期格式应为 YYYY-MM-DD");
   if (from > to) throw new Error("开始日期不能晚于结束日期");
   if ((Date.parse(to) - Date.parse(from)) / 86400_000 > 91) throw new Error("一次最多查 92 天");
-  const filter: UsageFilter & { offset?: number } = { from, to };
+  const filter: UsageFilter & UsagePage = { from, to };
   const pick = <T extends string>(name: string, allowed: T[]) => {
     const value = params.get(name);
     if (value === null || value === "") return undefined;
@@ -65,7 +66,9 @@ export function parseUsageQuery(params: URLSearchParams): UsageFilter & { offset
   const status = pick("status", STATUSES); if (status) filter.status = status;
   const model = params.get("model")?.trim(); if (model) { if (model.length > 100) throw new Error("模型名太长"); filter.model = model; }
   const keyword = params.get("keyword")?.trim(); if (keyword) { if (keyword.length > 100) throw new Error("关键词最多 100 字"); filter.keyword = keyword; }
-  const offset = params.get("offset");
-  if (offset) { const value = Number(offset); if (!Number.isSafeInteger(value) || value < 0 || value > 100_000) throw new Error("分页参数不正确"); filter.offset = value; }
+  const page = params.get("page");
+  if (page) { const value = Number(page); if (!Number.isSafeInteger(value) || value < 1 || value > 100_000) throw new Error("页码不正确"); filter.page = value; }
+  const pageSize = params.get("pageSize");
+  if (pageSize) { const value = Number(pageSize); if (!PAGE_SIZES.includes(value)) throw new Error("每页条数只能是 10、20、50 或 100"); filter.pageSize = value; }
   return filter;
 }
