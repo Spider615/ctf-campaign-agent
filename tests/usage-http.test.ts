@@ -120,6 +120,42 @@ test("客户端断开记为取消", async (t) => {
   assert.equal(store.conversation(`analysis:${CONVERSATION}`)?.turns[0].status, "cancelled");
 });
 
+test("登记的运行：断开连接照常跑完记完成，点停止才记取消", async (t) => {
+  const { store, callModel } = await setup(t);
+  let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+  const base = await listen(t, analyticsHandler(store, async (_request, signal) => {
+    await callModel("analysis");
+    await Promise.race([gate, new Promise((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))))]);
+    return simulatedPlanAnswerV4();
+  }));
+  const start = (runId: string, conversation: string) => {
+    const client = new AbortController();
+    void fetch(`${base}/analytics/database/explain/stream`, { method: "POST", signal: client.signal, headers: { ...analyticsHeaders, "x-conversation": conversation, "x-ctf-conversation": conversation, "x-analytics-owner": OWNER, "x-analytics-run-id": runId }, body: JSON.stringify({ mode: "database", question: "八月", history: [] }) }).then((response) => response.text()).catch(() => undefined);
+    return client;
+  };
+  const RUN_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const RUN_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const status = (conversation: string) => store.conversation(`analysis:${conversation}`)?.turns[0]?.status;
+  const wait = async (check: () => boolean) => { for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 10)); assert.ok(check()); };
+  const first = start(RUN_A, "conv-a");
+  await wait(() => status("conv-a") === "running");
+  first.abort();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(status("conv-a"), "running", "断开连接不算取消");
+  start(RUN_B, "conv-b");
+  await wait(() => status("conv-b") === "running");
+  await fetch(`${base}/analytics/runs/${RUN_B}/cancel`, { method: "POST", headers: { "x-analytics-owner": OWNER } });
+  await wait(() => status("conv-b") === "cancelled");
+  release();
+  await wait(() => status("conv-a") === "answered");
+});
+
+test("登记的运行用运行自己的停止信号记录轮次", () => {
+  const source = readFileSync(new URL("../agent/http-handler.ts", import.meta.url), "utf8");
+  const run = source.slice(source.indexOf("analyticsRuns.start(runId"), source.indexOf("analyticsRuns.subscribe(runId", source.indexOf("analyticsRuns.start(runId")));
+  assert.match(run, /record\([\s\S]*?, signal\)/, "运行里的 record 必须传运行的 signal");
+  assert.doesNotMatch(run, /requestController\.signal/);
+});
+
 test("附件问答里嵌套的分析请求算在同一轮", async (t) => {
   const { store, callModel } = await setup(t);
   const runConversation: ConversationRunner = async (_scope, body) => {

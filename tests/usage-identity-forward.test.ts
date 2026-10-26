@@ -26,7 +26,7 @@ test("显式会话编号优先于请求头", () => {
 test("直接问答请求带当前对话编号", () => {
   const client = read("app/lib/client/history-stream.ts");
   assert.match(client, /"X-Conversation-Id": conversationId/);
-  assert.match(read("app/components/analytics/history-conversation.tsx"), /postHistoryStream\(request, progress, controller\.signal, conversationId\)/);
+  assert.match(read("app/components/analytics/history-conversation.tsx"), /postHistoryStream\(request, progress, controller\.signal, runId, conversationId\)/);
 });
 
 test("四个入口都把身份交给 Agent 请求", () => {
