@@ -17,6 +17,9 @@ const READY_MARK = path.join(DATA_DIR, ".ctf-imported");
 const VIEW = "sales_detail_202508";
 const WIDE = `${VIEW}_wide`;
 const WIDE_MARK = path.join(DATA_DIR, ".ctf-wide");
+const INDEX_MARK = path.join(DATA_DIR, ".ctf-index");
+// 在线建索引时排序用的临时文件放持久卷上，容器根分区可能放不下一整张宽表。
+const DDL_TMP = path.join(DATA_DIR, "..", "mysql-ddl-tmp");
 const DUMP = "ctf_sales_202508.sql.gz";
 
 const log = (text) => console.log(`[mysql] ${text}`);
@@ -75,6 +78,24 @@ RENAME TABLE \`${WIDE}_building\` TO \`${WIDE}\`;`;
   run("mysql", ["--socket", SOCKET, "-uroot", "--default-character-set=utf8mb4", DATABASE, "-e", sql]);
 }
 
+// 宽表按交易日期聚簇（主键 交易日期wid + _import_id），查几天只读那几天；另加门店索引给指定门店的查询。
+// 本地实测七天查询 1.9 秒 → 0.4 秒、单日 1.8 → 0.1 秒，整月汇总不变快。
+// 在线 DDL 不锁读写，后台跑、不挡 Agent 启动；失败只记日志，下次重启再试。
+function buildIndexes() {
+  log("后台给宽表建日期主键和门店索引（建好前问答照常查，只是慢）");
+  mkdirSync(DDL_TMP, { recursive: true, mode: 0o700 });
+  const sql = `SET SESSION innodb_strict_mode = 0;
+ALTER TABLE \`${WIDE}\` MODIFY \`交易日期wid\` char(8) NOT NULL, ADD PRIMARY KEY (\`交易日期wid\`, \`_import_id\`), ADD INDEX store_day (\`实体分店店号\`, \`交易日期wid\`), ALGORITHM=INPLACE, LOCK=NONE;
+ANALYZE TABLE \`${WIDE}\`;`;
+  const startedAt = Date.now();
+  const child = spawn("mysql", ["--socket", SOCKET, "-uroot", "--default-character-set=utf8mb4", DATABASE, "-e", sql], { stdio: ["ignore", "ignore", "inherit"] });
+  child.on("exit", (code) => {
+    rmSync(DDL_TMP, { recursive: true, force: true });
+    if (code === 0) { writeFileSync(INDEX_MARK, new Date().toISOString()); log(`宽表索引就绪（${Math.round((Date.now() - startedAt) / 1000)} 秒）`); }
+    else log(`宽表索引没建成（退出码 ${code}），问答照常查无索引的宽表，下次重启再试`);
+  });
+}
+
 // 只读账号：应用只发 SELECT，用它连库。
 function createReader(password) {
   const sql = `CREATE USER IF NOT EXISTS 'ctf_reader'@'127.0.0.1' IDENTIFIED BY '${password}';
@@ -92,7 +113,7 @@ export async function startContainerMysql() {
   if (fresh) { log("初始化数据目录"); run("mysqld", ["--initialize-insecure", "--user=root", `--datadir=${DATA_DIR}`, "--secure-file-priv=NULL"]); }
   // 内存给得保守：容器里还跑着页面和 Agent。
   const mysqld = spawn("mysqld", ["--user=root", `--datadir=${DATA_DIR}`, `--socket=${SOCKET}`, "--bind-address=127.0.0.1", `--port=${PORT}`,
-    "--innodb-buffer-pool-size=768M", "--tmp-table-size=128M", "--max-heap-table-size=128M", "--skip-log-bin", "--mysqlx=OFF",
+    "--innodb-buffer-pool-size=1536M", `--innodb-tmpdir=${DDL_TMP}`, "--tmp-table-size=128M", "--max-heap-table-size=128M", "--skip-log-bin", "--mysqlx=OFF",
     "--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--secure-file-priv=NULL",
     // 导入时 redo 日志太小会让检查点追不上写入，导入明显变慢；只读库不在乎崩溃时丢最后一秒。
     "--innodb-redo-log-capacity=1G", "--innodb-flush-log-at-trx-commit=2"], { stdio: ["ignore", "inherit", "pipe"] });
@@ -113,8 +134,9 @@ export async function startContainerMysql() {
       log("导入完成");
       rmSync(WIDE_MARK, { force: true });
     }
-    if (!existsSync(WIDE_MARK)) { buildWide(); writeFileSync(WIDE_MARK, new Date().toISOString()); log("宽表就绪"); }
+    if (!existsSync(WIDE_MARK)) { buildWide(); rmSync(INDEX_MARK, { force: true }); writeFileSync(WIDE_MARK, new Date().toISOString()); log("宽表就绪"); }
     createReader(password);
+    if (!existsSync(INDEX_MARK)) buildIndexes();
   } catch (error) { mysqld.kill("SIGTERM"); throw error; }
   return { mysqld, env: { CTF_MYSQL_HOST: "127.0.0.1", CTF_MYSQL_PORT: PORT, CTF_MYSQL_USER: "ctf_reader", CTF_MYSQL_PASSWORD: password, CTF_MYSQL_DATABASE: DATABASE,
     // 环境变量里另配了表名就听配置的。
