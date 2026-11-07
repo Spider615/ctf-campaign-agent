@@ -1003,7 +1003,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     { title: "口径", text: "只算正常销售行（件数 > 0 且金额 > 0）；毛利率 = 零售毛利 ÷ 不含税 RSV；回收旧金、退货单独看。还没和 Power BI 对数。" },
   ];
   return { schema: "insight-drivers/v2", datasetVersion: data.datasetVersion, builtAt,
-    scope: { period: data.period, rows: data.rows, stores: storeCount, note: win ? `${data.period}的数据，只是相关` : "一个月数据，只是相关",
+    scope: { period: data.period, rows: data.rows, stores: storeCount, note: win ? `${data.period} 的数据，只是相关` : "一个月数据，只是相关",
       range: win, dataFrom: data.dataFrom, dataTo: data.dataTo, festivals: festivalsOf(all), overlap }, kpis, nodes: nodes.map((n) => n.strength === "na" ? { ...n, card: naCard(n.id, n.paragraphs[0] ?? "") }
       : { ...n, card: nodeCards[n.id], ...(nodeCharts[n.id] ? { chart: nodeCharts[n.id] } : {}) }),
     edges: edges.map((e): InsightEdge => e.strength === "na"

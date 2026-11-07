@@ -110,6 +110,8 @@ Agent 服务通过 Claude Agent SDK 运行一轮对话。SDK 内置工具只开�
 
 `/analysis` 分「深度剖析 / 智能问答」两种模式（`app/components/analytics/analysis-modes.tsx`），模式和图上选中的节点、连线、来源筛选都存在 URL 里（`?mode=&node=` / `&edge=from>to` / `&source=`），两边一直挂载，切换只隐藏。设计见 `docs/superpowers/specs/2026-10-20-insight-drivers-design.md`（取代 10-19 那份的图谱部分）。
 
+图谱可以按时间范围重算（`?from=YYYYMMDD&to=YYYYMMDD`，最短 3 天，设计 `docs/superpowers/specs/2026-11-07-insight-date-range-design.md`，范围工具在 `app/lib/insight/range.ts`）：除逐日外的查询加日期参数，逐日始终取全部日期（铺开日、平日对照看窗口外）；门店门槛按窗口缩放（全月 20 天，范围内 ceil(天数×2/3)）；七夕、星期、新增还是挪动在范围内算不出来时标 `na`（不适用），卡片只写原因。节日预设从 `节庆` 字段推出。Agent 内存里按范围最多存 8 份图，全月那份不淘汰；第一次算一个范围约 20 秒（本机七夕实测 19.6 秒）。全月输出由 `tests/fixtures/insight-full-month.json` 锁住，改 `drivers.ts` 不能让它变，除非有意改全月图并重新生成。本机 Docker 里的 MySQL 缓存池调到 4 GB 时会因虚拟机内存不足被 OOM 杀掉，按范围重算会触发，保持 2 GB 以内。
+
 - 图谱只有一张：「销售额、毛利、销量受哪些因素影响」，四列从左往右是细项因素 → 因素 → 指标拆解 → 指标，节点固定 23 个（`types.ts` 的 `INSIGHT_NODE_IDS`）。没有指标、优惠、货类筛选。
 - 数据流：页面 `GET /api/analytics/insight` → Agent `GET /insight/graph` → `agent/insight-graph.ts` 发 8 条聚合查询（门店日面板、门店属性、货类、逐日、一般足金类按日按优惠组、15–25 克逐克件数、以旧换新按单关联、范围）→ `drivers.ts` 的 `buildDriverGraph`。默认源表 `sales_detail_202508`，`CTF_INSIGHT_TABLE` 可改。查询结果按数据版本落盘（`CTF_INSIGHT_CACHE_DIR`，默认 `~/Library/Application Support/ctf-campaign-agent/insight-cache`），Agent 启动时 `warm()` 预热：第一次约 2 分钟，之后重启只读盘、20–30 秒内算好。
 - 纯函数：`stats.ts`（最小二乘、门店 + 日期双向固定效应、同店同日去均值回归、属性独有贡献、对数方差拆分，不引数值库）、`drivers.ts`（统计量 → 节点、连线、依据；图上数字全部由这里的模板填）、`paths.ts`（上下游、到指标的完整链路、高亮）、`context.ts`（URL、问答上下文、问答回答定位到图上节点）、`ask.ts`（图谱问答的依据材料和数字核对）。
