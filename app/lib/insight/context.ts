@@ -4,7 +4,7 @@ import { INSIGHT_NODE_IDS, INSIGHT_SOURCE_KINDS, INSIGHT_SOURCE_LABEL, type Insi
 
 // 问答带过去的范围：只记节点或线，不记来源筛选（来源筛选不是一个分析对象）。
 // say / todo：页面上的业务结论和 AI 建议，带到问答里，用户追问建议时要先查数据。旧会话里没有这两项。
-export type InsightFocus = ({ kind: "node"; id: InsightNodeId; label: string } | { kind: "edge"; from: InsightNodeId; to: InsightNodeId; label: string; basis: string }) & { say?: string; todo?: string | null };
+export type InsightFocus = ({ kind: "node"; id: InsightNodeId; label: string } | { kind: "edge"; from: InsightNodeId; to: InsightNodeId; label: string; basis: string }) & { say?: string; todo?: string | null; period?: string };
 
 const isNode = (id: string | null): id is InsightNodeId => Boolean(id) && (INSIGHT_NODE_IDS as readonly string[]).includes(id!);
 
@@ -34,9 +34,10 @@ export function selectionLabel(graph: InsightGraph, selection: InsightSelection 
 export function focusOf(graph: InsightGraph, selection: InsightSelection | null): InsightFocus | null {
   if (!selection || selection.kind === "source") return null;
   const plain = (t: string) => t.replace(/[【】]/g, "");
-  if (selection.kind === "node") { const node = findNode(graph, selection.id); return node ? { kind: "node", id: node.id, label: node.label, ...(node.card ? { say: plain(node.card.say), todo: node.card.todo } : {}) } : null; }
+  const when = graph.scope.range ? { period: graph.scope.period } : {};
+  if (selection.kind === "node") { const node = findNode(graph, selection.id); return node ? { kind: "node", id: node.id, label: node.label, ...when, ...(node.card ? { say: plain(node.card.say), todo: node.card.todo } : {}) } : null; }
   const edge = findEdge(graph, selection.from, selection.to); const from = findNode(graph, selection.from); const to = findNode(graph, selection.to);
-  return edge && from && to ? { kind: "edge", from: edge.from, to: edge.to, label: `${from.label} → ${to.label}`, basis: edge.basis, ...(edge.card ? { say: plain(edge.card.say), todo: edge.card.todo } : {}) } : null;
+  return edge && from && to ? { kind: "edge", from: edge.from, to: edge.to, label: `${from.label} → ${to.label}`, basis: edge.basis, ...when, ...(edge.card ? { say: plain(edge.card.say), todo: edge.card.todo } : {}) } : null;
 }
 
 export const focusLabel = (focus: InsightFocus) => focus.label;
@@ -45,7 +46,7 @@ export const focusLabel = (focus: InsightFocus) => focus.label;
 export function focusContext(focus: InsightFocus): string {
   const what = focus.kind === "node" ? `节点「${focus.label}」` : `连线「${focus.label}」（图上依据：${focus.basis}）`;
   const card = [focus.say ? `页面上的结论是「${focus.say}」` : "", focus.todo ? `AI 对它的建议是「${focus.todo}」，这是建议不是数据：用户问到建议或「该怎么做」时，要先查数据给出支撑或反证，再说建议` : ""].filter(Boolean).join("；");
-  return `用户正在看深度剖析的指标影响因素图谱（销售额、毛利、销量受哪些因素影响，2025 年 8 月全国），选中了${what}。${card ? `${card}。` : ""}「这个」「这条线」「这个因素」指它。没有明确改变时沿用这个范围。`;
+  return `用户正在看深度剖析的指标影响因素图谱（销售额、毛利、销量受哪些因素影响，${focus.period ? `${focus.period} 全国` : "2025 年 8 月全国"}），选中了${what}。${card ? `${card}。` : ""}「这个」「这条线」「这个因素」指它。没有明确改变时沿用这个范围。`;
 }
 
 // 问答回答用到的语义层维度 → 图上的节点；门店、日期、货品这类明细维度图上没有。

@@ -1,11 +1,12 @@
 // 图谱问答：用户在洞察页里针对整张图或选中的节点、连线提问，回答只依据图谱里已经算好的内容。
 // 这里是纯函数：校验请求、把图谱和选中对象整理成依据材料、检查回答里的数字都出自依据。
 import { selectionLabel } from "./context.ts";
+import { parseRangeParams, type InsightRange } from "./range.ts";
 import { edgeKey, findNode, routes, routesThrough, type InsightSelection } from "./paths.ts";
 import { INSIGHT_EDGE_SOURCE, INSIGHT_NODE_IDS, INSIGHT_SOURCE_KINDS, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightSourceKind } from "./types.ts";
 
 export type InsightAskTurn = { role: "user" | "assistant"; text: string };
-export type InsightAskRequest = { selection: InsightSelection | null; question: string; history: InsightAskTurn[] };
+export type InsightAskRequest = { selection: InsightSelection | null; question: string; history: InsightAskTurn[]; range: InsightRange | null };
 export type InsightAskResult = { schema: "insight-answer/v2"; body: string; highlights: InsightNodeId[]; removed: number };
 
 const isObject = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -25,7 +26,9 @@ export function parseAskBody(value: unknown): InsightAskRequest {
   const question = typeof value.question === "string" ? value.question.trim() : "";
   if (!question || question.length > 500) throw new Error("问题不能为空，最多 500 字");
   const history = Array.isArray(value.history) ? value.history.slice(-6).filter((t): t is InsightAskTurn => isObject(t) && (t.role === "user" || t.role === "assistant") && typeof t.text === "string").map((t) => ({ role: t.role, text: t.text.slice(0, 2000) })) : [];
-  return { question, history, selection: parseSelection(value.selection) };
+  // 问的是哪个范围的图：和页面上正在看的一样。
+  const range = isObject(value.range) ? parseRangeParams(typeof value.range.from === "string" ? value.range.from : null, typeof value.range.to === "string" ? value.range.to : null) : null;
+  return { question, history, selection: parseSelection(value.selection), range };
 }
 
 const nodeName = (graph: InsightGraph, id: InsightNodeId) => findNode(graph, id)?.label ?? id;

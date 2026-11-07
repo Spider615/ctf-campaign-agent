@@ -184,12 +184,13 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
       catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "请求不正确" }); }
       try {
         // 图谱命中缓存，问答只读已算好的内容。
-        const graph = await insight.graph();
+        const graph = await insight.graph(body.range);
         // 洞察问答没有会话概念，每次提问单独一轮。
         return send(response, 200, await recordTurn(usage, { ...identity(), conversationId: null, entry: "insight", channel, question: body.question },
           () => insightAsk(body, graph, controller.signal), (result) => ({ status: "answered", reply: result.body }), controller.signal, publicError));
       } catch (error) {
         if (controller.signal.aborted || isTurnCancelled(error)) return;
+        if (error instanceof InsightRangeError) return send(response, 400, { error: error.message });
         logger.error(`[insight] 问答失败：${error instanceof Error ? error.message : error}`);
         return send(response, 502, { error: publicError(error instanceof Error ? error.message : "这次没有得到回答，可以重试") });
       }

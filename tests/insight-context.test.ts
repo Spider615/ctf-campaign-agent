@@ -34,3 +34,14 @@ test("问答上下文的指代说明能进到计划复核", async () => {
   const context = focusContext(focusOf(fakeGraph(), { kind: "node", id: "region" })!);
   assert.match(planReviewPrompt("你帮我分析一下这个因素", "{}", undefined, [context]), /原问题里的指代按这里理解[\s\S]*大区 \/ 区域/);
 });
+
+test("选了范围时问答上下文写明范围，全月照旧", async () => {
+  const { fakeGraphIn } = await import("./helpers/insight-fixture.ts");
+  const qixi = focusOf(fakeGraphIn({ from: "20250823", to: "20250829" }), { kind: "node", id: "region" })!;
+  assert.equal(qixi.period, "七夕 8/23–8/29");
+  assert.match(focusContext(qixi), /七夕 8\/23–8\/29 全国/);
+  assert.doesNotMatch(focusContext(qixi), /2025 年 8 月/);
+  const full = focusOf(fakeGraph(), { kind: "node", id: "region" })!;
+  assert.equal(full.period, undefined);
+  assert.match(focusContext(full), /2025 年 8 月全国/);
+});

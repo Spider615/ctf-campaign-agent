@@ -15,6 +15,9 @@ test("请求校验：问题必填、选中对象只接受图上有的节点和�
   const ok = parseAskBody({ question: "为什么", selection: { kind: "edge", from: "promo", to: "mix" }, history: [{ role: "user", text: "a" }, { role: "x", text: "b" }] });
   assert.deepEqual(ok.selection, { kind: "edge", from: "promo", to: "mix" });
   assert.equal(ok.history.length, 1);
+  assert.equal(parseAskBody({ question: "x" }).range, null);
+  assert.deepEqual(parseAskBody({ question: "x", range: { from: "20250823", to: "20250829" } }).range, { from: "20250823", to: "20250829" });
+  assert.throws(() => parseAskBody({ question: "x", range: { from: "20250829", to: "20250823" } }), /开始日期不能晚于结束日期/);
 });
 
 test("依据材料：选中线时带上两端节点、来源和经过它的链路；选中待采集项写明 AI 的部分", () => {
@@ -60,7 +63,7 @@ test("问答运行：一次模型调用，只开放提交工具；编出来的�
     yield { type: "result", subtype: "success", is_error: false } as never;
   };
   const run = createInsightAskRunner({ model: "m", modelBaseUrl: "https://x", apiKey: "k", runtimeDir: "/tmp/insight-ask-test" }, { query });
-  const result = await run({ selection: { kind: "edge", from: "depth", to: "promo" }, question: "哪个力度让利最多？", history: [] }, graph);
+  const result = await run({ selection: { kind: "edge", from: "depth", to: "promo" }, question: "哪个力度让利最多？", history: [], range: null }, graph);
   assert.match(prompt, /# 用户的问题\n哪个力度让利最多？/);
   assert.equal(result.body, "图上克减 50 每克实让 54.0 元。");
   assert.deepEqual(result.highlights, ["depth"]);

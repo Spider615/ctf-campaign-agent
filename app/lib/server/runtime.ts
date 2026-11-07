@@ -68,11 +68,11 @@ export async function inspectHistoryDatabase(signal?: AbortSignal): Promise<Data
   if (!response.ok) throw await agentHttpError(response);
   return await response.json() as DatabaseSummary;
 }
-// 洞察图谱只有一张：Agent 启动时预热、查询结果落盘，命中缓存时立即返回。
-export async function fetchInsightGraph(signal?: AbortSignal): Promise<Response> {
+// 每个范围 Agent 算一次、查询结果落盘；search 是 ?from=&to= 或空串，原样转给 Agent 校验。
+export async function fetchInsightGraph(search: string, signal?: AbortSignal): Promise<Response> {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
   // 和其他 Agent 请求一样只跟随浏览器取消，不另设墙钟超时；Agent 侧每条查询有 3 分钟上限。
-  const response = await fetch(`${base}/insight/graph`, { headers: agentHeaders(), signal });
+  const response = await fetch(`${base}/insight/graph${search}`, { headers: agentHeaders(), signal });
   return new Response(response.body, { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8" } });
 }
 
