@@ -11,7 +11,8 @@ import type { AnalyticsRunner } from "./analytics-run-turn.ts";
 import type { AnalyticsSkillRunner } from "./analytics-runner-types.ts";
 import { isDatabaseExplainRequest, type AnalyticsDatabase } from "../app/lib/analytics/database.ts";
 import { encodeAnalyticsStreamEvent, type AnalyticsStreamEvent } from "../app/lib/analytics/stream.ts";
-import type { InsightGraphService } from "./insight-graph.ts";
+import { InsightRangeError, type InsightGraphService } from "./insight-graph.ts";
+import { parseRangeParams } from "../app/lib/insight/range.ts";
 import type { InsightAskRunner } from "./insight-ask.ts";
 import { parseAskBody } from "../app/lib/insight/ask.ts";
 import { ANALYTICS_RUN_ID, createAnalyticsRuns, type AnalyticsRuns } from "./analytics-runs.ts";
@@ -163,9 +164,16 @@ export function createAgentHttpHandler({ runAgentTurn, runPlanAnalyticsTurn, dat
     if (isAttachment) return attachmentHandler!(request, response);
     if (isInsight) {
       if (!insight) return send(response, 503, { error: "历史数据库尚未启用，洞察图谱暂不可用" });
-      // 图谱只有一张，算好后缓存；断开连接也让计算跑完，下次直接命中。
-      try { return send(response, 200, await insight.graph()); }
-      catch (error) { logger.error(`[insight] 计算失败：${error instanceof Error ? error.message : error}`); return send(response, 502, { error: "洞察图谱暂时算不出来，请稍后重试" }); }
+      const params = new URL(request.url ?? "/", "http://agent").searchParams;
+      let range;
+      try { range = parseRangeParams(params.get("from"), params.get("to")); }
+      catch (error) { return send(response, 400, { error: error instanceof Error ? error.message : "范围不正确" }); }
+      // 每个范围算好后缓存；断开连接也让计算跑完，下次直接命中。
+      try { return send(response, 200, await insight.graph(range)); }
+      catch (error) {
+        if (error instanceof InsightRangeError) return send(response, 400, { error: error.message });
+        logger.error(`[insight] 计算失败：${error instanceof Error ? error.message : error}`); return send(response, 502, { error: "洞察图谱暂时算不出来，请稍后重试" });
+      }
     }
     if (isInsightAsk) {
       if (!insight || !insightAsk) return send(response, 503, { error: "历史数据库尚未启用，图谱问答暂不可用" });
