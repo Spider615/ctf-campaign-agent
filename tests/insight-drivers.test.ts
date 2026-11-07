@@ -4,7 +4,9 @@ import test from "node:test";
 import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayBands, withinStoreDayFit } from "../app/lib/insight/stats.ts";
 import { edgeKey, highlightOf, reach, routes, routesThrough } from "../app/lib/insight/paths.ts";
 import { INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL, type InsightChart } from "../app/lib/insight/types.ts";
-import { fakeGraph, fakeGraphIn } from "./helpers/insight-fixture.ts";
+import { fakeGraph, fakeGraphIn, fakeResultsIn } from "./helpers/insight-fixture.ts";
+import { buildDriverGraph } from "../app/lib/insight/drivers.ts";
+import { toDriverData } from "../agent/insight-graph.ts";
 
 test("最小二乘：精确还原系数，共线的列记 0", () => {
   const x = Float64Array.from([1, 2, 3, 4, 5]); const ones = new Float64Array(5).fill(1);
@@ -279,7 +281,9 @@ test("指标卡片：两个乘数各高多少、结果跟着高多少；下面�
 test("全月图和改动前一样（除 scope 新增字段外逐字段相同）", () => {
   const expected = JSON.parse(readFileSync(new URL("./fixtures/insight-full-month.json", import.meta.url), "utf8"));
   const actual = JSON.parse(JSON.stringify(fakeGraph()));
-  const { range, dataFrom, dataTo, festivals, overlap, ...scope } = actual.scope;
+  // scope 里新增的字段不在快照里，比较前去掉。
+  const scope = { ...actual.scope };
+  for (const k of ["range", "dataFrom", "dataTo", "festivals", "overlap"]) delete scope[k];
   assert.deepEqual({ ...actual, scope }, expected);
 });
 
@@ -340,4 +344,51 @@ test("全月：range 为 null，没有不适用的线", () => {
   assert.equal(g.scope.range, null);
   assert.ok(g.edges.every((e) => e.strength !== "na"));
   assert.equal(g.scope.overlap, null);
+});
+
+test("不适用的节点和线：卡片只写原因，不带数字、图、异常和建议", () => {
+  for (const r of [QIXI, { from: "20250801", to: "20250814" }]) {
+    const g = fakeGraphIn(r);
+    const items = [...g.nodes.filter((n) => n.strength === "na").map((n) => ({ id: n.id, item: n as { card: typeof n.card; chart?: unknown; anomalies?: string[] } })),
+      ...g.edges.filter((e) => e.strength === "na").map((e) => ({ id: `${e.from}>${e.to}`, item: e as { card: typeof e.card; chart?: unknown; anomalies?: string[] } }))];
+    assert.ok(items.length >= 2, `${r.from}：应有不适用的节点和线`);
+    for (const { id, item } of items) {
+      const at = `${r.from} ${id}`;
+      assert.doesNotMatch(item.card.say, /【/, at);
+      assert.equal(item.card.chart, undefined, at); assert.equal(item.card.sim, undefined, at); assert.equal(item.card.stores, undefined, at);
+      assert.equal(item.chart, undefined, at);
+      assert.equal(item.card.todo, null, at);
+      assert.deepEqual(item.card.evidence, [], at);
+      if (id.includes(">")) assert.deepEqual(item.anomalies, [], at);
+    }
+  }
+});
+
+test("星期（8/1–8/14）：周二和窗口内的周一、三、四比，不拿窗口外的日子比", () => {
+  const r = { from: "20250801", to: "20250814" };
+  const res = fakeResultsIn(r);
+  // 把窗口外铺开前的日子（8/15–8/21）销售额放大 3 倍：窗口内的对比不该受影响。
+  const daily = res.daily.map((d) => d.d > r.to && d.d < "20250822" ? { ...d, sales: String(Number(d.sales) * 3) } : d);
+  const g = buildDriverGraph(toDriverData({ ...res, daily }, "v-test", r), "2026-10-20T00:00:00.000Z");
+  const inWin = daily.filter((d) => d.d >= r.from && d.d <= r.to && ["1", "3", "4"].includes(d.dow) && !d.festival);
+  const avg = inWin.reduce((a, d) => a + Number(d.sales), 0) / inWin.length;
+  const yi = (v: number) => `${(Math.round(v / 1e7) / 10).toFixed(1)} 亿`;
+  const basis = g.edges.find((e) => e.from === "weekday")!.basis;
+  assert.match(basis, new RegExp(`周一、三、四只有 ${yi(avg)}`));
+  assert.match(g.nodes.find((n) => n.id === "weekday")!.paragraphs[0], new RegExp(`周一、三、四只有 ${yi(avg)}`));
+  // 「平常工作日」仍是窗口外的对照期，要写明是哪几天。
+  assert.match(g.nodes.find((n) => n.id === "day")!.paragraphs[0], /平常工作日（窗口外不过节的周一、三、四 8\/18、8\/20、8\/21）/);
+});
+
+test("7 天范围：营业不到 3 天（7 天的 1/3）的店算数据不完整", () => {
+  const r = { from: "20250804", to: "20250810" };
+  const res = fakeResultsIn(r);
+  // S0 在窗口里只留 2 天有成交。
+  const keep = new Set(["20250804", "20250805"]);
+  const panel = res.panel.filter((p) => p.store !== "S0" || keep.has(p.d));
+  const g = buildDriverGraph(toDriverData({ ...res, panel }, "v-test", r), "2026-10-20T00:00:00.000Z");
+  const out = g.edges.find((e) => e.from === "orders" && e.to === "sales")!.outliers;
+  assert.ok(out, "销售额应有离群店表");
+  assert.match(out.foot ?? "", /测试店0（S0） 只有 2 天有成交/);
+  assert.ok(out.rows.every((row) => row[0] !== "测试店0"), "数据不完整的店不进表");
 });
