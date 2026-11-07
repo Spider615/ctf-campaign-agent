@@ -130,7 +130,7 @@ export function createInsightGraphService(config: Config): InsightGraphService {
     return results;
   }
 
-  // 数据版本和起止日期：只查一次，范围校验要用起止日期。
+  // 数据版本和起止日期：每个进程只查一次（和原来一样），范围校验要用起止日期。数据更新后要重启 Agent 才会用新版本。
   let meta: Promise<{ version: string; dataFrom: string; dataTo: string }> | null = null;
   function versionOf() {
     meta ??= runAll([{ sql: `SELECT /*+ MAX_EXECUTION_TIME(${QUERY_TIMEOUT_MS}) */ COUNT(*) AS n, MIN(\`交易日期wid\`) AS min_day, MAX(\`交易日期wid\`) AS max_day FROM \`${config.table}\``, params: [] }])
@@ -158,6 +158,10 @@ export function createInsightGraphService(config: Config): InsightGraphService {
   // 按范围缓存，最多 8 份，超出淘汰最久没用的；全月用键 "all"，预热过的全月图不淘汰（问答、首页都靠它）。
   // 等到版本之后同步查缓存、同步放入，中间没有 await，同范围并发只会算一次。
   const CACHE_LIMIT = 8;
+  // 图谱计算排队：全月、各范围（含预热）共用一条队列，同一时间只跑一个 build。每个 build 最多开 3 个连接扫全表，
+  // 几个范围同时算曾把本地 MySQL 撑到内存不足被杀。前一个失败不影响后面的。
+  let queue: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const p = queue.then(fn, fn); queue = p.catch(() => {}); return p; };
   const cache = new Map<string, Promise<InsightGraph>>();
   async function graph(range: InsightRange | null = null): Promise<InsightGraph> {
     const { version, dataFrom, dataTo } = await versionOf();
@@ -167,7 +171,7 @@ export function createInsightGraphService(config: Config): InsightGraphService {
     const existing = cache.get(key);
     if (existing) { cache.delete(key); cache.set(key, existing); return existing; }
     // 失败时只删自己这一份：期间被淘汰、又重新发起的同一范围不能被误删。
-    const hit: Promise<InsightGraph> = build(window, version).catch((error) => { if (cache.get(key) === hit) cache.delete(key); throw error; });
+    const hit: Promise<InsightGraph> = enqueue(() => build(window, version)).catch((error) => { if (cache.get(key) === hit) cache.delete(key); throw error; });
     cache.set(key, hit);
     while (cache.size > CACHE_LIMIT) { const oldest = [...cache.keys()].find((k) => k !== "all"); if (!oldest) break; cache.delete(oldest); }
     return hit;

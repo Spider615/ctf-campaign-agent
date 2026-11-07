@@ -85,6 +85,23 @@ test("按范围缓存：不同范围分开算，同范围并发只算一次；�
   } finally { await rm(cacheDir, { recursive: true, force: true }); }
 });
 
+test("不同范围排队计算：同一时间只跑一个，全部都能算完", async () => {
+  // 门店日面板每个 build 发一次；在它的 execute 里停一会儿，看同时有几个 build 在跑。
+  const panels = new Set([insightQueries("t").panel, insightQueries("t", true).panel]);
+  let inFlight = 0; let max = 0;
+  const base = fakeConnection(() => {});
+  const connection: HistoryConnection = { ...base, async execute(sql: string, params: string[] = []) {
+    if (!panels.has(sql)) return base.execute(sql, params);
+    inFlight++; max = Math.max(max, inFlight);
+    try { await new Promise((r) => setTimeout(r, 20)); return await base.execute(sql, params); } finally { inFlight--; }
+  } } as HistoryConnection;
+  const service = createInsightGraphService({ table: "t", evidenceDir: join(tmpdir(), "insight-evidence-unused"), connect: async () => connection, logger: { log() {}, error() {} } });
+  const ranges = [{ from: "20250801", to: "20250810" }, { from: "20250811", to: "20250820" }, { from: "20250821", to: "20250831" }];
+  const graphs = await Promise.all(ranges.map((r) => service.graph(r)));
+  assert.deepEqual(graphs.map((g) => g.scope.range), ranges);
+  assert.equal(max, 1);
+});
+
 test("内存缓存最多 8 份，最久没用的先淘汰；全月图不淘汰", async () => {
   // 不给 cacheDir：没有磁盘缓存，被淘汰的范围再要时会重新发查询。
   let queries = 0;

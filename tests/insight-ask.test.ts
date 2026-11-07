@@ -5,7 +5,7 @@ import { createInsightAskRunner } from "../agent/insight-ask.ts";
 import type { AgentQuery } from "../agent/run-turn.ts";
 import { Client } from "../agent/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js";
 import { InMemoryTransport } from "../agent/node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js";
-import { fakeGraph } from "./helpers/insight-fixture.ts";
+import { fakeGraph, fakeGraphIn } from "./helpers/insight-fixture.ts";
 
 const graph = fakeGraph();
 
@@ -81,4 +81,13 @@ test("待采集的数据不引导去智能问答查", () => {
   assert.equal(out.removed, 1);
   assert.match(out.body, /各门店销售额/);
   assert.doesNotMatch(out.body, /新客占比/);
+});
+
+test("依据材料带范围：范围名后空一格，节日和克减重叠时写明分不开；全月没有这句", () => {
+  const qixi = askContext(fakeGraphIn({ from: "20250823", to: "20250829" }), null);
+  assert.match(qixi, /## 图谱范围\n七夕 8\/23–8\/29 全国销售明细/);
+  assert.match(qixi, /\n注意：七夕和全国克减重叠（克减 8\/22 起），节日效应和活动效应分不开。/);
+  const full = askContext(graph, null);
+  assert.match(full, /## 图谱范围\n2025 年 8 月全国销售明细/);
+  assert.doesNotMatch(full.split("\n## ")[0], /注意：/, "全月的图谱范围一节没有重叠说明");
 });

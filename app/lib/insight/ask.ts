@@ -59,7 +59,8 @@ const edgeDetail = (graph: InsightGraph, e: InsightEdge) => [edgeLine(graph, e),
 // 依据材料：图谱概况 + 全部连线依据 + 选中对象的详情和链路 + 可高亮的节点清单。数字只出自这里。
 export function askContext(graph: InsightGraph, selection: InsightSelection | null): string {
   const lines: string[] = [];
-  lines.push(`## 图谱范围\n${graph.scope.period}全国销售明细 ${graph.scope.rows.toLocaleString("zh-CN")} 行、${graph.scope.stores.toLocaleString("zh-CN")} 家店；${graph.scope.note}。三个结果指标：${graph.kpis.map((k) => `${k.label} ${k.value}${k.unit}（${k.detail}）`).join("；")}。`);
+  // 选了范围时范围名以日期结尾，后面空一格（全月「2025 年 8 月全国」不变）；节日和克减重叠时告诉模型两者分不开。
+  lines.push(`## 图谱范围\n${graph.scope.period}${graph.scope.range ? " " : ""}全国销售明细 ${graph.scope.rows.toLocaleString("zh-CN")} 行、${graph.scope.stores.toLocaleString("zh-CN")} 家店；${graph.scope.note}。三个结果指标：${graph.kpis.map((k) => `${k.label} ${k.value}${k.unit}（${k.detail}）`).join("；")}。${graph.scope.overlap ? `\n注意：${graph.scope.overlap}。` : ""}`);
   lines.push(`## 图上三句话结论\n${graph.summary.map((s) => `- ${s}`).join("\n")}`);
   lines.push(`## 所有连线（因素 → 结果）\n${graph.edges.map((e) => edgeLine(graph, e)).join("\n")}`);
   const detail: string[] = [];

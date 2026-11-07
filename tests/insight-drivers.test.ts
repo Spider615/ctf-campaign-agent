@@ -289,7 +289,7 @@ test("全月图和改动前一样（除 scope 新增字段外逐字段相同）"
 
 const QIXI = { from: "20250823", to: "20250829" };
 const finite = (x: unknown, p = ""): string[] => typeof x === "number" ? (Number.isFinite(x) ? [] : [p])
-  : typeof x === "string" ? (/NaN|Infinity|undefined/.test(x) ? [`${p}: ${x.slice(0, 60)}`] : [])
+  : typeof x === "string" ? (/NaN|Infinity|undefined|∞/.test(x) ? [`${p}: ${x.slice(0, 60)}`] : [])
   : Array.isArray(x) ? x.flatMap((v, i) => finite(v, `${p}[${i}]`))
   : x && typeof x === "object" ? Object.entries(x).flatMap(([k, v]) => finite(v, `${p}.${k}`)) : [];
 
@@ -335,8 +335,19 @@ test("跨节日边界（8/20–8/31）：七夕能算", () => {
 });
 
 test("几个短范围算出来的图没有 NaN、Infinity", () => {
-  for (const r of [QIXI, { from: "20250801", to: "20250803" }, { from: "20250829", to: "20250831" }, { from: "20250801", to: "20250821" }])
+  for (const r of [QIXI, { from: "20250801", to: "20250803" }, { from: "20250829", to: "20250831" }, { from: "20250801", to: "20250821" },
+    { from: "20250801", to: "20250830" }, { from: "20250802", to: "20250831" }, { from: "20250801", to: "20250825" }, { from: "20250805", to: "20250828" }])
     assert.deepEqual(finite(fakeGraphIn(r)), [], `${r.from}–${r.to}`);
+});
+
+test("窗口吞掉全部铺开前平日（8/1–8/30）：平常工作日改用窗口内的并写明，不写 0.0 亿和 ∞", () => {
+  const g = fakeGraphIn({ from: "20250801", to: "20250830" });
+  const text = JSON.stringify(g);
+  assert.doesNotMatch(text, /平常[^。]{0,30}0\.0 亿/);
+  assert.equal(text.includes("∞"), false);
+  const qixi = g.edges.find((e) => e.from === "qixi" && e.to === "day")!;
+  assert.match(qixi.basis, /窗口内/);
+  assert.match(qixi.basis, /倍/);
 });
 
 test("全月：range 为 null，没有不适用的线", () => {

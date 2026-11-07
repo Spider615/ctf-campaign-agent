@@ -37,6 +37,8 @@ const times = (v: number) => `×${n1(v)}`;
 const day = (d: string) => `${Number(d.slice(4, 6))}/${Number(d.slice(6, 8))}`;
 const sum = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
 const mean = (xs: readonly number[]) => xs.length ? sum(xs) / xs.length : 0;
+// 「：甲，乙」：去掉空项后用逗号连起来，一项都没有时整段不写。
+const colonList = (parts: string[]) => { const xs = parts.filter(Boolean); return xs.length ? `：${xs.join("，")}` : ""; };
 const ageBand = (age: number | null) => age === null ? "未知" : age <= 2 ? "≤2年" : age <= 5 ? "3-5年" : age <= 10 ? "6-10年" : "10年以上";
 
 export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOString()): InsightGraph {
@@ -147,17 +149,26 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const plain = (d: DailyRow) => [1, 3, 4].includes(d.dow) && !d.festival;
   // 平常工作日：全月时是铺开前不过节的周一、三、四；选了范围时只取窗口外的（窗口里的日子是被比较的对象）。
   const ordinary = all.filter((d) => plain(d) && d.day < rollout && (!win || !inWin(d.day)));
-  const ordinaryAvg = mean(ordinary.map((d) => d.sales));
   // 选了范围时的对照期说法：不超过 6 天逐个列出，多了写首尾和天数，并注明在窗口外（首尾之间可能夹着窗口里的日子）。只在范围模式下用。
-  const ordinaryDesc = !ordinary.length ? "窗口外没有不过节的周一、三、四"
-    : ordinary.length <= 6 ? `窗口外不过节的周一、三、四 ${ordinary.map((d) => day(d.day)).join("、")}`
-    : `窗口外 ${day(ordinary[0].day)}–${day(ordinary.at(-1)!.day)} 不过节的周一、三、四，共 ${ordinary.length} 天`;
-  // 「平常工作日」后面的对照期注释：全月不加，范围模式写明是窗口外哪些天。
-  const ordTag = win ? `（${ordinaryDesc}）` : "";
+  const descOf = (rows: DailyRow[], where: string) => !rows.length ? `${where}没有不过节的周一、三、四`
+    : rows.length <= 6 ? `${where}不过节的周一、三、四 ${rows.map((d) => day(d.day)).join("、")}`
+    : `${where} ${day(rows[0].day)}–${day(rows.at(-1)!.day)} 不过节的周一、三、四，共 ${rows.length} 天`;
+  const ordinaryDesc = descOf(ordinary, "窗口外");
   const tuesdays = daily.filter((d) => d.dow === 2 && d.day < rollout && !d.festival);
   // 星期的对比只用窗口内的日子：周二和窗口内铺开前不过节的周一、三、四比。全月时就是 ordinary。
   const plainIn = win ? daily.filter((d) => plain(d) && d.day < rollout) : ordinary;
   const plainInAvg = mean(plainIn.map((d) => d.sales));
+  // 窗口内没有铺开前不过节的周一、三、四时，星期的文字不写和它们的对比（不写 0.0 亿）。全月时一直写。
+  const hasPlainIn = !win || plainIn.length > 0;
+  // 节日、日期对照用的「平常工作日」：优先窗口外的（ordinary）；窗口外没有时用窗口内铺开前不过节的周一、三、四；都没有就不写倍数。
+  // 全月时就是 ordinary，文字和原来一样。新增还是挪动（shift）仍只用窗口外的 ordinary。
+  const ref = !win || ordinary.length ? ordinary : plainIn;
+  const hasRef = !win || ref.length > 0;
+  const refAvg = mean(ref.map((d) => d.sales)); const refOrders = mean(ref.map((d) => d.orders));
+  const refDesc = descOf(ref, !win || ordinary.length ? "窗口外" : "窗口内铺开前");
+  // 「平常工作日」后面的对照期注释：全月不加，范围模式写明用的是哪些天。
+  const refTag = win ? `（${refDesc}）` : "";
+  const noRef = "窗口内外都没有克减铺开前不过节的周一、三、四，没有平常日子可比。";
   const tueAvg = mean(tuesdays.map((d) => d.sales)); const tueGold = mean(tuesdays.map((d) => d.goldSales)); const ordGold = mean(plainIn.map((d) => d.goldSales));
   const weekendAvg = mean(daily.filter((d) => d.dow === 0 || d.dow === 6).map((d) => d.sales));
   const festDays = daily.filter((d) => d.festival);
@@ -395,7 +406,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   // 指标拆解：订单数、客单价、毛利率各自被什么拉动。
   const imageOrders = medianBy((s) => s.attr.image, perDay).filter((r) => r.n >= 20 && r.k !== "未定义").sort((a, b) => b.m - a.m);
   const ordersChart = barsOf("商圈越好的店，每天单越多", imageOrders.map((r) => ({ label: short(r.k), value: r1(r.m), text: `${n1(r.m)} 单` })), "max",
-    `门店日均订单数的一般水平。全国一天的单量也随日子变：平常工作日${ordTag} ${n1(ordinary.length ? mean(ordinary.map((d) => d.orders)) / 1e4 : 0)} 万单${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单` : ""}。`);
+    `门店日均订单数的一般水平。全国一天的单量也随日子变${colonList([hasRef ? `平常工作日${refTag} ${n1(refOrders / 1e4)} 万单` : "", peak ? `${festName} ${n1(peak.orders / 1e4)} 万单` : ""])}。`);
   const aovByOffer = named([["克减 50", k50.gramsPerItem], ["金色星期二", gtG.gramsPerItem], ["克减 30", k30.gramsPerItem], ["一般開單", baseG.gramsPerItem]], (v) => `${n1(v)} 克`);
   const aovChart = barsOf("力度大的活动，顾客买得更重", aovByOffer, "max", "计价金每件平均多少克。买得越重，客单价越高。");
   const gmChart = barsOf("一口价、镶嵌的毛利率是计价金的两倍", [gold, fixed, inlay].map((p) => ({ label: p.ptype, value: r1(ptGm(p)), text: pct(ptGm(p)) })), "max",
@@ -433,9 +444,9 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const qixiChart: InsightChart = { kind: "columns", title: `${festName}当天卖得最多`, unit: "亿", digits: 2, stacked: false, series: [{ label: "当天销售额", tone: "soft" }],
     points: daily.map((d) => ({ label: day(d.day), values: [r2(d.sales / 1e8)], ...(d.day === peak?.day ? { mark: festName } : {}) })),
     ...(festDays.length ? { band: { from: day(festDays[0].day), to: day(festDays.at(-1)!.day), label: `日历上的${peak?.festival ?? "节日"}` } } : {}),
-    note: peak ? `每天全国销售额（亿元）。${day(peak.day)} 一天 ${yi(peak.sales)}，是平常工作日${ordTag}的 ${n1(peak.sales / ordinaryAvg)} 倍；节日前几天就开始往上走。` : undefined };
+    note: peak ? `每天全国销售额（亿元）。${day(peak.day)} 一天 ${yi(peak.sales)}${hasRef ? `，是平常工作日${refTag}的 ${n1(peak.sales / refAvg)} 倍` : ""}；节日前几天就开始往上走。` : undefined };
   const dowChart = barsOf("周二卖得最多：金色星期二", [...DOW.slice(1), DOW[0]].flatMap((name) => dowRows.filter((r) => r.name === name)).map((r) => ({ label: r.name, value: r2(r.avg / 1e8), text: yi(r.avg) })), "max",
-    `不含节日，各星期几全国一天的平均销售额。周二多出来的主要是计价金（${yi(tueGold)}，平常工作日 ${yi(ordGold)}）。`);
+    `不含节日，各星期几全国一天的平均销售额。周二多出来的主要是计价金（${yi(tueGold)}${hasPlainIn ? `，平常工作日 ${yi(ordGold)}` : ""}）。`);
   const depthChart = barsOf("克减 50 每克实际让 50 多元，克减 30 让 24 元", named([["克减 50", g50], ["克减 30", g30], ["金色星期二", gGt]], (v) => `${n1(v)} 元/克`), "max",
     "同一天里，一般開單每克收的钱减去活动每克收的钱。金色星期二的优惠在旧金抵价上，所以每克几乎不让。");
   const thresholdChart: InsightChart = { kind: "columns", title: "克减 50 的顾客集中买 20 克以上", unit: "件", digits: 0, stacked: false,
@@ -466,7 +477,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const dayOrdersChart: InsightChart = { kind: "columns", title: "做活动、过节的日子，单量明显更多", unit: "万单", digits: 1, stacked: false, series: [{ label: "订单数", tone: "soft" }],
     points: daily.map((d) => ({ label: day(d.day), values: [r1(d.orders / 1e4)], ...(d.day === peak?.day ? { mark: festName } : {}) })),
     ...(rollout <= lastDay ? { band: { from: day(rollout), to: day(lastDay), label: "克减全国铺开" } } : {}),
-    note: `全国每天的订单数（万单）。平常工作日${ordTag}约 ${n1(ordinary.length ? mean(ordinary.map((d) => d.orders)) / 1e4 : 0)} 万单，克减铺开后明显变多${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单` : ""}。` };
+    note: `全国每天的订单数（万单）。${hasRef ? `平常工作日${refTag}约 ${n1(refOrders / 1e4)} 万单，` : ""}克减铺开后明显变多${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单` : ""}。` };
   const promoGmChart = barsOf("有活动成交的那天，毛利率低 4 个百分点左右", named(PROMO.map((name, i) => [name, promoGm[i]]), (v) => gap(v, "高", "低")), "max",
     "同一家店，有这个活动成交的日子比没有的日子，毛利率低多少。条越短降得越少。");
   const promoMixChart = barsOf("有活动成交的那天，卖的计价金更多", named(PROMO.map((name, i) => [name, promoGold[i]]), (v) => gap(v, "多", "少")), "min",
@@ -510,11 +521,11 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       note: "原因不明，可能是加盟店进货价口径不同，要问财务。" }),
     naNode(N({ id: "qixi", column: 0, section: "时间", kind: "leaf", label: festName, subtitle: peak ? `${day(peak.day)} 一天 ${yi(peak.sales)}` : "数据里没有节日", strength: byScore(sc.qixi), score: sc.qixi,
       source: { kind: "field", columns: ["节庆"], how: `日历表原值${festDays.length ? `，${day(festDays[0].day)}–${day(festDays.at(-1)!.day)} 标为${peak?.festival}` : ""}` },
-      paragraphs: peak ? [`${day(peak.day)} 一天卖了 ${yi(peak.sales)}，是平常工作日（${win ? ordinaryDesc : `${day(rollout)} 之前的周一、三、四`}，平均一天 ${yi(ordinaryAvg)}）的 ${n1(peak.sales / ordinaryAvg)} 倍。`] : ["这段时间数据里没有节日。"],
+      paragraphs: peak ? [`${day(peak.day)} 一天卖了 ${yi(peak.sales)}${hasRef ? `，是平常工作日（${win ? refDesc : `${day(rollout)} 之前的周一、三、四`}，平均一天 ${yi(refAvg)}）的 ${n1(peak.sales / refAvg)} 倍` : ""}。`] : ["这段时间数据里没有节日。"],
       note: "节日和克减铺开在同一周，节日自己拉多少、活动拉多少拆不开。两年同比按「距节日天数」对齐才能拆。" }), naQixi, naWhy.qixi),
     naNode(N({ id: "weekday", column: 0, section: "时间", kind: "leaf", label: "星期", subtitle: `周二日均 ${yi(tueAvg)}`, strength: byScore(sc.weekday), score: sc.weekday,
       source: { kind: "derived", columns: ["交易日期wid"], how: "由日期算星期几" },
-      paragraphs: [`${day(rollout)} 之前，周二平均一天卖 ${yi(tueAvg)}，周一、三、四只有 ${yi(plainInAvg)}，周末 ${yi(weekendAvg)}。周二多出来的主要是计价金，这是金色星期二带的。`] }), naWeekday, naWhy.weekday),
+      paragraphs: [`${day(rollout)} 之前，周二平均一天卖 ${yi(tueAvg)}${hasPlainIn ? `，周一、三、四只有 ${yi(plainInAvg)}` : ""}，周末 ${yi(weekendAvg)}。周二多出来的主要是计价金，这是金色星期二带的。`] }), naWeekday, naWhy.weekday),
     N({ id: "depth", column: 0, section: "活动", kind: "leaf", label: "每克让多少", subtitle: `克减30 实让 ${n1(g30)} 元`, strength: byScore(sc.depth), score: sc.depth, effect: { text: ef.depth.text, measure: ef.depth.measure },
       source: { kind: "inferred", columns: ["实际销售金额", "销售金重", "优惠小类", "交易日期wid"], how: "同一天一般開單每克实收 − 活动每克实收，按活动克重加权（一般足金类）", judgement: "把「一般開單」当作没有优惠的对照组，是 AI 的判断；按活动名称里的「克减 30 / 50」归组也是 AI 做的" },
       paragraphs: [`和同一天的一般開單比，克减 50 每克实际少收 ${n1(g50)} 元，克减 30 少收 ${n1(g30)} 元，都比名义上少一点。`],
@@ -541,7 +552,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       paragraphs: ["同一天里，好店和一般的店能差好几倍：门店本身是什么样的店，比哪一天影响更大。", "门店属性里，商圈形象级别影响最大，其次是店型；面积、店龄、大区、自营还是加盟的影响都很小。"] }),
     N({ id: "day", column: 1, kind: "factor", label: "日期和活动", subtitle: `销售额波动的 ${pct(fe.day)}`, score: sc.day,
       source: { kind: "grouping", columns: ["交易日期wid", "节庆"], how: `同样的拆法里，「这一天的水平」那部分占 ${pct(fe.day)}`, judgement: "日期和当天有什么活动分不开，AI 把它们归成一类" },
-      paragraphs: [`全国一天卖多少差很多：平常工作日${ordTag}一天 ${yi(ordinaryAvg)}${peak ? `，${festName}当天 ${yi(peak.sales)}` : ""}。`, `活动是全国同一天一起变的：${day(rollout)} 起各店一起做克减${peak ? `，${day(peak.day)} 各店一起过${festName}` : ""}。只看日子，分不出哪部分是日子带来的、哪部分是活动带来的，所以放在一起看。`] }),
+      paragraphs: [`全国一天卖多少差很多${colonList([hasRef ? `平常工作日${refTag}一天 ${yi(refAvg)}` : "", peak ? `${festName}当天 ${yi(peak.sales)}` : ""])}。`, `活动是全国同一天一起变的：${day(rollout)} 起各店一起做克减${peak ? `，${day(peak.day)} 各店一起过${festName}` : ""}。只看日子，分不出哪部分是日子带来的、哪部分是活动带来的，所以放在一起看。`] }),
     N({ id: "promo", column: 1, kind: "factor", label: "活动和力度", subtitle: `当天销售 ${times(Math.min(...promoSales))}–${times(Math.max(...promoSales))}`, score: sc.promoSales,
       source: { kind: "grouping", columns: ["优惠小类"], how: "同店同日对比有无克减 50 / 克减 30 / 金色星期二成交", judgement: "按名称把优惠小类归成克减 50、克减 30、金色星期二、一般開單几组，是 AI 做的" },
       paragraphs: [`拿同一家店有活动成交的日子和没有的日子比：克减 50 那天卖得是平时的 ${n1(promoSales[0])} 倍，克减 30 ${n1(promoSales[1])} 倍，金色星期二 ${n1(promoSales[2])} 倍。`, "但活动那天卖的计价金更多，毛利率会低 4 个百分点左右。"],
@@ -691,13 +702,12 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const imgSocial = imageRows.find((r) => r.k.startsWith("社区")) ?? imgLow;
   const imageItems = imageRows.filter((r) => r.n >= 20).map((r): Item => ({ label: short(r.k), sub: `${n0(r.n)} 家`, value: r1(r.m / 1e4), text: `${n0(r.m / 1e4)} 万`, ...(r === imgSocial ? { tone: "base" as const } : {}) }));
   const imageCompare = compare(`一家店${span}卖多少（万元）`, imageItems, "每档取中间那家店");
-  const ordAvgOrders = ordinary.length ? mean(ordinary.map((d) => d.orders)) : 0;
   const k50Ratio = baseG.gramsPerItem > 0 ? k50.gramsPerItem / baseG.gramsPerItem : 0;
   const dayGroups = (() => {
     const avg = (f: (d: DailyRow) => boolean) => { const x = daily.filter(f); return x.length ? mean(x.map((d) => d.sales)) : 0; };
     const before = (d: DailyRow) => d.day < rollout; const notPeak = (d: DailyRow) => d.day !== peak?.day;
     return [
-      { label: "平常", value: ordinaryAvg, tone: "base" as const },
+      { label: "平常", value: hasRef ? refAvg : 0, tone: "base" as const },
       { label: "周末", value: avg((d) => before(d) && (d.dow === 0 || d.dow === 6)) },
       { label: "周二", sub: "金色", value: avg((d) => before(d) && d.dow === 2) },
       { label: "克减后", sub: "平日", value: avg((d) => !before(d) && d.dow >= 1 && d.dow <= 5 && notPeak(d)) },
@@ -705,9 +715,10 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       ...(peak ? [{ label: festName, sub: day(peak.day), value: peak.sales }] : []),
     ].filter((g) => g.value > 0).map((g): Item => ({ ...g, value: r2(g.value / 1e8), text: n1(g.value / 1e8) }));
   })();
-  const dayCompare = compare("全国一天卖多少（亿元）", dayGroups, `同类日子取平均；平常 = ${win ? ordinaryDesc : `${day(rollout)} 前不过节的周一、三、四`}`);
+  const dayCompare = compare("全国一天卖多少（亿元）", dayGroups, `同类日子取平均${hasRef ? `；平常 = ${win ? refDesc : `${day(rollout)} 前不过节的周一、三、四`}` : ""}`);
   // 「做活动、过节」的日子：金色星期二、克减后、节日当天；周末不算。
-  const dayBase = dayGroups[0]?.value ?? 1;
+  // 没有平常日子时 dayBase 为 0，日期卡片不写倍数。
+  const dayBase = dayGroups.find((g) => g.label === "平常")?.value ?? 0;
   const promoDays = dayGroups.filter((g) => g.sub === "金色" || g.label === "克减后" || g.label === festName).map((g) => g.value);
   const dayMax = Math.max(...promoDays, dayBase); const dayMin2 = promoDays.length ? Math.min(...promoDays) : dayBase;
   const promoMax = Math.max(...promoSales); const promoTop = PROMO[promoSales.indexOf(promoMax)];
@@ -745,8 +756,8 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const promoGmItems: Item[] = PROMO.map((name, i) => ({ label: name, value: r1(Math.abs(promoGm[i])), text: `低 ${n1(Math.abs(promoGm[i]))} 个点` }));
   const promoGoldItems: Item[] = PROMO.map((name, i) => ({ label: name, value: r1(promoGold[i]), text: `多 ${n1(promoGold[i])} 个点` }));
   const gtNew = trGt.sales - trGt.recycle;
-  const peakTimes = peak && ordinaryAvg > 0 ? peak.sales / ordinaryAvg : 0;
-  const orderTimes = peak && ordAvgOrders > 0 ? peak.orders / ordAvgOrders : 0;
+  const peakTimes = peak && refAvg > 0 ? peak.sales / refAvg : 0;
+  const orderTimes = peak && refOrders > 0 ? peak.orders / refOrders : 0;
 
   const nodeCards: Record<InsightNodeId, Card> = {
     image: C(`${imgTop ? short(imgTop.k) : ""}的店${span}卖【${imgTop ? n0(imgTop.m / 1e4) : 0} 万】，是社区店的 ${imgTop && imgSocial ? n1(imgTop.m / Math.max(1, imgSocial.m)) : 0} 倍`,
@@ -775,17 +786,17 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       "按分店性质分开，看门店毛利率的一般水平。",
       ["毛利率差不到 2 个百分点，原因可能是加盟店进货价口径不同，要问财务。"],
       null, [], { chart: compare("门店毛利率", natureItems), todoNote: "差别很小，原因要先和财务确认。" }),
-    qixi: C(`${festName}当天全国卖了【${peak ? yi(peak.sales) : "0"}】，是平常的 ${n1(peakTimes)} 倍`,
-      `平常 = ${win ? ordinaryDesc : `${day(rollout)} 前不过节的周一、三、四`}，平均一天 ${yi(ordinaryAvg)}。`,
+    qixi: C(`${festName}当天全国卖了【${peak ? yi(peak.sales) : "0"}】${hasRef ? `，是平常的 ${n1(peakTimes)} 倍` : ""}`,
+      hasRef ? `平常 = ${win ? refDesc : `${day(rollout)} 前不过节的周一、三、四`}，平均一天 ${yi(refAvg)}。` : noRef,
       ["节日和克减全国铺开在同一周，节日自己拉了多少、活动拉了多少，分不开。"],
       `明年${festName}把克减和节日错开一周做，就能看出节日自己拉了多少。`,
-      [`${festName}当天 ${peak ? yi(peak.sales) : ""}，平常工作日${ordTag}一天 ${yi(ordinaryAvg)}。`, `克减从 ${day(rollout)} 起全国铺开，和${festName}在同一周。`],
+      [`${festName}当天 ${peak ? yi(peak.sales) : ""}${hasRef ? `，平常工作日${refTag}一天 ${yi(refAvg)}` : ""}。`, `克减从 ${day(rollout)} 起全国铺开，和${festName}在同一周。`],
       { chart: dayCompare }),
     weekday: C(`周二一天卖【${yi(tueAvg)}】，比周一三四多一倍多：金色星期二`,
       `看 ${day(rollout)} 前不过节的日子，各星期几全国平均一天卖多少。`,
-      [`周二多出来的主要是计价金（周二 ${yi(tueGold)}，平常 ${yi(ordGold)}），而且几乎每单都带旧金来换。`],
+      [`周二多出来的主要是计价金（周二 ${yi(tueGold)}${hasPlainIn ? `，平常 ${yi(ordGold)}` : ""}），而且几乎每单都带旧金来换。`],
       "看金色星期二的效果，要看收进了多少新钱（扣掉旧金抵的部分），不能只看卖了多少。",
-      [`${day(rollout)} 前周二平均一天 ${yi(tueAvg)}，周一三四 ${yi(plainInAvg)}，周末 ${yi(weekendAvg)}。`, `金色星期二卖了 ${yi(trGt.sales)}，其中 ${yi(trGt.recycle)} 是旧金抵的。`],
+      [`${day(rollout)} 前周二平均一天 ${yi(tueAvg)}${hasPlainIn ? `，周一三四 ${yi(plainInAvg)}` : ""}，周末 ${yi(weekendAvg)}。`, `金色星期二卖了 ${yi(trGt.sales)}，其中 ${yi(trGt.recycle)} 是旧金抵的。`],
       { chart: compare("全国一天卖多少（亿元），不含节日", dowItems.map((x) => x.value === dowLow ? { ...x, tone: "base" as const } : x)) }),
     depth: C(`克减 50 每克实际让【${n1(g50)} 元】，克减 30 让 ${n1(g30)} 元`,
       "和同一天的一般開單比，活动每克少收了多少钱。",
@@ -819,7 +830,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       "给门店定目标、比活动效果时，先按商圈和店型分组比。",
       [`各档商圈门店${span}卖多少：${imageRows.filter((r) => r.n >= 20).map((r) => `${short(r.k)} ${wan(r.m)}`).join("，")}。`],
       { chart: imageCompare }),
-    day: C(`做活动、过节的日子，一天能卖到平常的【${n1(dayMin2 / Math.max(0.01, dayBase))} 到 ${n1(dayMax / Math.max(0.01, dayBase))} 倍】`,
+    day: C(dayBase > 0 ? `做活动、过节的日子，一天能卖到平常的【${n1(dayMin2 / Math.max(0.01, dayBase))} 到 ${n1(dayMax / Math.max(0.01, dayBase))} 倍】` : promoDays.length ? `做活动、过节的日子，一天最多卖到【${n1(dayMax)} 亿】` : "全国一天卖多少，随日子变化",
       `把 ${whenSp}每天按「有没有活动、是不是节日」分开，算每类日子全国一天卖多少。`,
       [`${day(rollout)} 克减全国铺开和${festName}在同一周，这几天卖得多，活动和节日各占多少分不开。`],
       `明年${festName}把克减和节日错开一周做，就能看出活动自己拉了多少。`,
@@ -841,7 +852,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       `销售额 = 订单数 × 客单价。店和店、天和天卖得不一样，主要差在订单数上。${whenSp}全国 ${n1(total.orders / 1e4)} 万单。`,
       ["数据里没有客流和成交率，订单数再往下拆不了。"],
       "提销售额先想办法多来单：好商圈的店和做活动、过节的日子，单量明显更多。",
-      [`各档商圈门店一天多少单：${imageOrders.map((r) => `${short(r.k)} ${n1(r.m)} 单`).join("，")}。`, `全国平常工作日${ordTag}约 ${n1(ordAvgOrders / 1e4)} 万单${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单（${n1(orderTimes)} 倍）` : ""}。`],
+      [`各档商圈门店一天多少单：${imageOrders.map((r) => `${short(r.k)} ${n1(r.m)} 单`).join("，")}。`, ...(hasRef ? [`全国平常工作日${refTag}约 ${n1(refOrders / 1e4)} 万单${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单（${n1(orderTimes)} 倍）` : ""}。`] : peak ? [`全国${festName} ${n1(peak.orders / 1e4)} 万单。`] : [])],
       { chart: compare("一家店一天多少单", imageOrders.map((r): Item => ({ label: short(r.k), sub: `${n0(r.n)} 家`, value: r1(r.m), text: `${n1(r.m)} 单`, ...(r.k.startsWith("社区") ? { tone: "base" as const } : {}) }))), ...(ordersAovChart ? { sim: ordersAovChart } : {}) }),
     aov: C(`力度大的活动，顾客每件买得更重：克减 50 是一般開單的【${n1(k50Ratio)} 倍】`,
       `${whenSp}平均一单 ${n0(total.orders > 0 ? total.sales / total.orders : 0)} 元。看每类活动计价金平均每件多少克。`,
@@ -887,7 +898,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       "同一档商圈里单量特别多的店，可以去看它们做对了什么。", nodeCards.orders.evidence.slice(0, 1), { chart: nodeCards.orders.chart }),
     "store>aov": nodeCards.shoptype,
     "day>orders": C(`做活动、过节的日子，单量明显更多：${festName}一天【${peak ? n1(peak.orders / 1e4) : 0} 万单】`,
-      `平常工作日${ordTag}全国约 ${n1(ordAvgOrders / 1e4)} 万单。`, [`${festName}和克减在同一周，分不开。`],
+      hasRef ? `平常工作日${refTag}全国约 ${n1(refOrders / 1e4)} 万单。` : noRef, [`${festName}和克减在同一周，分不开。`],
       "排活动时看哪天能多来人，比看哪天客单高更重要。", nodeCards.orders.evidence.slice(1), { chart: dayCompare }),
     "promo>orders": nodeCards.promo,
     "promo>aov": nodeCards.aov,
@@ -933,11 +944,11 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       noRecommendation: regionRows.length ? "大区本身影响很小，先把商圈和店型一样的店放在一起，再比大区。" : undefined }),
     E("nature", "store", sc.natureSales, "自营还是加盟，对卖多少几乎没有影响；毛利率上自营店略低一点。", { anomalies: natureGm.length >= 2 ? [`毛利率上有差别：${natureGm[0].k}的店 ${pct(natureGm[0].m)}，${natureGm.at(-1)!.k} ${pct(natureGm.at(-1)!.m)}；原因不明，可能是进货价口径不同，要问财务。`] : [],
       noRecommendation: "对销售额几乎没有独立作用。" }),
-    naQixi ? E("qixi", "day", "na", naWhy.qixi) : E("qixi", "day", sc.qixi, peak ? `${day(peak.day)} ${festName}一天卖了 ${yi(peak.sales)}，平常工作日${ordTag}一天 ${yi(ordinaryAvg)}，是 ${n1(peak.sales / ordinaryAvg)} 倍。` : "数据里没有节日。", { anomalies: [
+    naQixi ? E("qixi", "day", "na", naWhy.qixi) : E("qixi", "day", sc.qixi, peak ? `${day(peak.day)} ${festName}一天卖了 ${yi(peak.sales)}${hasRef ? `，平常工作日${refTag}一天 ${yi(refAvg)}，是 ${n1(peak.sales / refAvg)} 倍` : ""}。` : "数据里没有节日。", { anomalies: [
       ...(festSorted.length >= 2 ? [`节日期间并不是每天都高：${festName}当天 ${yi(festSorted[0].sales)}，同期最低的 ${day(festSorted.at(-1)!.day)} 只有 ${yi(festSorted.at(-1)!.sales)}。`] : []),
       "节日和克减铺开在同一周，节日自己拉多少、活动拉多少拆不开。" ],
       recommendation: peak ? `${festName}当天（${day(peak.day)}）是${win ? "这几天" : "全月"}最高；排活动时把力度集中在节日前几天和当天，两年同比按「距节日天数」对齐。` : null }),
-    naWeekday ? E("weekday", "day", "na", naWhy.weekday) : E("weekday", "day", sc.weekday, `${day(rollout)} 前，周二平均一天卖 ${yi(tueAvg)}，周一、三、四只有 ${yi(plainInAvg)}。多出来的主要是计价金，这是金色星期二带的。`, { anomalies: lowDay ? [`${win ? "这几天" : "全月"}最低的一天是 ${day(lowDay.day)}（${DOW[lowDay.dow]}），${yi(lowDay.sales)}。`] : [],
+    naWeekday ? E("weekday", "day", "na", naWhy.weekday) : E("weekday", "day", sc.weekday, `${day(rollout)} 前，周二平均一天卖 ${yi(tueAvg)}${hasPlainIn ? `，周一、三、四只有 ${yi(plainInAvg)}` : ""}。多出来的主要是计价金，这是金色星期二带的。`, { anomalies: lowDay ? [`${win ? "这几天" : "全月"}最低的一天是 ${day(lowDay.day)}（${DOW[lowDay.dow]}），${yi(lowDay.sales)}。`] : [],
       recommendation: dowRows.length ? `不含节日，日均最高的是${dowRows[0].name}（${yi(dowRows[0].avg)}），最低的是${dowRows.at(-1)!.name}（${yi(dowRows.at(-1)!.avg)}）。周二高是金色星期二带的。` : null }),
     E("depth", "promo", { ...sc.depth, effect: ef.depth }, `和同一天的一般開單比，每克实际少收：克减 50 ${n1(g50)} 元，克减 30 ${n1(g30)} 元，金色星期二 ${n1(gGt)} 元。`, { anomalies: [`克减 30 实让 ${n1(g30)} 元/克，不到名义的 30 元；可能有克数门槛或叠加规则，规则表没给。`, `金色星期二每克只让 ${n1(gGt)} 元，它的优惠在旧金抵价上，不在每克实收里。`],
       recommendation: `同日对齐看，克减 50 每克实让 ${n1(g50)} 元，是克减 30 的 ${n1(depthGap)} 倍；定力度时要和它带来的件均克重（×${n1(aovLift)}）一起看。` }),
@@ -951,7 +962,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
     E("member", "orders", "missing", `${pct(data.memberShare)} 的销售额都标成了会员，分不出新老会员，看不了活动对新老会员的效果。`, { noRecommendation: "需要先采集会员 ID 和首购日期。" }),
     E("store", "orders", sc.storeOrders, `好店每天的单多：${imageOrders.slice(0, 1).map((r) => `${short(r.k)}的店一天 ${n1(r.m)} 单`).join("")}${imageOrders.length >= 2 ? `，${short(imageOrders.at(-1)!.k)} ${n1(imageOrders.at(-1)!.m)} 单` : ""}。`, { recommendation: `拉销售额主要靠单量：门店之间差多少，${pct(storeSplit.orders)} 是订单数的差。` }),
     E("store", "aov", sc.storeAov, `高端店型的客单价更高：${(bigExp.length >= 2 ? bigExp : expRows).slice(0, 3).map((r) => `${r.k} ${n0(r.aov)} 元`).join("，")}。`, { recommendation: expRows.length ? `客单最高的店型：${[...expRows].sort((a, b) => b.aov - a.aov)[0].k}（客单价 ${n0([...expRows].sort((a, b) => b.aov - a.aov)[0].aov)} 元）。` : null }),
-    E("day", "orders", sc.dayOrders, `全国一天的单量随日子变化很大：平常工作日${ordTag}约 ${n1(ordinary.length ? mean(ordinary.map((d) => d.orders)) / 1e4 : 0)} 万单${peak ? `，${festName} ${n1(peak.orders / 1e4)} 万单` : ""}。哪天卖得多，主要是那天来的单多。`, { recommendation: `逐日看销售额的波动 ${pct(daySplit.orders)} 在单量；排期要看哪天能多来人，而不是哪天客单高。` }),
+    E("day", "orders", sc.dayOrders, `全国一天的单量随日子变化很大${colonList([hasRef ? `平常工作日${refTag}约 ${n1(refOrders / 1e4)} 万单` : "", peak ? `${festName} ${n1(peak.orders / 1e4)} 万单` : ""])}。哪天卖得多，主要是那天来的单多。`, { recommendation: `逐日看销售额的波动 ${pct(daySplit.orders)} 在单量；排期要看哪天能多来人，而不是哪天客单高。` }),
     E("promo", "orders", sc.promoOrders, `同一家店，有活动成交的那天卖得更多：${PROMO.map((name, i) => `${name}是平时的 ${n1(promoSales[i])} 倍`).join("，")}，多出来的主要是单量。`, { anomalies: ["门店自己选哪天做活动，又和节日同周，倍数会高估活动本身。"],
       recommendation: `同店同日看，${PROMO[promoSales.indexOf(Math.max(...promoSales))]}当天销售额倍数最高（${times(Math.max(...promoSales))}）。` }),
     E("promo", "aov", { ...sc.promoAov, effect: ef.promoAov }, `力度大的活动卖大件：克减 50 计价金件均 ${n1(k50.gramsPerItem)} 克，金色星期二 ${n1(gtG.gramsPerItem)} 克，一般開單 ${n1(baseG.gramsPerItem)} 克。`, { recommendation: `力度大的活动卖大件：克减 50 件均 ${n1(k50.gramsPerItem)} 克，是一般開單的 ${n1(aovLift)} 倍。` }),
