@@ -4,7 +4,7 @@ import test from "node:test";
 import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayBands, withinStoreDayFit } from "../app/lib/insight/stats.ts";
 import { edgeKey, highlightOf, reach, routes, routesThrough } from "../app/lib/insight/paths.ts";
 import { INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL, type InsightChart } from "../app/lib/insight/types.ts";
-import { fakeGraph } from "./helpers/insight-fixture.ts";
+import { fakeGraph, fakeGraphIn } from "./helpers/insight-fixture.ts";
 
 test("最小二乘：精确还原系数，共线的列记 0", () => {
   const x = Float64Array.from([1, 2, 3, 4, 5]); const ones = new Float64Array(5).fill(1);
@@ -281,4 +281,63 @@ test("全月图和改动前一样（除 scope 新增字段外逐字段相同）"
   const actual = JSON.parse(JSON.stringify(fakeGraph()));
   const { range, dataFrom, dataTo, festivals, overlap, ...scope } = actual.scope;
   assert.deepEqual({ ...actual, scope }, expected);
+});
+
+const QIXI = { from: "20250823", to: "20250829" };
+const finite = (x: unknown, p = ""): string[] => typeof x === "number" ? (Number.isFinite(x) ? [] : [p])
+  : typeof x === "string" ? (/NaN|Infinity|undefined/.test(x) ? [`${p}: ${x.slice(0, 60)}`] : [])
+  : Array.isArray(x) ? x.flatMap((v, i) => finite(v, `${p}[${i}]`))
+  : x && typeof x === "object" ? Object.entries(x).flatMap(([k, v]) => finite(v, `${p}.${k}`)) : [];
+
+test("七夕 7 天：门店门槛 5 天，门店列有结果，文案写实际门槛和范围", () => {
+  const g = fakeGraphIn(QIXI);
+  assert.equal(g.scope.period, "七夕 8/23–8/29");
+  assert.deepEqual(g.scope.range, QIXI);
+  assert.equal(g.scope.dataFrom, "20250801"); assert.equal(g.scope.dataTo, "20250831");
+  assert.deepEqual(g.scope.festivals, [{ name: "七夕", from: "20250823", to: "20250829" }]);
+  const image = g.edges.find((e) => e.from === "image" && e.to === "store")!;
+  assert.ok(image.score && image.score.value > 0, "商圈 → 门店本身要有分数");
+  assert.doesNotMatch(image.basis, /：。/, "依据里不能是空列表");
+  assert.match(g.methods.find((m) => m.title === "哪个门店属性有用")!.text, /^120 家开满 5 天的店/);
+  assert.doesNotMatch(JSON.stringify(g), /8 月|一个月|开满 20 天|全月/);
+});
+
+test("七夕 7 天：七夕、星期不适用；新增还是挪动用窗口外的平日对照", () => {
+  const g = fakeGraphIn(QIXI);
+  for (const id of ["qixi", "weekday"] as const) {
+    const node = g.nodes.find((n) => n.id === id)!; const edge = g.edges.find((e) => e.from === id)!;
+    assert.equal(node.strength, "na", id); assert.equal(node.score, undefined, id);
+    assert.equal(edge.strength, "na", id); assert.equal(edge.score, undefined, id);
+    assert.match(edge.basis, /这个时间范围内/, id);
+  }
+  const shift = g.edges.find((e) => e.from === "shift")!;
+  assert.notEqual(shift.strength, "na");
+  // 8/1 是周五，窗口外铺开前第一个周一、三、四是 8/4。
+  assert.match(shift.basis, /8\/4–8\/21 不过节的周一、三、四/);
+  assert.match(g.scope.overlap ?? "", /七夕和全国克减重叠/);
+});
+
+test("窗口在铺开前（8/1–8/14）：新增还是挪动不适用，没有重叠说明；七夕不适用；星期能算", () => {
+  const g = fakeGraphIn({ from: "20250801", to: "20250814" });
+  assert.equal(g.edges.find((e) => e.from === "shift")!.strength, "na");
+  assert.equal(g.edges.find((e) => e.from === "qixi")!.strength, "na");
+  assert.notEqual(g.edges.find((e) => e.from === "weekday")!.strength, "na");
+  assert.equal(g.scope.overlap, null);
+});
+
+test("跨节日边界（8/20–8/31）：七夕能算", () => {
+  const g = fakeGraphIn({ from: "20250820", to: "20250831" });
+  assert.notEqual(g.edges.find((e) => e.from === "qixi")!.strength, "na");
+});
+
+test("几个短范围算出来的图没有 NaN、Infinity", () => {
+  for (const r of [QIXI, { from: "20250801", to: "20250803" }, { from: "20250829", to: "20250831" }, { from: "20250801", to: "20250821" }])
+    assert.deepEqual(finite(fakeGraphIn(r)), [], `${r.from}–${r.to}`);
+});
+
+test("全月：range 为 null，没有不适用的线", () => {
+  const g = fakeGraph();
+  assert.equal(g.scope.range, null);
+  assert.ok(g.edges.every((e) => e.strength !== "na"));
+  assert.equal(g.scope.overlap, null);
 });

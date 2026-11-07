@@ -5,6 +5,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildDriverGraph, type DailyRow, type DriverData, type GoldRow, type OfferGroup, type PanelRow, type PtypeRow, type StoreRow, type ThresholdRow, type TradeInRow } from "../app/lib/insight/drivers.ts";
 import type { InsightGraph } from "../app/lib/insight/types.ts";
+import { festivalsOf, isFullRange, rangeLabel, type InsightRange } from "../app/lib/insight/range.ts";
 import type { HistoryConnection } from "./analytics-database.ts";
 
 export type InsightGraphService = { graph(): Promise<InsightGraph>; warm(): Promise<void> };
@@ -21,7 +22,7 @@ const PTYPE = "CASE WHEN `材料种类描述` = '足金' THEN '计价金' WHEN `
 const ORDER = "CONCAT(`实体分店店号`, '/', `销售单号`)";
 const hint = (sql: string) => sql.replace(/^SELECT /, `SELECT /*+ MAX_EXECUTION_TIME(${QUERY_TIMEOUT_MS}) */ `);
 
-export function insightQueries(table: string): Record<keyof Omit<DriverData, "datasetVersion" | "period" | "rows" | "memberShare"> | "scope", string> {
+export function insightQueries(table: string): Record<keyof Omit<DriverData, "datasetVersion" | "period" | "rows" | "memberShare" | "window" | "dataFrom" | "dataTo"> | "scope", string> {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(table)) throw new Error("洞察数据表名不正确");
   const t = `\`${table}\``;
   return {
@@ -58,16 +59,25 @@ const str = (value: unknown) => value === null || value === undefined ? "未知"
 const group = (value: unknown): OfferGroup => (["base", "k50", "k30", "gt"] as const).find((g) => g === value) ?? "other";
 const rowsOf = (result: unknown): Array<Record<string, unknown>> => { if (!Array.isArray(result)) throw new Error("洞察查询结果格式不正确"); return result as Array<Record<string, unknown>>; };
 
-export function toDriverData(results: Record<string, unknown>, datasetVersion: string): DriverData {
+export function toDriverData(results: Record<string, unknown>, datasetVersion: string, window: InsightRange | null = null): DriverData {
   const scope = rowsOf(results.scope)[0] ?? {};
   const first = str(scope.first_day); const last = str(scope.last_day);
+  const daily = rowsOf(results.daily).map((r): DailyRow => ({ day: str(r.d), dow: num(r.dow), festival: r.festival ? String(r.festival) : null, sales: num(r.sales), orders: num(r.orders), goldSales: num(r.gold), baseGold: num(r.base_gold), promoGold: num(r.promo_gold) }));
+  // 逐日始终是全部日期：数据本身的起止从这里取。
+  const days = daily.map((d) => d.day).sort();
+  const dataFrom = days[0] ?? first; const dataTo = days.at(-1) ?? last;
+  const full = isFullRange(window, dataFrom, dataTo);
+  // 窗口正好是某个节日时，范围名前面写节日名。
+  const festival = window ? festivalsOf(daily).find((f) => f.from === window.from && f.to === window.to) : undefined;
+  const monthly = /^\d{8}$/.test(first) && /^\d{8}$/.test(last) ? first.slice(0, 6) === last.slice(0, 6) ? `${first.slice(0, 4)} 年 ${Number(first.slice(4, 6))} 月` : `${first.slice(0, 4)}-${first.slice(4, 6)}-${first.slice(6)} 至 ${last.slice(0, 4)}-${last.slice(4, 6)}-${last.slice(6)}` : "未知";
   return {
     datasetVersion, rows: num(scope.n), memberShare: num(scope.member_share),
-    period: /^\d{8}$/.test(first) && /^\d{8}$/.test(last) ? first.slice(0, 6) === last.slice(0, 6) ? `${first.slice(0, 4)} 年 ${Number(first.slice(4, 6))} 月` : `${first.slice(0, 4)}-${first.slice(4, 6)}-${first.slice(6)} 至 ${last.slice(0, 4)}-${last.slice(4, 6)}-${last.slice(6)}` : "未知",
+    window: full ? null : window, dataFrom, dataTo,
+    period: full || !window ? monthly : `${festival ? `${festival.name} ` : ""}${rangeLabel(window)}`,
     panel: rowsOf(results.panel).map((r): PanelRow => ({ store: str(r.store), day: str(r.d), sales: num(r.sales), gp: num(r.gp), revEx: num(r.rev_ex), items: num(r.items), orders: num(r.orders), goldSales: num(r.gold), baseGold: num(r.base_gold), heavyGold: num(r.heavy_gold), goldGrams: num(r.gold_grams), goldQty: num(r.gold_qty), k50: num(r.k50), k30: num(r.k30), gt: num(r.gt) })),
     stores: rowsOf(results.stores).map((r): StoreRow => ({ store: str(r.store), bigRegion: str(r.big_region), region: str(r.region), cityTier: str(r.city_tier), image: str(r.image), shopType: str(r.shop_type), nature: str(r.nature), area: str(r.area), experience: str(r.experience), age: r.age === null || r.age === undefined || r.age === "" ? null : Number(r.age), name: r.name ? String(r.name) : "" })),
     ptype: rowsOf(results.ptype).map((r): PtypeRow => ({ ptype: (["计价金", "一口价黄金"] as const).find((p) => p === r.ptype) ?? "镶嵌及其他", sales: num(r.sales), gp: num(r.gp), revEx: num(r.rev_ex), items: num(r.items), grams: num(r.grams) })),
-    daily: rowsOf(results.daily).map((r): DailyRow => ({ day: str(r.d), dow: num(r.dow), festival: r.festival ? String(r.festival) : null, sales: num(r.sales), orders: num(r.orders), goldSales: num(r.gold), baseGold: num(r.base_gold), promoGold: num(r.promo_gold) })),
+    daily,
     gold: rowsOf(results.gold).map((r): GoldRow => ({ day: str(r.d), group: group(r.g), amount: num(r.amount), grams: num(r.grams), qty: num(r.qty), ge20: num(r.ge20) })),
     threshold: rowsOf(results.threshold).map((r): ThresholdRow => ({ gram: num(r.gram), k50: num(r.k50), base: num(r.base) })),
     tradein: rowsOf(results.tradein).map((r): TradeInRow => ({ group: group(r.g), orders: num(r.orders), tradeIn: num(r.trade_in), sales: num(r.sales), recycle: num(r.recycle) })),

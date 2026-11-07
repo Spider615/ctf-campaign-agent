@@ -57,4 +57,4 @@ export function fakeResultsIn(range: { from: string; to: string } | null) {
   return { ...all, panel, gold: all.gold.filter((g) => inside(g.d)), stores: all.stores.filter((s) => open.has(s.store)),
     scope: [{ ...all.scope[0], first_day: range.from, last_day: range.to }] };
 }
-export const fakeGraphIn = (range: { from: string; to: string } | null) => buildDriverGraph(toDriverData(fakeResultsIn(range), "v-test"), "2026-10-20T00:00:00.000Z");
+export const fakeGraphIn = (range: { from: string; to: string } | null) => buildDriverGraph(toDriverData(fakeResultsIn(range), "v-test", range), "2026-10-20T00:00:00.000Z");

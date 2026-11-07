@@ -33,6 +33,7 @@ export const STRENGTH_STYLE: Record<InsightStrength, { stroke: string; width: nu
   weak: { stroke: "#c3cddb", width: 1.2, dash: "4 4", pill: "弱" },
   id: { stroke: "#94a3b8", width: 1.3, pill: "恒等式" },
   missing: { stroke: "#c98a1e", width: 1.3, dash: "1.5 4", pill: "缺" },
+  na: { stroke: "#cbd5e1", width: 1.1, dash: "2 5", pill: "不适用" },
 };
 // 有分数的线按分数加粗：0 分 1.2px，100 分 5px；没分数的按档位默认粗细。
 const edgeWidth = (e: InsightEdge) => e.score ? 1.2 + Math.sqrt(e.score.value / 100) * 3.8 : STRENGTH_STYLE[e.strength].width;

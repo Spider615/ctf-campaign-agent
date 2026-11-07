@@ -6,7 +6,7 @@ import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_
 import { InsightChartView } from "./insight-chart";
 import { SOURCE_TAG, STRENGTH_STYLE, scoreText } from "./insight-graph-view";
 
-const ORDER = { strong: 0, id: 1, med: 2, weak: 3, missing: 4 } as const;
+const ORDER = { strong: 0, id: 1, med: 2, weak: 3, missing: 4, na: 5 } as const;
 const byStrength = (a: InsightEdge, b: InsightEdge) => ORDER[a.strength] - ORDER[b.strength] || (b.score?.value ?? 0) - (a.score?.value ?? 0);
 
 // 档位小标：有分数显示分数，没有显示档位名。

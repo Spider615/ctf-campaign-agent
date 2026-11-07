@@ -1,5 +1,6 @@
 // 深度剖析：指标影响因素图谱的数据结构。图谱由 Agent 服务算好，页面只读不算。
 // 设计见 docs/superpowers/specs/2026-10-20-insight-drivers-design.md。
+import type { InsightFestival, InsightRange } from "./range.ts";
 
 // 节点从左到右四列：细项因素 → 因素 → 指标拆解 → 指标。
 export const INSIGHT_NODE_IDS = [
@@ -24,7 +25,8 @@ export type InsightSection = "门店" | "时间" | "活动" | "缺数据";
 export type InsightNodeKind = "leaf" | "factor" | "decomp" | "metric";
 
 // 强弱档：强、中、弱由解释度分数定；id 是恒等式；missing 是数据里没有、AI 推测的关系。
-export type InsightStrength = "strong" | "med" | "weak" | "id" | "missing";
+// na：这个时间范围内算不出来（例如范围里全是节日、每个星期几只有一天），画成灰线、不给分数。
+export type InsightStrength = "strong" | "med" | "weak" | "id" | "missing" | "na";
 // 解释度分数（0–100）：这一因素能解释结果差异的百分比，有分数的线用同一把尺子，可以直接比大小。
 // 档位由分数换算：≥ 10 强，2–10 中，< 2 弱。怎么算写在 measure 里。
 // 活动机制（每克让多少、门槛、以旧换新、新增还是挪动、力度和客单）另带 effect：一个带单位的效应值，帮业务看懂差多少。
@@ -118,11 +120,12 @@ export type InsightPeers = {
 export type InsightKpi = { id: "sales" | "gp" | "qty"; label: string; value: string; unit: string; detail: string };
 export type InsightGraph = {
   schema: "insight-drivers/v2"; datasetVersion: string; builtAt: string;
-  scope: { period: string; rows: number; stores: number; note: string };
+  // range：这张图算的范围，null 为全部数据；dataFrom / dataTo：数据本身的起止；festivals：节日预设；overlap：范围里的节日和全国克减重叠时的说明。
+  scope: { period: string; rows: number; stores: number; note: string; range: InsightRange | null; dataFrom: string; dataTo: string; festivals: InsightFestival[]; overlap: string | null };
   kpis: InsightKpi[]; nodes: InsightNode[]; edges: InsightEdge[]; summary: string[]; methods: Array<{ title: string; text: string }>;
 };
 
-export const INSIGHT_STRENGTH_LABEL: Record<InsightStrength, string> = { strong: "强", med: "中", weak: "弱", id: "拆解", missing: "缺数据" };
+export const INSIGHT_STRENGTH_LABEL: Record<InsightStrength, string> = { strong: "强", med: "中", weak: "弱", id: "拆解", missing: "缺数据", na: "不适用" };
 export const INSIGHT_KIND_LABEL: Record<InsightNodeKind, string> = { leaf: "细项因素", factor: "因素", decomp: "指标拆解", metric: "指标" };
 export const INSIGHT_EDGE_SOURCE: Record<InsightStrength, string> = {
   strong: "数据算出的关联；强、中、弱的分档是按解释比例定的",
@@ -130,4 +133,5 @@ export const INSIGHT_EDGE_SOURCE: Record<InsightStrength, string> = {
   weak: "数据算出的关联；强、中、弱的分档是按解释比例定的",
   id: "定义（恒等式）；分数是对数方差拆分",
   missing: "AI 推测，没有数据",
+  na: "这个时间范围内算不出来",
 };
