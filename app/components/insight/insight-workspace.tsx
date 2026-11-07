@@ -30,9 +30,12 @@ export function InsightWorkspace({ selection, onSelect, range, onRange, onAskQa 
   const shown = graph ? rangeSearch(graph.scope.range) : null;
   const loading = shown !== null && search !== shown;
 
+  // 失败次数只用来在换范围失败时让范围控件重新挂载、回到旧图的范围；开始新的切换清掉报错时不重新挂载，用户刚选的项不丢。
+  const [failures, setFailures] = useState(0);
   const settle = useEffectEvent((result: InsightGraph) => { setGraph(result); setError(null); });
   // 有旧图时换范围失败：URL 退回旧图的范围（不重新请求，见下面 effect 的跳过条件），报错写明失败的范围；没有旧图就整页报错。
   const fail = useEffectEvent((message: string) => {
+    setFailures((n) => n + 1);
     setError({ search, range, message: range ? `${rangeLabel(range)}：${message}` : message });
     if (graph) onRange(graph.scope.range);
   });
@@ -71,7 +74,7 @@ export function InsightWorkspace({ selection, onSelect, range, onRange, onAskQa 
   return <section aria-label="深度剖析" className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3 md:px-6 min-[1180px]:overflow-hidden">
     <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5">
       {/* key：图换了范围、或换范围失败退回时，控件按当前图的范围重置。 */}
-      <InsightRangePicker key={`${shown}|${error?.search ?? ""}`} graph={graph} range={graph.scope.range} onChange={changeRange} />
+      <InsightRangePicker key={`${shown}|${failures}`} graph={graph} range={graph.scope.range} onChange={changeRange} />
       {loading ? <span role="status" className="inline-flex items-center gap-1.5 text-[12px] text-[#64748b]"><span className="size-3 animate-spin rounded-full border-2 border-[#c7ddff] border-t-[#247cff] motion-reduce:animate-none" />正在算这段时间的影响因素，第一次约 1 分钟</span> : null}
       {/* 换范围失败后 URL 已退回当前图的范围；重试再请求失败的那个范围。正在算新范围时不显示旧的报错。 */}
       {error && !loading ? <span role="alert" className="text-[12px] text-[#a43f37]">{error.message}<button type="button" onClick={() => changeRange(error.range)} className="ml-2 underline">重试</button></span> : null}
