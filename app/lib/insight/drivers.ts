@@ -945,7 +945,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
       recommendation: `克减 50 的计价金实收 ${pct(k50.ge20)} 在 20 克以上（克减 30 是 ${pct(k30.ge20)}），门槛在把顾客推向 20 克以上；门槛是 20 克要用规则表确认。` }),
     E("tradein", "promo", { ...sc.tradein, effect: ef.tradein }, `金色星期二几乎每单都带旧金来换：卖了 ${yi(trGt.sales)}，其中 ${yi(trGt.recycle)} 是旧金抵的。克减类基本不带旧金。`, { anomalies: [`克减类几乎不带回收旧金（${pct(promoTradeInShare)}），以旧换新基本只在金色星期二和一般開單里。`],
       recommendation: `看金色星期二要用「成交 − 旧金抵扣」看收进的新钱：成交 ${yi(trGt.sales)}，其中 ${yi(trGt.recycle)} 是旧金抵的。` }),
-    naShift ? E("shift", "promo", "na", naWhy.shift) : E("shift", "promo", { ...sc.shift, effect: ef.shift }, `${win ? `${ordinaryDesc}，对照${when}，` : "克减铺开后，"}一般開單的计价金每天从 ${wan(shift.baseBefore)} 变成 ${wan(shift.baseAfter)}，只少了 ${n1(Math.abs(shiftPct))}%；活动的从 ${wan(shift.promoBefore)} 涨到 ${wan(shift.promoAfter)}。大多是新增，不是挪过来的。`, { anomalies: ["同期离节日更近，新增里混着节日拉动，挪动的比例可能被低估。"],
+    naShift ? E("shift", "promo", "na", naWhy.shift) : E("shift", "promo", { ...sc.shift, effect: ef.shift }, `${win ? `${ordinaryDesc}，对照 ${when}，` : "克减铺开后，"}一般開單的计价金每天从 ${wan(shift.baseBefore)} 变成 ${wan(shift.baseAfter)}，只少了 ${n1(Math.abs(shiftPct))}%；活动的从 ${wan(shift.promoBefore)} 涨到 ${wan(shift.promoAfter)}。大多是新增，不是挪过来的。`, { anomalies: ["同期离节日更近，新增里混着节日拉动，挪动的比例可能被低估。"],
       recommendation: `大部分像新增：一般開單只降了 ${n1(Math.abs(shiftPct))}%，活动计价金从 ${wan(shift.promoBefore)} 涨到 ${wan(shift.promoAfter)}。` }),
     E("gold", "promo", "missing", `数据里没有每日金价。同${win ? "一段时间" : "一个月"}里比没问题，跨月、跨年比活动力度时要补上金价。`, { noRecommendation: "需要先采集每日金价。" }),
     E("member", "orders", "missing", `${pct(data.memberShare)} 的销售额都标成了会员，分不出新老会员，看不了活动对新老会员的效果。`, { noRecommendation: "需要先采集会员 ID 和首购日期。" }),
