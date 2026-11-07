@@ -155,7 +155,7 @@ export function createInsightGraphService(config: Config): InsightGraphService {
     return graph;
   }
 
-  // 按范围缓存，最多 8 份，超出淘汰最久没用的；全月用键 "all"。
+  // 按范围缓存，最多 8 份，超出淘汰最久没用的；全月用键 "all"，预热过的全月图不淘汰（问答、首页都靠它）。
   // 等到版本之后同步查缓存、同步放入，中间没有 await，同范围并发只会算一次。
   const CACHE_LIMIT = 8;
   const cache = new Map<string, Promise<InsightGraph>>();
@@ -164,11 +164,12 @@ export function createInsightGraphService(config: Config): InsightGraphService {
     if (range) { try { checkRange(range, dataFrom, dataTo); } catch (error) { throw new InsightRangeError(error instanceof Error ? error.message : "范围不正确"); } }
     const window = isFullRange(range, dataFrom, dataTo) ? null : range;
     const key = window ? `${window.from}-${window.to}` : "all";
-    let hit = cache.get(key);
-    if (hit) { cache.delete(key); cache.set(key, hit); return hit; }
-    hit = build(window, version).catch((error) => { cache.delete(key); throw error; });
+    const existing = cache.get(key);
+    if (existing) { cache.delete(key); cache.set(key, existing); return existing; }
+    // 失败时只删自己这一份：期间被淘汰、又重新发起的同一范围不能被误删。
+    const hit: Promise<InsightGraph> = build(window, version).catch((error) => { if (cache.get(key) === hit) cache.delete(key); throw error; });
     cache.set(key, hit);
-    while (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+    while (cache.size > CACHE_LIMIT) { const oldest = [...cache.keys()].find((k) => k !== "all"); if (!oldest) break; cache.delete(oldest); }
     return hit;
   }
 

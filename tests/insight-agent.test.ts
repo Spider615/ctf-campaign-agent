@@ -85,6 +85,21 @@ test("按范围缓存：不同范围分开算，同范围并发只算一次；�
   } finally { await rm(cacheDir, { recursive: true, force: true }); }
 });
 
+test("内存缓存最多 8 份，最久没用的先淘汰；全月图不淘汰", async () => {
+  // 不给 cacheDir：没有磁盘缓存，被淘汰的范围再要时会重新发查询。
+  let queries = 0;
+  const service = createInsightGraphService({ table: "t", evidenceDir: join(tmpdir(), "insight-evidence-unused"), connect: async () => fakeConnection(() => queries++), logger: { log() {}, error() {} } });
+  const full = await service.graph(null);
+  const ranges = Array.from({ length: 9 }, (_, i) => ({ from: `202508${String(i + 1).padStart(2, "0")}`, to: `202508${String(i + 5).padStart(2, "0")}` }));
+  const first = await service.graph(ranges[0]);
+  for (const r of ranges.slice(1)) await service.graph(r);
+  const before = queries;
+  assert.equal(await service.graph(null), full, "全月图一直在缓存里");
+  assert.equal(queries, before);
+  assert.notEqual(await service.graph(ranges[0]), first, "最早的范围被淘汰，重新计算");
+  assert.ok(queries > before);
+});
+
 test("范围不合法：越界、太短抛 InsightRangeError", async () => {
   const cacheDir = await mkdtemp(join(tmpdir(), "insight-cache-"));
   const service = createInsightGraphService({ table: "t", evidenceDir: join(cacheDir, "evidence"), cacheDir, connect: async () => fakeConnection(() => {}), logger: { log() {}, error() {} } });
