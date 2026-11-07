@@ -2,10 +2,11 @@
 
 import { CalendarRange } from "lucide-react";
 import { useState } from "react";
-import { MIN_RANGE_DAYS, rangeDays, rangeLabel, type InsightRange } from "../../lib/insight/range";
+import { rangeDraftError, rangeLabel, type InsightRange } from "../../lib/insight/range";
 import type { InsightGraph } from "../../lib/insight/types";
 
 // 范围选择：全部数据、节日预设（来自图谱的 scope.festivals）、自定义起止。改了就写进 URL，由工作台重新请求。
+// range 是当前显示的图的范围（不是 URL 里请求的），控件始终和图对得上；请求中的状态由工作台的加载提示表示。
 const toInput = (d: string) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
 const fromInput = (v: string) => v.replaceAll("-", "");
 
@@ -14,7 +15,8 @@ export function InsightRangePicker({ graph, range, onChange }: { graph: InsightG
   const preset = !range ? "all" : festivals.find((f) => f.from === range.from && f.to === range.to)?.name ?? "custom";
   const [custom, setCustom] = useState(preset === "custom");
   const [from, setFrom] = useState(range?.from ?? dataFrom); const [to, setTo] = useState(range?.to ?? dataTo);
-  const draft = { from, to }; const tooShort = from > to || rangeDays(draft) < MIN_RANGE_DAYS;
+  // 两个日期都要是真实日期、不倒序、在数据范围内、至少 3 天，才能点「看这段」；清空日期框得到空串，同样不合格。
+  const draft = { from, to }; const invalid = rangeDraftError(from, to, dataFrom, dataTo);
   const choose = (value: string) => {
     if (value === "custom") { setCustom(true); return; }
     setCustom(false);
@@ -31,11 +33,11 @@ export function InsightRangePicker({ graph, range, onChange }: { graph: InsightG
       <option value="custom">自定义</option>
     </select>
     {custom ? <>
-      <input type="date" aria-label="开始日期" value={toInput(from)} min={toInput(dataFrom)} max={toInput(dataTo)} onChange={(e) => setFrom(fromInput(e.target.value))} className={field} />
+      <input type="date" aria-label="开始日期" value={from ? toInput(from) : ""} min={toInput(dataFrom)} max={toInput(dataTo)} onChange={(e) => setFrom(fromInput(e.target.value))} className={field} />
       <span className="text-[12px] text-[#94a3b8]">至</span>
-      <input type="date" aria-label="结束日期" value={toInput(to)} min={toInput(dataFrom)} max={toInput(dataTo)} onChange={(e) => setTo(fromInput(e.target.value))} className={field} />
-      <button type="button" disabled={tooShort} onClick={() => onChange(draft)} className="min-h-8 rounded-lg bg-[#2f6bff] px-3 text-[12.5px] font-medium text-white disabled:bg-[#cbd5e1]">看这段</button>
-      {tooShort ? <span className="text-[12px] text-[#a43f37]">至少选 {MIN_RANGE_DAYS} 天</span> : null}
+      <input type="date" aria-label="结束日期" value={to ? toInput(to) : ""} min={toInput(dataFrom)} max={toInput(dataTo)} onChange={(e) => setTo(fromInput(e.target.value))} className={field} />
+      <button type="button" disabled={Boolean(invalid)} aria-describedby="insight-range-hint" onClick={() => onChange(draft)} className="min-h-8 rounded-lg bg-[#2f6bff] px-3 text-[12.5px] font-medium text-white disabled:bg-[#cbd5e1]">看这段</button>
+      <span id="insight-range-hint" role="status" className="text-[12px] text-[#a43f37]">{invalid}</span>
     </> : null}
   </div>;
 }

@@ -52,3 +52,13 @@ export function rangeFromSearch(search: string): InsightRange | null {
   const params = new URLSearchParams(search);
   try { return parseRangeParams(params.get("from"), params.get("to")); } catch { return null; }
 }
+
+// 页面自定义起止的校验：合格返回空字符串，否则返回控件旁显示的原因。空日期（清空了日期框）单独提示。
+export function rangeDraftError(from: string, to: string, dataFrom: string, dataTo: string): string {
+  if (!from.trim() || !to.trim()) return "请选择开始和结束日期";
+  try {
+    const range = parseRangeParams(from, to);
+    if (range) checkRange(range, dataFrom, dataTo);
+    return "";
+  } catch (caught) { return caught instanceof Error ? caught.message : "日期不正确"; }
+}

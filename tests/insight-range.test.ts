@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkRange, festivalsOf, isFullRange, MIN_RANGE_DAYS, parseRangeParams, rangeDays, rangeFromSearch, rangeLabel, rangeSearch } from "../app/lib/insight/range.ts";
+import { checkRange, festivalsOf, isFullRange, MIN_RANGE_DAYS, parseRangeParams, rangeDays, rangeFromSearch, rangeDraftError, rangeLabel, rangeSearch } from "../app/lib/insight/range.ts";
 
 test("范围解析：都不给是全月；只给一个、格式错、日期不存在、倒序都拒绝", () => {
   assert.equal(parseRangeParams(null, null), null);
@@ -42,4 +42,13 @@ test("URL：写出去再读回来一样；坏参数读成全月", () => {
   assert.equal(rangeFromSearch("?from=20250829&to=20250823"), null);
   assert.equal(rangeFromSearch("?from=x"), null);
   assert.equal(rangeLabel(r), "8/23–8/29");
+});
+
+test("自定义起止校验：空、倒序、越界、太短各给原因，合格返回空", () => {
+  assert.equal(rangeDraftError("", "20250831", "20250801", "20250831"), "请选择开始和结束日期");
+  assert.equal(rangeDraftError("20250805", "", "20250801", "20250831"), "请选择开始和结束日期");
+  assert.equal(rangeDraftError("20250810", "20250805", "20250801", "20250831"), "开始日期不能晚于结束日期");
+  assert.equal(rangeDraftError("20250725", "20250805", "20250801", "20250831"), "超出数据范围（8/1–8/31）");
+  assert.equal(rangeDraftError("20250830", "20250831", "20250801", "20250831"), `范围太短，至少选 ${MIN_RANGE_DAYS} 天`);
+  assert.equal(rangeDraftError("20250829", "20250831", "20250801", "20250831"), "");
 });
