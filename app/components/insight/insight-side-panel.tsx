@@ -11,7 +11,7 @@ const byStrength = (a: InsightEdge, b: InsightEdge) => ORDER[a.strength] - ORDER
 
 // 档位小标：有分数显示分数，没有显示档位名。
 function Lk({ edge }: { edge: InsightEdge }) {
-  const tone = edge.strength === "strong" ? "bg-[#eaf0ff] text-[#1d4ed8]" : edge.strength === "med" ? "bg-[#f1f5fb] text-[#3b5bdb]" : edge.strength === "missing" ? "bg-[#fdf1d8] text-[#a16207]" : "bg-[#f1f5f9] text-[#64748b]";
+  const tone = edge.strength === "strong" ? "bg-[#eaf0ff] text-[#1d4ed8]" : edge.strength === "med" ? "bg-[#f1f5fb] text-[#3b5bdb]" : edge.strength === "missing" ? "bg-[#fdf1d8] text-[#a16207]" : edge.strength === "na" ? "bg-[#f1f5f9] text-[#94a3b8]" : "bg-[#f1f5f9] text-[#64748b]";
   return <span className={`mx-1 inline-block rounded-md px-1.5 align-[1px] text-[10.5px] font-semibold leading-4 tabular-nums ${tone}`}>{edge.score ? scoreText(edge) : INSIGHT_STRENGTH_LABEL[edge.strength]}</span>;
 }
 

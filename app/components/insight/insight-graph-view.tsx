@@ -97,6 +97,7 @@ function nodeClass(n: InsightNode, on: boolean, selected: boolean, dim: boolean)
   const kind = n.kind === "metric" ? "border-transparent bg-[linear-gradient(135deg,#2f6bff,#1d4ed8)] text-white shadow-[0_6px_18px_-6px_rgba(47,107,255,0.55)]"
     : n.kind === "decomp" ? "border-[#d6e2ff] bg-[linear-gradient(180deg,#f5f8ff,#ecf2ff)] shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
     : n.kind === "factor" ? "border-[#cfd8e6] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05),0_4px_12px_-6px_rgba(15,23,42,0.12)]"
+    : n.strength === "na" ? "border-dashed border-[#e2e8f0] bg-[#f8fafc] text-[#94a3b8]"
     : n.strength === "missing" ? "border-dashed border-[#e2b765] bg-[#fffaf0]"
     : "border-[#e4eaf2] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]";
   const state = selected ? "!border-[#2f6bff] ring-[3px] ring-[#2f6bff]/20" : "hover:-translate-y-px hover:border-[#9db8ff] hover:shadow-[0_6px_16px_-8px_rgba(47,107,255,0.45)]";
@@ -117,10 +118,10 @@ export function InsightLegend({ graph, selection, onSelect }: { graph: InsightGr
   </div>;
 }
 
-function LineLegend() {
+function LineLegend({ hasNa }: { hasNa: boolean }) {
   const line = (k: InsightStrength, label: string) => <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><svg aria-hidden="true" viewBox="0 0 22 8" className="h-2 w-[22px]"><line x1="1" y1="4" x2="21" y2="4" stroke={STRENGTH_STYLE[k].stroke} strokeWidth={STRENGTH_STYLE[k].width + 0.4} strokeDasharray={STRENGTH_STYLE[k].dash} strokeLinecap="round" /></svg>{label}</span>;
   return <div aria-label="线的图例" className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-[#e4eaf2] bg-white/95 px-3 py-1.5 text-[11.5px] text-[#64748b] shadow-sm backdrop-blur">
-    <span className="font-medium text-[#334155]">解释度</span>{line("strong", "≥10 强")}{line("med", "2–10 中")}{line("weak", "<2 弱")}{line("id", "拆解")}{line("missing", "缺数据")}
+    <span className="font-medium text-[#334155]">解释度</span>{line("strong", "≥10 强")}{line("med", "2–10 中")}{line("weak", "<2 弱")}{line("id", "拆解")}{line("missing", "缺数据")}{hasNa ? line("na", "不适用") : null}
   </div>;
 }
 // 画布：初始排版按四列算，之后可以拖空白平移、滚轮缩放、拖节点挪位置；「适应窗口」把整张图放进视野，「重排」回到初始位置。
@@ -129,6 +130,7 @@ type View = { x: number; y: number; k: number };
 const PAD = 28; const K_MIN = 0.35; const K_MAX = 2.2;
 export function InsightGraphView({ graph, selection, marked, onSelect }: { graph: InsightGraph; selection: InsightSelection | null; marked: InsightNodeId[]; onSelect: (s: InsightSelection | null) => void }) {
   const stage = useRef<HTMLDivElement>(null);
+  const hasNa = graph.edges.some((e) => e.strength === "na");
   const [size, setSize] = useState({ w: 0, h: 0 });
   useLayoutEffect(() => {
     const node = stage.current; if (!node) return;
@@ -271,7 +273,7 @@ export function InsightGraphView({ graph, selection, marked, onSelect }: { graph
           <span className={`flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[13px] font-semibold leading-snug tracking-[-0.01em] ${n.kind === "decomp" ? "text-[#1d4ed8]" : metric ? "" : "text-[#0f172a]"}`}>
             {n.label}
             {/* 细项因素右上角是解释度分数（没有分数的显示档位）。 */}
-            {n.column === 0 && n.strength ? <span className={`ml-auto shrink-0 rounded-md px-1.5 text-[11px] font-semibold leading-[18px] tabular-nums ${n.strength === "strong" ? "bg-[#eaf0ff] text-[#1d4ed8]" : n.strength === "missing" ? "bg-[#fdf1d8] text-[#a16207]" : n.strength === "med" ? "bg-[#f1f5fb] text-[#3b5bdb]" : "bg-[#f1f5f9] text-[#94a3b8]"}`} title={n.score ? `解释度 ${n.score.value.toFixed(1)}：${n.score.measure}` : n.effect ? `${n.effect.text}：${n.effect.measure}` : undefined}>{n.score ? scoreText(n) : STRENGTH_STYLE[n.strength].pill}</span> : null}
+            {n.column === 0 && n.strength ? <span className={`ml-auto shrink-0 rounded-md px-1.5 text-[11px] font-semibold leading-[18px] tabular-nums ${n.strength === "strong" ? "bg-[#eaf0ff] text-[#1d4ed8]" : n.strength === "missing" ? "bg-[#fdf1d8] text-[#a16207]" : n.strength === "na" ? "bg-[#f1f5f9] text-[#94a3b8]" : n.strength === "med" ? "bg-[#f1f5fb] text-[#3b5bdb]" : "bg-[#f1f5f9] text-[#94a3b8]"}`} title={n.score ? `解释度 ${n.score.value.toFixed(1)}：${n.score.measure}` : n.effect ? `${n.effect.text}：${n.effect.measure}` : undefined}>{n.score ? scoreText(n) : STRENGTH_STYLE[n.strength].pill}</span> : null}
             {n.column === 0 ? null : <span className={`ml-auto shrink-0 rounded-[5px] border px-1.5 text-[10px] font-medium leading-4 ${metric ? "border-white/25 bg-white/10 text-white" : tag}`}>{INSIGHT_SOURCE_LABEL[n.source.kind].tag}</span>}
           </span>
           <span className="flex min-w-0 items-center gap-1.5">
@@ -284,8 +286,8 @@ export function InsightGraphView({ graph, selection, marked, onSelect }: { graph
     {/* 浮层：右上角操作提示，左下角线型图例，右下角缩放和排版。它们不跟着画布动。 */}
     <div data-overlay className="pointer-events-none absolute right-3 top-3 hidden rounded-full border border-[#e4eaf2] bg-white/90 px-3 py-1 text-[11.5px] text-[#94a3b8] shadow-sm backdrop-blur sm:block">拖节点 · 滚轮缩放 · 拖空白平移 · 点节点或连线看依据</div>
     {/* 图例和缩放按钮各占一角；画布窄时图例移到顶上，不和按钮挤在一起。 */}
-    <div data-overlay className="absolute left-3 top-3 sm:hidden"><LineLegend /></div>
-    <div data-overlay className="absolute bottom-3 left-3 hidden max-w-[calc(100%-360px)] sm:block"><LineLegend /></div>
+    <div data-overlay className="absolute left-3 top-3 sm:hidden"><LineLegend hasNa={hasNa} /></div>
+    <div data-overlay className="absolute bottom-3 left-3 hidden max-w-[calc(100%-360px)] sm:block"><LineLegend hasNa={hasNa} /></div>
     <div data-overlay className="absolute bottom-3 right-3 flex items-center gap-1.5">
       <button type="button" aria-label="放大" title="放大" onClick={() => zoomAt(1.2, center().x, center().y)} className={tool}><Plus aria-hidden="true" className="size-4" /></button>
       <button type="button" aria-label="缩小" title="缩小" onClick={() => zoomAt(1 / 1.2, center().x, center().y)} className={tool}><Minus aria-hidden="true" className="size-4" /></button>

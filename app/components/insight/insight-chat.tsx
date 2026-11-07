@@ -6,6 +6,7 @@ import { analyticsRequest } from "../../lib/client/analytics";
 import type { InsightAskResult } from "../../lib/insight/ask";
 import { selectionLabel } from "../../lib/insight/context";
 import { findNode, type InsightSelection } from "../../lib/insight/paths";
+import type { InsightRange } from "../../lib/insight/range";
 import type { InsightGraph, InsightNodeId } from "../../lib/insight/types";
 import { MarkdownText } from "../chat/markdown-text";
 
@@ -23,8 +24,8 @@ function suggestions(graph: InsightGraph, selection: InsightSelection | null): s
 }
 
 // fill：放在固定高度的容器里，对话列表占满剩余高度、输入框贴底。
-export function InsightChat({ graph, selection, onSelect, onHighlight, onAskQa, fill = false }: {
-  graph: InsightGraph; selection: InsightSelection | null; onSelect: (selection: InsightSelection | null) => void;
+export function InsightChat({ graph, selection, range, onSelect, onHighlight, onAskQa, fill = false }: {
+  graph: InsightGraph; selection: InsightSelection | null; range: InsightRange | null; onSelect: (selection: InsightSelection | null) => void;
   onHighlight: (ids: InsightNodeId[]) => void; onAskQa: (question: string) => void; fill?: boolean;
 }) {
   const [turns, setTurns] = useState<Turn[]>([]); const [input, setInput] = useState(""); const [error, setError] = useState("");
@@ -48,7 +49,7 @@ export function InsightChat({ graph, selection, onSelect, onHighlight, onAskQa, 
     setTurns((items) => [...items, userTurn, reply]);
     const controller = new AbortController(); active.current = controller;
     try {
-      const result = await analyticsRequest<InsightAskResult>("/api/analytics/insight/ask", { question, selection, history }, controller.signal);
+      const result = await analyticsRequest<InsightAskResult>("/api/analytics/insight/ask", { question, selection, history, range }, controller.signal);
       setTurns((items) => items.map((t) => t.id === reply.id ? { ...t, text: result.body, highlights: result.highlights, status: undefined } : t));
       if (result.highlights.length) onHighlight(result.highlights);
     } catch (caught) {

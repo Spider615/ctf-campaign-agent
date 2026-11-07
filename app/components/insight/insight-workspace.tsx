@@ -5,29 +5,37 @@ import { useEffect, useState } from "react";
 import { analyticsRequest } from "../../lib/client/analytics";
 import { focusOf, type InsightFocus } from "../../lib/insight/context";
 import type { InsightSelection } from "../../lib/insight/paths";
+import { rangeSearch, type InsightRange } from "../../lib/insight/range";
 import type { InsightGraph, InsightNodeId } from "../../lib/insight/types";
 import { InsightChat } from "./insight-chat";
 import { InsightGraphView, InsightLegend } from "./insight-graph-view";
+import { InsightRangePicker } from "./insight-range-picker";
 import { InsightSidePanel } from "./insight-side-panel";
 
 // 图谱只有一张；选中的节点、连线、来源筛选写进 URL，刷新和从问答回来都还在。
-export function InsightWorkspace({ selection, onSelect, onAskQa }: {
+export function InsightWorkspace({ selection, onSelect, range, onRange, onAskQa }: {
   selection: InsightSelection | null; onSelect: (selection: InsightSelection | null) => void;
+  range: InsightRange | null; onRange: (range: InsightRange | null) => void;
   onAskQa: (question: string, focus: InsightFocus | null) => void;
 }) {
   const [graph, setGraph] = useState<InsightGraph | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [marked, setMarked] = useState<InsightNodeId[]>([]);
   const [panel, setPanel] = useState<"detail" | "chat">("detail");
+  const search = rangeSearch(range);
 
+  // 换范围时保留旧图、顶部提示正在算；第一次算一个新范围要扫全表，之后命中缓存。
   useEffect(() => {
     const controller = new AbortController();
-    analyticsRequest<InsightGraph>("/api/analytics/insight", undefined, controller.signal)
-      .then((result) => { if (!controller.signal.aborted) { setGraph(result); setError(""); } })
-      .catch((caught) => { if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : "洞察图谱暂时算不出来"); });
+    analyticsRequest<InsightGraph>(`/api/analytics/insight${search ? `?${search}` : ""}`, undefined, controller.signal)
+      .then((result) => { if (!controller.signal.aborted) { setGraph(result); setError(""); setLoading(false); } })
+      .catch((caught) => { if (!controller.signal.aborted) { setError(caught instanceof Error ? caught.message : "洞察图谱暂时算不出来"); setLoading(false); } });
     return () => controller.abort();
-  }, [attempt]);
+  }, [attempt, search]);
+  // 换范围时先标记「正在算」，再改 URL；放在事件里而不是 effect 里，免得在 effect 中同步设 state。
+  const changeRange = (next: InsightRange | null) => { if (rangeSearch(next) === search) return; setLoading(true); onRange(next); };
 
   const choose = (next: InsightSelection | null) => { setMarked([]); onSelect(next); if (next) setPanel("detail"); };
   const ask = (question = "") => onAskQa(question, graph ? focusOf(graph, selection) : null);
@@ -48,6 +56,13 @@ export function InsightWorkspace({ selection, onSelect, onAskQa }: {
   // 一屏放下：指标卡在上，下面左图右栏，各自在框内滚动，页面本身不滚。窄屏（< 1180px）退回整页滚动、上下排。
   // relative：滚动区里的绝对定位元素（如输入框的读屏标签）以这里为基准，不撑高整页。
   return <section aria-label="深度剖析" className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3 md:px-6 min-[1180px]:overflow-hidden">
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+      <InsightRangePicker key={`${graph.scope.range?.from ?? "all"}-${graph.scope.range?.to ?? ""}`} graph={graph} range={range} onChange={changeRange} />
+      {loading ? <span role="status" className="inline-flex items-center gap-1.5 text-[12px] text-[#64748b]"><span className="size-3 animate-spin rounded-full border-2 border-[#c7ddff] border-t-[#247cff] motion-reduce:animate-none" />正在算这段时间的影响因素，第一次约 1 分钟</span> : null}
+      {error ? <span role="alert" className="text-[12px] text-[#a43f37]">{error}<button type="button" onClick={() => { setError(""); setLoading(true); setAttempt((n) => n + 1); }} className="ml-2 underline">重试</button></span> : null}
+      {graph.scope.range && !loading ? <span className="text-[12px] text-[#64748b]">{graph.scope.period} · {graph.scope.stores.toLocaleString("zh-CN")} 家店{graph.scope.overlap ? <> · <span className="text-[#a16207]">{graph.scope.overlap}</span></> : null}</span> : null}
+    </div>
+
     <div className="grid shrink-0 gap-3 sm:grid-cols-3">
       {graph.kpis.map((k) => { const Icon = KPI_ICON[k.id];
         return <button key={k.id} type="button" onClick={() => choose({ kind: "node", id: k.id })} aria-pressed={selection?.kind === "node" && selection.id === k.id}
@@ -79,7 +94,7 @@ export function InsightWorkspace({ selection, onSelect, onAskQa }: {
         </div>
         {/* 问答一直挂着，切到详情再回来，对话还在。 */}
         <div id="insight-panel-chat" role="tabpanel" aria-labelledby="insight-tab-chat" hidden={panel !== "chat"} className="min-h-0 flex-1 flex-col p-3 data-[on=true]:flex" data-on={panel === "chat"}>
-          <InsightChat graph={graph} selection={selection} onSelect={choose} onHighlight={setMarked} onAskQa={ask} fill />
+          <InsightChat key={rangeSearch(graph.scope.range)} graph={graph} selection={selection} range={graph.scope.range} onSelect={choose} onHighlight={setMarked} onAskQa={ask} fill />
         </div>
       </aside>
     </div>
