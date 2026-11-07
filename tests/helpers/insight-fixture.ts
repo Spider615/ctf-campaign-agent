@@ -46,3 +46,15 @@ export function fakeResults() {
 }
 
 export const fakeGraph = () => buildDriverGraph(toDriverData(fakeResults(), "v-test"), "2026-10-20T00:00:00.000Z");
+
+// 按范围裁剪：除逐日外的查询都只留窗口内的行，和 Agent 加了日期条件后查回来的一样；逐日始终是全月。
+export function fakeResultsIn(range: { from: string; to: string } | null) {
+  const all = fakeResults();
+  if (!range) return all;
+  const inside = (d: string) => d >= range.from && d <= range.to;
+  const panel = all.panel.filter((p) => inside(p.d));
+  const open = new Set(panel.map((p) => p.store));
+  return { ...all, panel, gold: all.gold.filter((g) => inside(g.d)), stores: all.stores.filter((s) => open.has(s.store)),
+    scope: [{ ...all.scope[0], first_day: range.from, last_day: range.to }] };
+}
+export const fakeGraphIn = (range: { from: string; to: string } | null) => buildDriverGraph(toDriverData(fakeResultsIn(range), "v-test"), "2026-10-20T00:00:00.000Z");

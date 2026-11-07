@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayBands, withinStoreDayFit } from "../app/lib/insight/stats.ts";
@@ -273,4 +274,11 @@ test("指标卡片：两个乘数各高多少、结果跟着高多少；下面�
     const sim = card.sim!; assert.equal(sim.kind, "levers", id);
     if (sim.kind === "levers") assert.equal(sim.focus, id);
   }
+});
+
+test("全月图和改动前一样（除 scope 新增字段外逐字段相同）", () => {
+  const expected = JSON.parse(readFileSync(new URL("./fixtures/insight-full-month.json", import.meta.url), "utf8"));
+  const actual = JSON.parse(JSON.stringify(fakeGraph()));
+  const { range, dataFrom, dataTo, festivals, overlap, ...scope } = actual.scope;
+  assert.deepEqual({ ...actual, scope }, expected);
 });
