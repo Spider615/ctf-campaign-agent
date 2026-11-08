@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { focusContext, focusOf, locateAnswer, parseSelection, selectionLabel, selectionSearch } from "../app/lib/insight/context.ts";
+import { focusContext, focusContextItems, focusOf, locateAnswer, parseSelection, selectionLabel, selectionSearch } from "../app/lib/insight/context.ts";
 import { fakeGraph, fakeComparisonGraph } from "./helpers/insight-fixture.ts";
+import { isDatabaseExplainRequest } from "../app/lib/analytics/database.ts";
+import { validateConversationRequest } from "../app/lib/attachments/answer.ts";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
+import { attachmentReferences } from "../app/lib/client/attachments.ts";
+import { mergeConversationTimeline } from "../app/lib/client/history-conversation.ts";
 
 test("URL 参数互相还原，不认识的节点整条丢掉", () => {
   for (const s of [{ kind: "node", id: "image" }, { kind: "edge", from: "promo", to: "mix" }, { kind: "source", source: "inferred" }] as const) assert.deepEqual(parseSelection(selectionSearch(s)), s);
@@ -73,4 +80,63 @@ test("整图比较上下文随对话保存并在刷新后恢复", async () => {
   const restored = createHistoryConversationStore(storage);
   assert.deepEqual(restored.focus(), focus);
   assert.match(focusContext(restored.focus()!), /可比样本本期[\s\S]*对照[\s\S]*无法单独拆出七夕净效果/);
+});
+
+for (const selection of [null, { kind: "node", id: "sales" }, { kind: "edge", from: "orders", to: "sales" }] as const) {
+  test(`比较图${selection?.kind ?? "整图"}的完整上下文通过数据库请求守卫`, () => {
+    const focus = focusOf(fakeComparisonGraph(), selection)!;
+    const context = focusContextItems(focus);
+    assert.equal(context.join(""), focusContext(focus), "基准、日期和限制全部保留，未截断");
+    assert.ok(context.every((part) => part.length <= 500));
+    const request = { mode: "database", question: "为什么有这些变化？", history: [], context };
+    assert.equal(isDatabaseExplainRequest(request), true, "跳转首问必须能通过真实数据库请求守卫");
+  });
+  test(`比较图${selection?.kind ?? "整图"}的完整上下文通过附件请求守卫`, () => {
+    const focus = focusOf(fakeComparisonGraph(), selection)!;
+    const context = focusContextItems(focus);
+    assert.equal(context.join(""), focusContext(focus));
+    assert.doesNotThrow(() => validateConversationRequest({ conversationId: "22222222-2222-4222-8222-222222222222", question: "结合文件解释变化", history: [], context, attachmentIds: ["11111111-1111-4111-8111-111111111111"] }));
+  });
+}
+
+test("洞察上下文分片保留重复内容，不拆开 UTF-16 代理对，旧短上下文保持原文", () => {
+  const focus = { kind: "node", id: "sales", label: "🧧".repeat(600), comparison: "同".repeat(2500) } as const;
+  const parts = focusContextItems(focus);
+  assert.equal(parts.join(""), focusContext(focus));
+  assert.ok(parts.filter((part) => part === "同".repeat(500)).length >= 2, "相同片段也必须保留顺序与次数");
+  for (const part of parts) {
+    assert.ok(part.length <= 500);
+    assert.doesNotMatch(part, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  }
+  const short = { kind: "node", id: "sales", label: "销售额" } as const;
+  assert.deepEqual(focusContextItems(short), [focusContext(short)]);
+});
+
+test("页面真实首问组装动作保留重复洞察分片，并在两种请求里守住200项上限", () => {
+  // 执行真实 analyze 动作；路由组件无法在 strip-types 中直接加载，只替换发送边界。
+  const source = ts.createSourceFile("history-conversation.tsx", readFileSync("app/components/analytics/history-conversation.tsx", "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let initializer: ts.Expression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === "analyze") initializer = node.initializer;
+    ts.forEachChild(node, visit);
+  };
+  visit(source); assert.ok(initializer);
+  const focus = focusOf(fakeComparisonGraph(), null)!;
+  focus.comparison += "同".repeat(2500);
+  const parts = focusContextItems(focus);
+  const requests: Array<{ context: string[]; attachmentIds?: string[] }> = [];
+  const action = runInNewContext(ts.transpileModule(`(${initializer.getText(source)})`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
+    crypto, analysisTurns: { has: () => false }, executionLock: { current: false }, conversationId: "22222222-2222-4222-8222-222222222222", messages: [],
+    mergeConversationTimeline, attachmentReferences, focusContextItems, insightFocus: focus, followBottom: { current: false }, setMessages() {},
+    historyConversation: { context: () => Array.from({ length: 200 }, (_, i) => `原有历史要求 ${i}`) }, perform: (request: typeof requests[number]) => { requests.push(request); },
+  });
+  action("请解释这些变化");
+  action("请结合附件解释变化", undefined, [{ id: "11111111-1111-4111-8111-111111111111" }]);
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.equal(request.context.length, 200);
+    assert.deepEqual(Array.from(request.context.slice(-parts.length)), parts, "历史可淘汰，洞察分片不可被Set去重或裁掉");
+    if (request.attachmentIds) assert.doesNotThrow(() => validateConversationRequest(request));
+    else assert.equal(isDatabaseExplainRequest(request), true);
+  }
 });

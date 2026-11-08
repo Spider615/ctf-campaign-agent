@@ -24,7 +24,7 @@ import type { AttachmentReference, ConversationRequest } from "../../lib/attachm
 import { attachmentReferences, attachmentSubmission, postAttachmentStream, retryConversationAttachments, UnavailableAttachmentsError } from "../../lib/client/attachments";
 import { useAttachmentDraft } from "../attachments/use-attachments";
 import { useAttachmentAvailability } from "../attachments/use-attachment-availability";
-import { focusContext, focusLabel } from "../../lib/insight/context";
+import { focusContextItems, focusLabel } from "../../lib/insight/context";
 import type { InsightNodeId } from "../../lib/insight/types";
 import { publicAgentError } from "../../lib/agent/service-errors";
 
@@ -119,8 +119,8 @@ function UnifiedConversation({ conversationId, embedded, draft, onLocate }: Insi
     const recentContext = timeline.flatMap((entry) => entry.kind === "campaign" ? entry.message.content.kind === "user_text" ? [entry.message.content.text.slice(0, 500)] : [] : entry.message.role === "user" ? [entry.message.text.slice(0, 500)] : []);
     const refs = [...new Map([...attachmentReferences(messages), ...newAttachments].map((file) => [file.id, file])).values()];
     const ignoreFiles = /(?:不要|不用|无需)(?:再)?(?:参考|使用|结合|看)(?:上传的|这些|之前的)?(?:文件|附件|资料)/.test(question) && !newAttachments.length;
-    // 洞察上下文放在 context 末尾，不改问题原文，模型按「没有明确改变时沿用」处理。
-    const context = [...new Set([...historyConversation.context(), ...recentContext, ...(insightFocus ? [focusContext(insightFocus)] : [])])].slice(-200);
+    // 洞察按请求长度分片放在末尾；只对历史去重，相同洞察片段仍须原序保留。
+    const context = [...new Set([...historyConversation.context(), ...recentContext]), ...(insightFocus ? focusContextItems(insightFocus) : [])].slice(-200);
     const request: DatabaseExplainRequest | ConversationRequest = refs.length && !ignoreFiles ? { conversationId, question, history, context, attachmentIds: refs.map((file) => file.id) } : { mode: "database", question, history, context };
     followBottom.current = true;
     setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", text: question, createdAt, afterMessageId, ...(newAttachments.length ? { attachments: newAttachments } : {}) }, { id: replyId, role: "assistant", text: "", status: "running", request, createdAt, afterMessageId, ...(refs.length ? { attachments: refs } : {}) }]);

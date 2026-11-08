@@ -65,6 +65,17 @@ export function focusContext(focus: InsightFocus): string {
   return `用户正在看深度剖析的${focus.comparison ? "可比平日变化图" : "指标影响因素图谱"}（${focus.comparison ? "销售额、毛利、销量相对可比平日的变化" : "销售额、毛利、销量受哪些因素影响"}，${focus.period ? `${focus.period} 全国` : "2025 年 8 月全国"}），选中了${what}。${card ? `${card}。` : ""}「这个」「这条线」「这个因素」指它。没有明确改变时沿用这个范围。${focus.comparison ?? ""}`;
 }
 
+// 请求的每条持续要求最多 500 个 UTF-16 单元；逐码点分片，拼回后与原文完全相同。
+export function focusContextItems(focus: InsightFocus): string[] {
+  const parts: string[] = []; let current = "";
+  for (const point of focusContext(focus)) {
+    if (current.length + point.length > 500) { parts.push(current); current = ""; }
+    current += point;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
 // 问答回答用到的语义层维度 → 图上的节点；门店、日期、货品这类明细维度图上没有。
 const LOCATE: Record<string, InsightNodeId> = {
   imageLevel: "image", retailExperience: "shoptype", storeArea: "areaage", storeAge: "areaage", cityTier: "areaage",
