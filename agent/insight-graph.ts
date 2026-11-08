@@ -29,7 +29,7 @@ const RANGE = "`交易日期wid` BETWEEN ? AND ?";
 export function insightQueries(table: string, ranged = false): Record<keyof Omit<DriverData, "datasetVersion" | "period" | "rows" | "memberShare" | "window" | "dataFrom" | "dataTo"> | "scope", string> {
   if (!/^[A-Za-z0-9_]{1,64}$/.test(table)) throw new Error("洞察数据表名不正确");
   const t = `\`${table}\``;
-  // and：接在已有 WHERE 后面；where：没有 WHERE 的查询用。不带范围时都是空串，SQL 和原来逐字相同。
+  // and：接在已有 WHERE 后面；where：没有 WHERE 的查询用。不带范围时不拼日期条件。
   const and = ranged ? ` AND ${RANGE}` : ""; const where = ranged ? ` WHERE ${RANGE}` : "";
   return {
     scope: hint(`SELECT MIN(\`交易日期wid\`) AS first_day, MAX(\`交易日期wid\`) AS last_day, COUNT(*) AS n, SUM(CASE WHEN ${SALE} AND \`是否会员销售（1：是，0：否）\` = '1' THEN \`实际销售金额\` ELSE 0 END) / SUM(CASE WHEN ${SALE} THEN \`实际销售金额\` ELSE 0 END) * 100 AS member_share FROM ${t}${where}`),
@@ -38,12 +38,14 @@ export function insightQueries(table: string, ranged = false): Record<keyof Omit
       SUM(CASE WHEN \`材料种类描述\` = '足金' AND \`优惠小类\` = '一般開單' THEN \`实际销售金额\` ELSE 0 END) AS base_gold,
       SUM(CASE WHEN \`材料种类描述\` = '足金' AND \`销售金重\` >= 20 THEN \`实际销售金额\` ELSE 0 END) AS heavy_gold,
       SUM(CASE WHEN \`材料种类描述\` = '足金' THEN \`销售金重\` ELSE 0 END) AS gold_grams, SUM(CASE WHEN \`材料种类描述\` = '足金' THEN \`销售件数\` ELSE 0 END) AS gold_qty,
-      MAX(CASE WHEN (${GROUP}) = 'k50' THEN 1 ELSE 0 END) AS k50, MAX(CASE WHEN (${GROUP}) = 'k30' THEN 1 ELSE 0 END) AS k30, MAX(CASE WHEN (${GROUP}) = 'gt' THEN 1 ELSE 0 END) AS gt
+      MAX(CASE WHEN (${GROUP}) = 'k50' THEN 1 ELSE 0 END) AS k50, MAX(CASE WHEN (${GROUP}) = 'k30' THEN 1 ELSE 0 END) AS k30, MAX(CASE WHEN (${GROUP}) = 'gt' THEN 1 ELSE 0 END) AS gt,
+      COUNT(*) - COUNT(\`零售毛利\`) AS missing_gp, COUNT(*) - COUNT(\`rsv\`) AS missing_rev_ex, COUNT(*) - COUNT(\`销售单号\`) AS missing_orders
       FROM ${t} WHERE ${SALE} AND \`实体分店店号\` IS NOT NULL${and} GROUP BY 1, 2`),
     stores: hint(`SELECT \`实体分店店号\` AS store, ANY_VALUE(\`大区描述\`) AS big_region, ANY_VALUE(\`区域描述\`) AS region, ANY_VALUE(\`城市级别\`) AS city_tier, ANY_VALUE(\`形象级别描述\`) AS image,
       ANY_VALUE(\`铺型\`) AS shop_type, ANY_VALUE(\`分店性质\`) AS nature, ANY_VALUE(\`分店面积区间\`) AS area, ANY_VALUE(\`零售体验描述\`) AS experience, ANY_VALUE(\`店龄\`) AS age, ANY_VALUE(\`分店名称\`) AS name
       FROM ${t} WHERE ${SALE} AND \`实体分店店号\` IS NOT NULL${and} GROUP BY 1`),
-    ptype: hint(`SELECT ${PTYPE} AS ptype, SUM(\`实际销售金额\`) AS sales, SUM(\`零售毛利\`) AS gp, SUM(\`rsv\`) / 1.13 AS rev_ex, SUM(\`销售件数\`) AS items, SUM(\`销售金重\`) AS grams FROM ${t} WHERE ${SALE}${and} GROUP BY 1`),
+    ptype: hint(`SELECT ${PTYPE} AS ptype, SUM(\`实际销售金额\`) AS sales, SUM(\`零售毛利\`) AS gp, SUM(\`rsv\`) / 1.13 AS rev_ex, SUM(\`销售件数\`) AS items, SUM(\`销售金重\`) AS grams,
+      COUNT(*) - COUNT(\`零售毛利\`) AS missing_gp, COUNT(*) - COUNT(\`rsv\`) AS missing_rev_ex FROM ${t} WHERE ${SALE}${and} GROUP BY 1`),
     daily: hint(`SELECT \`交易日期wid\` AS d, DAYOFWEEK(STR_TO_DATE(\`交易日期wid\`, '%Y%m%d')) - 1 AS dow, MAX(\`节庆\`) AS festival, SUM(\`实际销售金额\`) AS sales, COUNT(DISTINCT ${ORDER}) AS orders,
       SUM(CASE WHEN \`材料种类描述\` = '足金' THEN \`实际销售金额\` ELSE 0 END) AS gold,
       SUM(CASE WHEN \`材料种类描述\` = '足金' AND \`优惠小类\` = '一般開單' THEN \`实际销售金额\` ELSE 0 END) AS base_gold,
@@ -76,7 +78,8 @@ const invalidNumber = (value: unknown) => value === null || value === undefined 
 function panelOf(result: unknown): ComparisonPanelRow[] {
   const fields = { sales: "sales", gp: "gp", revEx: "rev_ex", items: "items", orders: "orders", goldSales: "gold", baseGold: "base_gold", heavyGold: "heavy_gold", goldGrams: "gold_grams", goldQty: "gold_qty", k50: "k50", k30: "k30", gt: "gt" } as const;
   return rowsOf(result).map((r) => {
-    const invalidFields = Object.entries(fields).filter(([, raw]) => invalidNumber(r[raw])).map(([key]) => key);
+    // SUM / COUNT 会忽略部分 NULL；额外标记缺失，不改旧全月的汇总数值。
+    const invalidFields = Object.entries(fields).filter(([, raw]) => invalidNumber(r[raw]) || num(r[`missing_${raw}`]) > 0).map(([key]) => key);
     return { store: str(r.store), day: str(r.d), ...Object.fromEntries(Object.entries(fields).map(([key, raw]) => [key, num(r[raw])])), ...(invalidFields.length ? { invalidFields } : {}) } as ComparisonPanelRow;
   });
 }
@@ -100,7 +103,7 @@ export function toDriverData(results: Record<string, unknown>, datasetVersion: s
     stores: rowsOf(results.stores).map((r): StoreRow => ({ store: str(r.store), bigRegion: str(r.big_region), region: str(r.region), cityTier: str(r.city_tier), image: str(r.image), shopType: str(r.shop_type), nature: str(r.nature), area: str(r.area), experience: str(r.experience), age: r.age === null || r.age === undefined || r.age === "" ? null : Number(r.age), name: r.name ? String(r.name) : "" })),
     ptype: rowsOf(results.ptype).map((r): ComparisonPtypeRow => {
       const fields = { sales: "sales", gp: "gp", revEx: "rev_ex", items: "items", grams: "grams" } as const;
-      const invalidFields = Object.entries(fields).filter(([, raw]) => invalidNumber(r[raw])).map(([key]) => key);
+      const invalidFields = Object.entries(fields).filter(([, raw]) => invalidNumber(r[raw]) || num(r[`missing_${raw}`]) > 0).map(([key]) => key);
       return { ptype: (["计价金", "一口价黄金"] as const).find((p) => p === r.ptype) ?? "镶嵌及其他", sales: num(r.sales), gp: num(r.gp), revEx: num(r.rev_ex), items: num(r.items), grams: num(r.grams), ...(invalidFields.length ? { invalidFields } : {}) };
     }),
     daily,

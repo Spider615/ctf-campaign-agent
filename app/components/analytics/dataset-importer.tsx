@@ -50,7 +50,7 @@ export function DatasetImporter({ onImported, disabled }: { onImported: (dataset
   };
   return <section className="rounded-xl border border-border bg-card p-4" aria-labelledby="import-heading">
     <h2 id="import-heading" className="text-base font-semibold">导入经营数据</h2>
-    <p className="mt-1 text-xs leading-5 text-muted-foreground">CSV / JSON，最多 2000 条明细。净销售额与成本均为明细合计的 CNY 元，成本不是单件成本；退款用负数。记录按当前浏览器访问标识隔离。</p>
+    <p className="mt-1 text-xs leading-5 text-muted-foreground">CSV / JSON，最多 2000 条明细。净销售额与成本均为明细合计的 CNY 元，成本不是单件成本；退款用负数。记录保存在共享工作空间，更换浏览器仍可查看。</p>
     <div className="mt-3 flex flex-wrap gap-3 text-xs">
       <button type="button" onClick={() => downloadCsv("销售明细模板.csv", [SALES_FIELDS.map((f) => f.label)])} className="min-h-9 text-primary underline underline-offset-4">销售明细模板</button>
       <button type="button" onClick={() => downloadCsv("活动规则模板.csv", [RULE_FIELDS.map((f) => f.label)])} className="min-h-9 text-primary underline underline-offset-4">活动规则模板</button>

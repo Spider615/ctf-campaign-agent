@@ -26,7 +26,7 @@ export function attachmentReferences(messages: ReadonlyArray<{ attachments?: Att
 export const attachmentUrl = (conversationId: string, id?: string, action?: string) => `/api/analytics/attachments${id ? "/" + encodeURIComponent(id) : ""}${action ? "/" + action : ""}?conversationId=${encodeURIComponent(conversationId)}`;
 let initializing: Promise<unknown> | undefined;
 export async function ensureAttachmentAccess(signal?: AbortSignal) {
-  // 首次多文件上传共用一次身份初始化，避免并行响应生成不同 cookie。
+  // 保留上传前的就绪检查，并行上传共用一次请求；POC 不需要浏览器身份 Cookie。
   if (!initializing) initializing = analyticsRequest("/api/analytics/access").finally(() => { initializing = undefined; });
   await initializing; if (signal?.aborted) throw new DOMException("已取消上传", "AbortError");
 }

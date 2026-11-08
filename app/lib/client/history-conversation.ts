@@ -36,7 +36,7 @@ function saveFailure(error: unknown): HistorySaveState {
   if (error instanceof Error && error.name === "AbortError") return { status: "failed", code: "cancelled", reason: "本次保存已取消，尚未确认保存成功。", retryable: true };
   return { status: "failed", code: "network", reason: error instanceof Error && error.message ? error.message : "对话记录暂时存不上", retryable: true };
 }
-// 服务端存储：每条对话整条覆盖写，按访问标识和范围读回。
+// 服务端共享空间：每条对话整条覆盖写，按对话范围读回。
 export type RemoteThreads = { list(): Promise<unknown[]>; save(thread: Thread): Promise<void>; remove(id: string): Promise<void>; pointer?: Persistence };
 export function remoteThreads(scope: string): RemoteThreads {
   const base = "/api/analytics/conversations";
@@ -44,7 +44,8 @@ export function remoteThreads(scope: string): RemoteThreads {
     async list() {
       const response = await fetch(`${base}?scope=${encodeURIComponent(scope)}`, { cache: "no-store" });
       if (!response.ok) throw new Error("对话记录暂时读不到");
-      return ((await response.json()) as { threads?: unknown[] }).threads ?? [];
+      const data = await response.json() as { threads?: unknown[]; deletedIds?: string[] };
+      return [...data.threads ?? [], ...(data.deletedIds ?? []).map((id) => ({ id, deleted: true }))];
     },
     async save(thread) {
       const body = JSON.stringify({ scope, thread });
@@ -162,6 +163,13 @@ export function createHistoryConversationStore(storage?: Persistence, remote?: R
     queue(1000);
   };
   const pull = () => remote!.list().then((stored) => {
+    for (const entry of stored) {
+      const marker = entry as { id?: unknown; deleted?: unknown } | null;
+      if (!marker || marker.deleted !== true || typeof marker.id !== "string") continue;
+      deleted.add(marker.id); dirty.delete(marker.id);
+      const waiting = retries.get(marker.id); if (waiting) clearTimeout(waiting); retries.delete(marker.id);
+    }
+    threads = threads.filter((thread) => !deleted.has(thread.id));
     const local = new Map(threads.map((thread) => [thread.id, thread]));
     const fromServer = stored.filter((t): t is Thread => threadValid(t as Thread) && !deleted.has((t as Thread).id)).map(restoreThread);
     const merged = fromServer.map((server) => {
@@ -178,6 +186,7 @@ export function createHistoryConversationStore(storage?: Persistence, remote?: R
       const remembered = remote!.pointer?.getItem("active"); const target = threads.find((thread) => thread.id === remembered && worth(thread)) ?? threads.filter(worth).at(-1);
       if (target) { threads = threads.filter((thread) => worth(thread) || thread.id === target.id); activeId = target.id; }
     }
+    if (!current()) { const thread = makeThread(); threads.push(thread); activeId = thread.id; }
     commit();
   }).catch(() => { /* 服务端读不到时继续用本页记录，之后的改动照常尝试写回。 */ });
   const persistence = () => { try { return storage ?? (typeof window === "undefined" ? null : window.sessionStorage); } catch { return null; } };

@@ -103,19 +103,6 @@ export function InsightWorkspace({ selection, onSelect, range, onRange, onAskQa 
         </button>; })}
     </div>
 
-    {graph.comparison ? <details className="shrink-0 rounded-xl border border-[#e4eaf2] bg-white/80 px-3 py-2 text-[12px] text-[#64748b]">
-      <summary className="cursor-pointer font-medium text-[#334155]">可比样本：{graph.comparison.coverage.stores.toLocaleString("zh-CN")}/{graph.comparison.coverage.totalStores.toLocaleString("zh-CN")} 家店 · {graph.comparison.coverage.storeDays.toLocaleString("zh-CN")}/{graph.comparison.coverage.totalStoreDays.toLocaleString("zh-CN")} 个有记录门店日 · 查看对照口径</summary>
-      <div className="mt-2 max-h-52 space-y-2 overflow-y-auto overscroll-contain pr-2 leading-relaxed">
-        <p>{graph.comparison.method}</p>
-        <p>缺必需有效字段 {graph.comparison.coverage.invalidTargetDays.toLocaleString("zh-CN")} 个目标门店日；历史不足 {graph.comparison.coverage.insufficientHistoryDays.toLocaleString("zh-CN")} 个。未匹配部分不参与变化计算。</p>
-        <p>全国克减铺开日（由成交结构推断）：{graph.comparison.rollout ?? "未发现"}。</p>
-        <p>实际使用基准日期并集：{graph.comparison.baselineDates.join("、") || "无满足条件的日期"}。</p>
-        {graph.comparison.matches.map((match) => <p key={match.day}>{match.day}：{match.stores.toLocaleString("zh-CN")} 家可比店，历史日期并集 {match.baselineDates.join("、")}。</p>)}
-        {graph.comparison.groupNotes.map((note) => <p key={note}>{note}</p>)}
-        {graph.comparison.limitations.map((note) => <p key={note}>{note}</p>)}
-      </div>
-    </details> : null}
-
     <div className={`grid gap-3 min-[1180px]:grid-cols-[minmax(0,1fr)_minmax(320px,30%)] ${graph.comparison ? "shrink-0 min-[1180px]:h-[540px]" : "min-[1180px]:min-h-0 min-[1180px]:flex-1"}`}>
       <section aria-label={graph.comparison?.title ?? "影响因素图谱"} className={`${card} flex min-w-0 flex-col pb-2 pl-4 pr-2 pt-3 min-[1180px]:min-h-0`}>
         <div className="mb-2 flex items-center gap-2 pr-2">

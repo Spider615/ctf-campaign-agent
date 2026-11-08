@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { createInsightGraphService, insightQueries, toDriverData } from "../agent/insight-graph.ts";
 import type { HistoryConnection } from "../agent/analytics-database.ts";
 import { fakeResults, fakeResultsIn } from "./helpers/insight-fixture.ts";
@@ -224,4 +225,50 @@ test("全范围毛利合法零和负值照常保留，空聚合及非有限字�
   }
   const empty = buildComparisonGraph(toDriverData({ ...raw, ptype: [] }, "v", range), fullPanel);
   assert.ok(empty.kpis.every((kpi) => kpi.value === "暂无数据"));
+});
+
+function graphFromPartialDetails(field: "零售毛利" | "rsv" | "销售单号", value: number | string | null, changedDay = "20250823") {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.function("regexp", (pattern, input) => new RegExp(String(pattern)).test(String(input)) ? 1 : 0);
+    db.exec("CREATE TABLE t (`实体分店店号` TEXT, `交易日期wid` TEXT, `实际销售金额` REAL, `零售毛利` REAL, rsv REAL, `销售件数` REAL, `销售单号` TEXT, `材料种类描述` TEXT, `优惠小类` TEXT, `销售金重` REAL)");
+    const insert = db.prepare("INSERT INTO t VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    for (const day of ["20250809", "20250816", "20250823"]) for (const item of [1, 2]) {
+      const changed = day === changedDay && item === 2;
+      insert.run("S0", day, 100, changed && field === "零售毛利" ? value : 20, changed && field === "rsv" ? value : 113, 1, changed && field === "销售单号" ? value : `${day}-${item}`, "足金", "一般開單", 1);
+    }
+    // 直接执行产品聚合 SQL，覆盖 SUM / COUNT 忽略部分 NULL 的真实行为。
+    const panel = db.prepare(insightQueries("t").panel).all();
+    const ptype = db.prepare(insightQueries("t", true).ptype).all(range.from, range.to);
+    const data = toDriverData({ ...fakeResults(), panel, ptype }, "partial-details", range);
+    return buildComparisonGraph(data, data.panel);
+  } finally { db.close(); }
+}
+
+for (const field of ["零售毛利", "rsv", "销售单号"] as const) test(`门店日内部分${field}缺失时退出比较，不能把部分聚合当完整数值`, () => {
+  const graph = graphFromPartialDetails(field, null);
+  assert.equal(graph.comparison!.coverage.invalidTargetDays, 1);
+  assert.equal(graph.comparison!.status, "unavailable");
+  assert.equal(graph.comparison!.metrics.gp, null);
+  if (field === "零售毛利") {
+    assert.equal(graph.kpis.find((kpi) => kpi.id === "gp")!.value, "暂无数据");
+    assert.match(graph.kpis.find((kpi) => kpi.id === "gp")!.detail, /资料不全/);
+  }
+});
+
+test("历史门店日内部分毛利缺失不能充当第二个有效基准日", () => {
+  const graph = graphFromPartialDetails("零售毛利", null, "20250816");
+  assert.equal(graph.comparison!.coverage.invalidTargetDays, 0);
+  assert.equal(graph.comparison!.coverage.insufficientHistoryDays, 1);
+  assert.equal(graph.comparison!.status, "unavailable");
+});
+
+test("明细毛利零或负数不属于缺失，聚合为零和负值仍保留", () => {
+  for (const gp of [0, -20, -30]) {
+    const graph = graphFromPartialDetails("零售毛利", gp);
+    assert.equal(graph.comparison!.coverage.invalidTargetDays, 0);
+    assert.equal(graph.comparison!.status, "available");
+    assert.equal(graph.comparison!.metrics.gp!.current, (20 + gp) * 100);
+    assert.equal(graph.kpis.find((kpi) => kpi.id === "gp")!.value, String(20 + gp));
+  }
 });

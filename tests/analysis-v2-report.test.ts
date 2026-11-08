@@ -76,7 +76,7 @@ test("报告流保持 v1 原报告出处核验，不能按数据库对话口径�
 
 async function reportRouteScript(upstream: string) {
   const db = `const report=${JSON.stringify(report)}, dataset=${JSON.stringify(dataset)}, owner=${JSON.stringify(owner)};
-    export const getDbBinding=()=>({prepare(sql){let args=[];return {bind(...values){args=values;return this;}, async first(){if(args[1]!==owner)return null; if(sql.includes('analytics_report'))return {report_json:JSON.stringify(report)}; if(sql.includes('analytics_dataset'))return {snapshot_json:JSON.stringify(dataset)}; throw Error('不支持其他读取');},async run(){throw Error('报告解释不能写入数据');}};}});`;
+    export const getDbBinding=()=>({prepare(sql){let args=[];return {bind(...values){args=values;return this;}, async first(){if(args[1]!==owner&&args[2]!==1)return null; if(sql.includes('analytics_report'))return {report_json:JSON.stringify(report)}; if(sql.includes('analytics_dataset'))return {snapshot_json:JSON.stringify(dataset)}; throw Error('不支持其他读取');},async run(){throw Error('报告解释不能写入数据');}};}});`;
   const bundled = await build({ stdin: { contents: 'import { POST } from "./app/api/analytics/reports/[id]/explain/route.ts"; export default {fetch:request=>POST(request,{params:Promise.resolve({id:"simulated-report"})})};', resolveDir: process.cwd() }, bundle: true, write: false, format: "esm", platform: "browser", plugins: [{ name: "合成数据存储与服务边界", setup(builder) {
     builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: "env", namespace: "boundary" }));
     builder.onResolve({ filter: /db\/index\.ts$/ }, () => ({ path: "db", namespace: "boundary" }));
@@ -106,7 +106,7 @@ test("报告流在 Node 静默等待时返回一个保活空行，取消清理�
   assert.ok(cleared.mock.callCount() > 0, "停止后清理保活计时器");
 });
 
-test("真实报告 API 转发 v3，无头保留 v1，v2 头返回 400 提示刷新，用户数据与访问隔离不变", { timeout: 10000 }, async () => {
+test("真实报告 API 保留回答协议与原报告，POC 跨浏览器共享且拒绝跨源写入", { timeout: 10000 }, async () => {
   const calls: Array<{ schema: string | undefined; body: unknown }> = [];
   const server = createServer(async (request, response) => {
     let body = ""; for await (const part of request) body += part.toString("utf8");
@@ -125,7 +125,11 @@ test("真实报告 API 转发 v3，无头保留 v1，v2 头返回 400 提示刷�
     const stale = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, "X-Analytics-Answer-Schema": "analysis-answer/v2" }, body: JSON.stringify({ question: "先核对哪些门店？" }) });
     assert.equal(stale.status, 400); assert.deepEqual(await stale.json(), { error: "页面版本已更新，请刷新页面后重试" }); assert.equal(calls.length, 2, "v2 头不能到达分析服务");
     assert.deepEqual((calls[0].body as { report: unknown }).report, report); assert.deepEqual((calls[0].body as { dataset: unknown }).dataset, dataset);
-    const denied = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, cookie: "ctf_analytics_owner=22222222-2222-4222-8222-222222222222", "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify({ question: "继续核对" }) });
-    assert.equal(denied.status, 404); assert.equal(calls.length, 2);
+    const otherBrowser = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, cookie: "ctf_analytics_owner=22222222-2222-4222-8222-222222222222", "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify({ question: "继续核对" }) });
+    assert.equal(otherBrowser.status, 200); assert.equal(calls.length, 3);
+    const freshBrowser = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { "content-type": "application/json", "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify({ question: "换浏览器继续核对" }) });
+    assert.equal(freshBrowser.status, 200); assert.equal(calls.length, 4); assert.equal(freshBrowser.headers.get("set-cookie"), null);
+    const crossOrigin = await worker.dispatchFetch("http://localhost/api/analytics/reports/simulated-report/explain", { method: "POST", headers: { ...headers, origin: "http://other.example", "X-Analytics-Answer-Schema": "analysis-answer/v3" }, body: JSON.stringify({ question: "跨源请求" }) });
+    assert.equal(crossOrigin.status, 403); assert.equal(calls.length, 4);
   } finally { await worker.dispose(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
 });

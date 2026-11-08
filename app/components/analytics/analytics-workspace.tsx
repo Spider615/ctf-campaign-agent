@@ -36,7 +36,7 @@ function ImportedAnalyticsContent({ initialReportId }: { initialReportId?: strin
     const controller = new AbortController();
     const load = async () => {
       try {
-        // 先初始化访问 cookie，再读取报告，避免首次并行请求生成不同访问标识。
+        // 依次读取共享空间的数据集和报告，POC 不依赖浏览器身份。
         const loaded = await analyticsRequest<{ datasets: DatasetSummary[] }>("/api/analytics/datasets", undefined, controller.signal);
         const records = await analyticsRequest<{ reports: ReportSummary[] }>("/api/analytics/reports", undefined, controller.signal);
         if (controller.signal.aborted) return;

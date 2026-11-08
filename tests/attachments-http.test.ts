@@ -9,6 +9,7 @@ import { createAttachmentsHttpHandler, type ConversationRunner } from "../agent/
 import { createAgentHttpHandler } from "../agent/http-handler.ts";
 import { consumeAnalyticsStream } from "../app/lib/analytics/stream.ts";
 import { largeSimulatedPlanAnswer } from "./helpers/plan-answer.ts";
+import { analyticsAccess } from "../app/lib/server/analytics-access.ts";
 
 const owner = "11111111-1111-4111-8111-111111111111"; const conversationId = "22222222-2222-4222-8222-222222222222";
 const headers = { authorization: "Bearer test", "x-attachments-owner": owner, "content-type": "application/octet-stream" };
@@ -49,6 +50,32 @@ test("超大文件、空文件与非法路径在上传入口明确拒绝", async
   assert.equal((await fetch(path, { method: "POST", headers, body: new Uint8Array(25 * 1024 * 1024 + 1) })).status, 413);
   assert.equal((await fetch(path, { method: "POST", headers, body: "" })).status, 400);
   assert.equal((await fetch(`${base}/attachments/not-an-id?conversationId=${conversationId}`, { headers })).status, 400);
+});
+
+test("POC 共享空间读写旧浏览器附件，仍按对话区分且删除不会使旧引用复活", async (t) => {
+  const { base, store } = await start(t);
+  const sharedOwner = analyticsAccess(new Request("http://localhost/api")).owner;
+  const sharedHeaders = { ...headers, "x-attachments-owner": sharedOwner };
+  const path = `${base}/attachments?conversationId=${conversationId}`;
+  const firstResponse = await fetch(path + "&name=旧文件.txt", { method: "POST", headers, body: "原浏览器的资料" });
+  const { attachment: first } = await firstResponse.json() as { attachment: { id: string } };
+  const otherHeaders = { ...headers, "x-attachments-owner": crypto.randomUUID() };
+  const secondResponse = await fetch(path + "&name=另一旧文件.txt", { method: "POST", headers: otherHeaders, body: "另一个浏览器的资料" });
+  const { attachment: second } = await secondResponse.json() as { attachment: { id: string } };
+  const thirdResponse = await fetch(path + "&name=新文件.txt", { method: "POST", headers: sharedHeaders, body: "共享空间的新资料" });
+  assert.equal(thirdResponse.status, 202);
+  const { attachment: third } = await thirdResponse.json() as { attachment: { id: string } };
+  const listed = await fetch(path, { headers: sharedHeaders });
+  const { attachments } = await listed.json() as { attachments: Array<{ id: string }> };
+  assert.deepEqual(new Set(attachments.map((item) => item.id)), new Set([first.id, second.id, third.id]));
+  const content = `${base}/attachments/${first.id}/content?conversationId=${conversationId}`;
+  const download = await fetch(content, { headers: sharedHeaders });
+  assert.equal(download.status, 200); assert.equal(await download.text(), "原浏览器的资料");
+  assert.ok((await store.content({ owner, conversationId }, first.id)).path.includes(owner), "旧文件继续保存在原位置");
+  assert.equal((await fetch(content.replace(conversationId, crypto.randomUUID()), { headers: sharedHeaders })).status, 404);
+  assert.equal((await fetch(`${base}/attachments/${first.id}?conversationId=${conversationId}`, { method: "DELETE", headers: sharedHeaders })).status, 200);
+  assert.equal((await fetch(content, { headers })).status, 404);
+  assert.equal((await fetch(content, { headers: sharedHeaders })).status, 404);
 });
 
 test("文件与经营数据混合回答的大证据也经统一分块完整交付", async (t) => {
