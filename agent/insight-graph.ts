@@ -3,9 +3,9 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buildDriverGraph, type DailyRow, type DriverData, type GoldRow, type OfferGroup, type PtypeRow, type StoreRow, type ThresholdRow, type TradeInRow } from "../app/lib/insight/drivers.ts";
+import { buildDriverGraph, type DailyRow, type DriverData, type GoldRow, type OfferGroup, type StoreRow, type ThresholdRow, type TradeInRow } from "../app/lib/insight/drivers.ts";
 import { buildComparisonGraph } from "../app/lib/insight/comparison-graph.ts";
-import type { ComparisonPanelRow } from "../app/lib/insight/comparison.ts";
+import type { ComparisonPanelRow, ComparisonPtypeRow } from "../app/lib/insight/comparison.ts";
 import type { InsightGraph } from "../app/lib/insight/types.ts";
 import { checkRange, festivalsOf, isFullRange, rangeLabel, type InsightRange } from "../app/lib/insight/range.ts";
 import type { HistoryConnection } from "./analytics-database.ts";
@@ -71,11 +71,12 @@ const num = (value: unknown) => value === null || value === undefined || value =
 const str = (value: unknown) => value === null || value === undefined ? "未知" : String(value);
 const group = (value: unknown): OfferGroup => (["base", "k50", "k30", "gt"] as const).find((g) => g === value) ?? "other";
 const rowsOf = (result: unknown): Array<Record<string, unknown>> => { if (!Array.isArray(result)) throw new Error("洞察查询结果格式不正确"); return result as Array<Record<string, unknown>>; };
+const invalidNumber = (value: unknown) => value === null || value === undefined || (typeof value === "string" && !value.trim()) || !Number.isFinite(Number(value));
 
 function panelOf(result: unknown): ComparisonPanelRow[] {
   const fields = { sales: "sales", gp: "gp", revEx: "rev_ex", items: "items", orders: "orders", goldSales: "gold", baseGold: "base_gold", heavyGold: "heavy_gold", goldGrams: "gold_grams", goldQty: "gold_qty", k50: "k50", k30: "k30", gt: "gt" } as const;
   return rowsOf(result).map((r) => {
-    const invalidFields = Object.entries(fields).filter(([, raw]) => r[raw] === null || r[raw] === undefined || (typeof r[raw] === "string" && !r[raw].trim()) || !Number.isFinite(Number(r[raw]))).map(([key]) => key);
+    const invalidFields = Object.entries(fields).filter(([, raw]) => invalidNumber(r[raw])).map(([key]) => key);
     return { store: str(r.store), day: str(r.d), ...Object.fromEntries(Object.entries(fields).map(([key, raw]) => [key, num(r[raw])])), ...(invalidFields.length ? { invalidFields } : {}) } as ComparisonPanelRow;
   });
 }
@@ -97,7 +98,11 @@ export function toDriverData(results: Record<string, unknown>, datasetVersion: s
     period: full || !window ? monthly : `${festival ? `${festival.name} ` : ""}${rangeLabel(window)}`,
     panel: panelOf(results.panel),
     stores: rowsOf(results.stores).map((r): StoreRow => ({ store: str(r.store), bigRegion: str(r.big_region), region: str(r.region), cityTier: str(r.city_tier), image: str(r.image), shopType: str(r.shop_type), nature: str(r.nature), area: str(r.area), experience: str(r.experience), age: r.age === null || r.age === undefined || r.age === "" ? null : Number(r.age), name: r.name ? String(r.name) : "" })),
-    ptype: rowsOf(results.ptype).map((r): PtypeRow => ({ ptype: (["计价金", "一口价黄金"] as const).find((p) => p === r.ptype) ?? "镶嵌及其他", sales: num(r.sales), gp: num(r.gp), revEx: num(r.rev_ex), items: num(r.items), grams: num(r.grams) })),
+    ptype: rowsOf(results.ptype).map((r): ComparisonPtypeRow => {
+      const fields = { sales: "sales", gp: "gp", revEx: "rev_ex", items: "items", grams: "grams" } as const;
+      const invalidFields = Object.entries(fields).filter(([, raw]) => invalidNumber(r[raw])).map(([key]) => key);
+      return { ptype: (["计价金", "一口价黄金"] as const).find((p) => p === r.ptype) ?? "镶嵌及其他", sales: num(r.sales), gp: num(r.gp), revEx: num(r.rev_ex), items: num(r.items), grams: num(r.grams), ...(invalidFields.length ? { invalidFields } : {}) };
+    }),
     daily,
     gold: rowsOf(results.gold).map((r): GoldRow => ({ day: str(r.d), group: group(r.g), amount: num(r.amount), grams: num(r.grams), qty: num(r.qty), ge20: num(r.ge20) })),
     threshold: rowsOf(results.threshold).map((r): ThresholdRow => ({ gram: num(r.gram), k50: num(r.k50), base: num(r.base) })),

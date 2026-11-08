@@ -1,10 +1,11 @@
 // 范围比较的纯计算：同店同星期匹配历史，不把缺记录视为零成交。
-import type { DailyRow, PanelRow, StoreRow } from "./drivers.ts";
+import type { DailyRow, PanelRow, PtypeRow, StoreRow } from "./drivers.ts";
 import { festivalsOf, rangeLabel, type InsightRange } from "./range.ts";
 import type { InsightComparison, InsightComparisonMetric, InsightComparisonTotals } from "./types.ts";
 
 // 旧全月口径仍用数值零；新比较额外保留原查询字段是否有效。
 export type ComparisonPanelRow = PanelRow & { invalidFields?: string[] };
+export type ComparisonPtypeRow = PtypeRow & { invalidFields?: string[] };
 const MONEY = { sales: "salesCents", gp: "gpCents", revEx: "revExCents", goldSales: "goldSalesCents" } as const;
 const COUNTS = ["orders", "items", "k50", "k30", "gt"] as const;
 const REQUIRED = [...Object.keys(MONEY), ...COUNTS] as Array<keyof PanelRow>;

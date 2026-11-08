@@ -1,5 +1,5 @@
 // 范围图只回答相对自身可比平日的变化。全月继续使用 drivers.ts。
-import { comparePeriods, comparisonCents, type ComparisonPanelRow } from "./comparison.ts";
+import { comparePeriods, comparisonCents, type ComparisonPanelRow, type ComparisonPtypeRow } from "./comparison.ts";
 import type { DriverData } from "./drivers.ts";
 import { festivalsOf } from "./range.ts";
 import type { InsightCard, InsightChart, InsightComparison, InsightComparisonMetric, InsightEdge, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightTable } from "./types.ts";
@@ -32,16 +32,20 @@ export function buildComparisonGraph(data: DriverData, fullPanel: readonly Compa
   const coverage = `可比样本覆盖 ${n(c.coverage.stores, 0)}/${n(c.coverage.totalStores, 0)} 家店、${n(c.coverage.storeDays, 0)}/${n(c.coverage.totalStoreDays, 0)} 个有记录的目标门店日`;
   const method = `${coverage}。${c.method}`;
   // 顶部保留本期全范围真实聚合，不和可比样本的基准混算。
+  const allRows = data.ptype as ComparisonPtypeRow[];
+  const actualTotal = (field: "sales" | "gp" | "items", amount: boolean): number | null => {
+    if (!allRows.length || allRows.some((p) => p.invalidFields?.includes(field) || !Number.isFinite(p[field]))) return null;
+    const total = allRows.reduce((a, p) => a + (amount ? comparisonCents(p[field]) : p[field]), 0);
+    return Number.isFinite(total) && (!amount || Number.isSafeInteger(total)) ? total : null;
+  };
   const actual = {
-    sales: data.ptype.reduce((a, p) => a + comparisonCents(p.sales), 0),
-    gp: data.ptype.reduce((a, p) => a + comparisonCents(p.gp), 0),
-    qty: data.ptype.reduce((a, p) => a + p.items, 0),
+    sales: actualTotal("sales", true), gp: actualTotal("gp", true), qty: actualTotal("items", false),
   };
   const kpis: InsightKpi[] = ([ ["sales", "销售额"], ["gp", "毛利"], ["qty", "销量"] ] as const).map(([id, label]) => {
-    const amount = id !== "qty"; const raw = amount ? actual[id] / 100 : actual[id];
-    const scale = amount ? Math.abs(raw) >= 1e8 ? 1e8 : Math.abs(raw) >= 1e4 ? 1e4 : 1 : raw >= 1e4 ? 1e4 : 1;
+    const amount = id !== "qty"; const total = actual[id]; const raw = total === null ? null : amount ? total / 100 : total;
+    const scale = raw === null ? 1 : amount ? Math.abs(raw) >= 1e8 ? 1e8 : Math.abs(raw) >= 1e4 ? 1e4 : 1 : raw >= 1e4 ? 1e4 : 1;
     const m = c.metrics[id];
-    return { id, label, value: n(raw / scale), unit: `${scale === 1e8 ? "亿" : scale === 1e4 ? "万" : ""}${amount ? "元" : "件"}`, detail: "本期全范围实际值",
+    return { id, label, value: raw === null ? "暂无数据" : n(raw / scale), unit: raw === null ? "" : `${scale === 1e8 ? "亿" : scale === 1e4 ? "万" : ""}${amount ? "元" : "件"}`, detail: raw === null ? `本期全范围${label}资料不全` : "本期全范围实际值",
       ...(m ? { comparison: { current: compactValue(m.current, amount), baseline: compactValue(m.baseline, amount), delta: signed(m.delta, (v) => compactValue(v, amount)), rate: m.rate === null ? null : `${signed(m.rate)}%` } } : {}) };
   });
   const nodes: InsightNode[] = []; const edges: InsightEdge[] = [];
@@ -54,9 +58,10 @@ export function buildComparisonGraph(data: DriverData, fullPanel: readonly Compa
   }
   for (const k of kpis) {
     const m = c.metrics[k.id]; const amount = k.id !== "qty";
+    const actualFact = actual[k.id] === null ? `${k.label}本期全范围资料不全，暂无数据。` : `${k.label}本期全范围实际 ${k.value}${k.unit}。`;
     node(k.id, k.label, m ? rate(m) : `本期 ${k.value}${k.unit} · 无足够对照`, 3, "metric",
-      m ? change(k.label, m, amount) : `${k.label}本期全范围实际 ${k.value}${k.unit}。${c.unavailableReason}`, k.id === "gp" ? ["零售毛利", "rsv"] : k.id === "sales" ? ["实际销售金额"] : ["销售件数"],
-      { ...(m ? { chart: chartOf(`可比样本${k.label}`, m, amount) } : {}), paragraphs: m ? [change(k.label, m, amount), ...(k.id === "qty" ? ["销量 = 订单数 × 单均件数；历史对照的订单和件数是期望值，允许小数。"] : []), coverage] : [`本期全范围实际 ${k.value}${k.unit}。`, c.unavailableReason!] });
+      m ? `${actual[k.id] === null ? actualFact : ""}${change(k.label, m, amount)}` : `${actualFact}${c.unavailableReason}`, k.id === "gp" ? ["零售毛利", "rsv"] : k.id === "sales" ? ["实际销售金额"] : ["销售件数"],
+      { ...(m ? { chart: chartOf(`可比样本${k.label}`, m, amount) } : {}), paragraphs: m ? [actualFact, change(k.label, m, amount), ...(k.id === "qty" ? ["销量 = 订单数 × 单均件数；历史对照的订单和件数是期望值，允许小数。"] : []), coverage] : [actualFact, c.unavailableReason!] });
   }
   function edge(from: InsightNodeId, to: InsightNodeId, strength: "change" | "observed", basis: string, chart?: InsightChart) {
     edges.push({ from, to, strength, basis, card: cardOf(basis, c, strength === "change" ? "同一可比样本的恒等式对称拆解，取整余差归最后一项；不是因果归因。" : method, chart), chart,

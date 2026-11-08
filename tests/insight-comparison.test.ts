@@ -9,6 +9,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { comparePeriods } from "../app/lib/insight/comparison.ts";
 import { parseSelection as parseUrlSelection, selectionSearch } from "../app/lib/insight/context.ts";
+import { buildComparisonGraph } from "../app/lib/insight/comparison-graph.ts";
+import { askContext } from "../app/lib/insight/ask.ts";
 
 const range = { from: "20250823", to: "20250829" };
 
@@ -177,4 +179,49 @@ test("分组只保留至少九家可比门店并比较各组自身基准，零�
   assert.ok(result.groups.every((group) => group.stores >= 9 && group.sales.rate === 20));
   assert.ok(result.groupNotes.some((note) => /不足 9/.test(note)));
   assert.doesNotMatch(JSON.stringify(result), /NaN|Infinity/);
+});
+
+test("全范围聚合毛利缺失时，顶卡、节点与问图明确资料不全，不宣称实际零元", () => {
+  const raw = fakeResults();
+  const panel = raw.panel.map((p) => p.d >= range.from && p.d <= range.to ? { ...p, gp: null } : p);
+  const ranged = toDriverData({ ...raw, panel: panel.filter((p) => p.d >= range.from && p.d <= range.to), ptype: raw.ptype.map((p) => ({ ...p, gp: null })) }, "v", range);
+  const graph = buildComparisonGraph(ranged, toDriverData({ ...raw, panel }, "v").panel);
+  assert.equal(graph.comparison!.coverage.invalidTargetDays, 840);
+  assert.equal(graph.comparison!.targetTotals.gpCents, null);
+  assert.equal(graph.comparison!.status, "unavailable");
+  assert.equal(graph.kpis.find((kpi) => kpi.id === "gp")!.value, "暂无数据");
+  const node = graph.nodes.find((item) => item.id === "gp")!;
+  assert.match(node.card.say, /毛利[\s\S]*资料不全|毛利[\s\S]*暂无数据/);
+  assert.doesNotMatch([node.subtitle, node.card.say, ...node.paragraphs, ...graph.summary].join(""), /毛利本期全范围实际 0|本期全范围实际 0元/);
+  assert.match(askContext(graph, { kind: "node", id: "gp" }), /毛利 暂无数据/);
+  assert.doesNotMatch(askContext(graph, { kind: "node", id: "gp" }), /毛利 0元|毛利本期全范围实际 0元/);
+  assert.equal(ranged.ptype[0].gp, 0, "保留旧全月缺值转零的数值合同，范围另查原始有效性");
+});
+
+test("全范围任一货类字段缺失就不报伪完整总量，不改用门店日样本替代", () => {
+  const raw = fakeResultsIn(range);
+  const fullPanel = toDriverData(fakeResults(), "v").panel;
+  for (const [field, id] of [["gp", "gp"], ["items", "qty"], ["sales", "sales"]] as const) {
+    const graph = buildComparisonGraph(toDriverData({ ...raw, ptype: raw.ptype.map((p, index) => index === 0 ? { ...p, [field]: null } : p) }, "v", range), fullPanel);
+    assert.equal(graph.comparison!.status, "available", "可比门店日样本仍可有值");
+    assert.equal(graph.kpis.find((kpi) => kpi.id === id)!.value, "暂无数据", `${field} 的全范围总量不能用样本值或其余货类之和代替`);
+    assert.match(graph.kpis.find((kpi) => kpi.id === id)!.detail, /资料不全/);
+  }
+});
+
+test("全范围毛利合法零和负值照常保留，空聚合及非有限字段不补零", () => {
+  const raw = fakeResultsIn(range); const fullPanel = toDriverData(fakeResults(), "v").panel;
+  for (const gp of [0, -10]) {
+    const graph = buildComparisonGraph(toDriverData({ ...raw, ptype: raw.ptype.map((p) => ({ ...p, gp })) }, "v", range), fullPanel);
+    const kpi = graph.kpis.find((item) => item.id === "gp")!;
+    assert.equal(kpi.value, String(gp * raw.ptype.length));
+    assert.equal(kpi.unit, "元");
+    assert.equal(kpi.detail, "本期全范围实际值");
+  }
+  for (const gp of [undefined, "", " ", Infinity, "不是数字"]) {
+    const graph = buildComparisonGraph(toDriverData({ ...raw, ptype: raw.ptype.map((p) => ({ ...p, gp })) }, "v", range), fullPanel);
+    assert.equal(graph.kpis.find((kpi) => kpi.id === "gp")!.value, "暂无数据");
+  }
+  const empty = buildComparisonGraph(toDriverData({ ...raw, ptype: [] }, "v", range), fullPanel);
+  assert.ok(empty.kpis.every((kpi) => kpi.value === "暂无数据"));
 });
