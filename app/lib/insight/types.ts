@@ -3,7 +3,7 @@
 import type { InsightFestival, InsightRange } from "./range.ts";
 
 // 节点从左到右四列：细项因素 → 因素 → 指标拆解 → 指标。
-export const INSIGHT_NODE_IDS = [
+export const FULL_MONTH_NODE_IDS = [
   "image", "shoptype", "areaage", "region", "nature",
   "qixi", "weekday",
   "depth", "threshold", "tradein", "shift",
@@ -12,6 +12,7 @@ export const INSIGHT_NODE_IDS = [
   "orders", "aov", "gm",
   "qty", "sales", "gp",
 ] as const;
+export const INSIGHT_NODE_IDS = [...FULL_MONTH_NODE_IDS, "itemsPerOrder", "revEx"] as const;
 export type InsightNodeId = typeof INSIGHT_NODE_IDS[number];
 // 节点的固定名字。「七夕」是 8 月数据里的节日，换了数据由 drivers.ts 按日历表里的节日改写。
 export const INSIGHT_NODE_LABEL: Record<InsightNodeId, string> = {
@@ -19,6 +20,7 @@ export const INSIGHT_NODE_LABEL: Record<InsightNodeId, string> = {
   qixi: "七夕", weekday: "星期", depth: "每克让多少", threshold: "克重门槛", tradein: "以旧换新", shift: "新增还是挪动",
   gold: "每日金价", member: "新老会员", store: "门店本身", day: "日期和活动", promo: "活动和力度", mix: "货品结构",
   orders: "订单数", aov: "客单价", gm: "毛利率", qty: "销量", sales: "销售额", gp: "毛利",
+  itemsPerOrder: "单均件数", revEx: "不含税销售基数",
 };
 export type InsightColumn = 0 | 1 | 2 | 3;
 export type InsightSection = "门店" | "时间" | "活动" | "缺数据";
@@ -26,7 +28,7 @@ export type InsightNodeKind = "leaf" | "factor" | "decomp" | "metric";
 
 // 强弱档：强、中、弱由解释度分数定；id 是恒等式；missing 是数据里没有、AI 推测的关系。
 // na：这个时间范围内算不出来（例如范围里全是节日、每个星期几只有一天），画成灰线、不给分数。
-export type InsightStrength = "strong" | "med" | "weak" | "id" | "missing" | "na";
+export type InsightStrength = "strong" | "med" | "weak" | "id" | "missing" | "na" | "change" | "observed";
 // 解释度分数（0–100）：这一因素能解释结果差异的百分比，有分数的线用同一把尺子，可以直接比大小。
 // 档位由分数换算：≥ 10 强，2–10 中，< 2 弱。怎么算写在 measure 里。
 // 活动机制（每克让多少、门槛、以旧换新、新增还是挪动、力度和客单）另带 effect：一个带单位的效应值，帮业务看懂差多少。
@@ -117,15 +119,33 @@ export type InsightPeers = {
   laggards: string[]; lagRows: Array<{ name: string; value: number; peer: number }>;
 };
 
-export type InsightKpi = { id: "sales" | "gp" | "qty"; label: string; value: string; unit: string; detail: string };
+// 比较模式金额均为整数分；订单、件数的历史期望值允许小数。
+export type InsightComparisonTotals = { salesCents: number; gpCents: number; revExCents: number; goldSalesCents: number; orders: number; items: number; k50: number; k30: number; gt: number };
+export type InsightComparisonMetric = { current: number; baseline: number; delta: number; rate: number | null };
+export type InsightComparison = {
+  title: string; status: "available" | "unavailable"; method: string; minimumHistory: number; rollout: string | null;
+  baselineDates: string[]; matches: Array<{ day: string; baselineDates: string[]; stores: number }>;
+  coverage: { stores: number; totalStores: number; storeDays: number; totalStoreDays: number; invalidTargetDays: number; insufficientHistoryDays: number };
+  targetTotals: { [K in keyof InsightComparisonTotals]: number | null };
+  sample: { current: InsightComparisonTotals; baseline: InsightComparisonTotals } | null;
+  metrics: { sales: InsightComparisonMetric | null; gp: InsightComparisonMetric | null; qty: InsightComparisonMetric | null };
+  decomposition: { sales: { ordersCents: number; aovCents: number }; gp: { revExCents: number; gmCents: number } } | null;
+  ratios: { aov: InsightComparisonMetric; itemsPerOrder: InsightComparisonMetric; gm: InsightComparisonMetric; goldShare: InsightComparisonMetric } | null;
+  activities: Array<{ id: "k50" | "k30" | "gt"; label: string; current: number; baseline: number; delta: number }>;
+  groups: Array<{ dimension: "image" | "shopType" | "region"; label: string; stores: number; storeDays: number; sales: InsightComparisonMetric; gp: InsightComparisonMetric; qty: InsightComparisonMetric }>;
+  groupNotes: string[]; limitations: string[]; unavailableReason: string | null;
+};
+export type InsightKpi = { id: "sales" | "gp" | "qty"; label: string; value: string; unit: string; detail: string;
+  comparison?: { current: string; baseline: string; delta: string; rate: string | null } };
 export type InsightGraph = {
   schema: "insight-drivers/v2"; datasetVersion: string; builtAt: string;
   // range：这张图算的范围，null 为全部数据；dataFrom / dataTo：数据本身的起止；festivals：节日预设；overlap：范围里的节日和全国克减重叠时的说明。
   scope: { period: string; rows: number; stores: number; note: string; range: InsightRange | null; dataFrom: string; dataTo: string; festivals: InsightFestival[]; overlap: string | null };
+  comparison?: InsightComparison;
   kpis: InsightKpi[]; nodes: InsightNode[]; edges: InsightEdge[]; summary: string[]; methods: Array<{ title: string; text: string }>;
 };
 
-export const INSIGHT_STRENGTH_LABEL: Record<InsightStrength, string> = { strong: "强", med: "中", weak: "弱", id: "拆解", missing: "缺数据", na: "不适用" };
+export const INSIGHT_STRENGTH_LABEL: Record<InsightStrength, string> = { strong: "强", med: "中", weak: "弱", id: "拆解", missing: "缺数据", na: "不适用", change: "变化拆解", observed: "同期观察" };
 export const INSIGHT_KIND_LABEL: Record<InsightNodeKind, string> = { leaf: "细项因素", factor: "因素", decomp: "指标拆解", metric: "指标" };
 export const INSIGHT_EDGE_SOURCE: Record<InsightStrength, string> = {
   strong: "数据算出的关联；强、中、弱的分档是按解释比例定的",
@@ -134,4 +154,6 @@ export const INSIGHT_EDGE_SOURCE: Record<InsightStrength, string> = {
   id: "定义（恒等式）；分数是对数方差拆分",
   missing: "AI 推测，没有数据",
   na: "这个时间范围内算不出来",
+  change: "同一可比样本的恒等式变化拆解，不是因果贡献",
+  observed: "同一可比样本的同期观察，不表示解释度或因果关系",
 };

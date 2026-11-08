@@ -3,7 +3,7 @@
 import { comparePeers, mainPart, outlierTable, peerGroups, shortStoreName, type PeerMetric, type PeerStore } from "./peers.ts";
 import { etaSquared, logLinearFit, logSplit, median, rSquared, strengthOf, twoWayShares, uniqueContributions, withinStoreDayBands, withinStoreDayFit } from "./stats.ts";
 import { festivalsOf, rangeDays } from "./range.ts";
-import type { InsightChart, InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
+import type { FULL_MONTH_NODE_IDS, InsightChart, InsightEdge, InsightEffect, InsightGraph, InsightKpi, InsightNode, InsightNodeId, InsightScore, InsightStrength } from "./types.ts";
 
 // 优惠按名称归成几组（AI 归类）：克减 50、克减 30、金色星期二、一般開單、其他。
 export type OfferGroup = "base" | "k50" | "k30" | "gt" | "other";
@@ -759,7 +759,7 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   const peakTimes = peak && refAvg > 0 ? peak.sales / refAvg : 0;
   const orderTimes = peak && refOrders > 0 ? peak.orders / refOrders : 0;
 
-  const nodeCards: Record<InsightNodeId, Card> = {
+  const nodeCards: Record<typeof FULL_MONTH_NODE_IDS[number], Card> = {
     image: C(`${imgTop ? short(imgTop.k) : ""}的店${span}卖【${imgTop ? n0(imgTop.m / 1e4) : 0} 万】，是社区店的 ${imgTop && imgSocial ? n1(imgTop.m / Math.max(1, imgSocial.m)) : 0} 倍`,
       `${n0(full.length)} 家开满 ${minDays} 天的店按商圈分档比。在门店的各项条件（商圈、店型、面积、店龄、大区……）里，商圈带来的差别最大。`,
       [...(imgTop && imgTop.n < 150 ? [`${short(imgTop.k)}只有 ${n0(imgTop.n)} 家店，比其他档少很多，数字没那么稳。`] : []), ...(imageOut.top ? [`每一档里都有特别好的店：${short(imageOut.top.k)}里就有 ${n0(imageOut.top.n)} 家卖到本档一般水平的 3 倍以上。`] : [])],
@@ -1016,8 +1016,8 @@ export function buildDriverGraph(data: DriverData, builtAt = new Date().toISOStr
   return { schema: "insight-drivers/v2", datasetVersion: data.datasetVersion, builtAt,
     scope: { period: data.period, rows: data.rows, stores: storeCount, note: win ? `${data.period} 的数据，只是相关` : "一个月数据，只是相关",
       range: win, dataFrom: data.dataFrom, dataTo: data.dataTo, festivals: festivalsOf(all), overlap }, kpis, nodes: nodes.map((n) => n.strength === "na" ? { ...n, card: naCard(n.id, n.paragraphs[0] ?? "") }
-      : { ...n, card: nodeCards[n.id], ...(nodeCharts[n.id] ? { chart: nodeCharts[n.id] } : {}) }),
+      : { ...n, card: nodeCards[n.id as typeof FULL_MONTH_NODE_IDS[number]], ...(nodeCharts[n.id] ? { chart: nodeCharts[n.id] } : {}) }),
     edges: edges.map((e): InsightEdge => e.strength === "na"
       ? { from: e.from, to: e.to, strength: "na", basis: e.basis, anomalies: [], recommendation: null, noRecommendation: e.noRecommendation, card: naCard(e.from, e.basis) }
-      : { ...e, card: edgeCards[`${e.from}>${e.to}`] ?? nodeCards[e.to] }), summary, methods };
+      : { ...e, card: edgeCards[`${e.from}>${e.to}`] ?? nodeCards[e.to as typeof FULL_MONTH_NODE_IDS[number]] }), summary, methods };
 }

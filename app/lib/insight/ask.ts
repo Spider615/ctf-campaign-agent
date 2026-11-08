@@ -1,6 +1,6 @@
 // 图谱问答：用户在洞察页里针对整张图或选中的节点、连线提问，回答只依据图谱里已经算好的内容。
 // 这里是纯函数：校验请求、把图谱和选中对象整理成依据材料、检查回答里的数字都出自依据。
-import { selectionLabel } from "./context.ts";
+import { comparisonContext, selectionLabel } from "./context.ts";
 import { parseRangeParams, type InsightRange } from "./range.ts";
 import { edgeKey, findNode, routes, routesThrough, type InsightSelection } from "./paths.ts";
 import { INSIGHT_EDGE_SOURCE, INSIGHT_NODE_IDS, INSIGHT_SOURCE_KINDS, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightSourceKind } from "./types.ts";
@@ -61,6 +61,7 @@ export function askContext(graph: InsightGraph, selection: InsightSelection | nu
   const lines: string[] = [];
   // 选了范围时范围名以日期结尾，后面空一格（全月「2025 年 8 月全国」不变）；节日和克减重叠时告诉模型两者分不开。
   lines.push(`## 图谱范围\n${graph.scope.period}${graph.scope.range ? " " : ""}全国销售明细 ${graph.scope.rows.toLocaleString("zh-CN")} 行、${graph.scope.stores.toLocaleString("zh-CN")} 家店；${graph.scope.note}。三个结果指标：${graph.kpis.map((k) => `${k.label} ${k.value}${k.unit}（${k.detail}）`).join("；")}。${graph.scope.overlap ? `\n注意：${graph.scope.overlap}。` : ""}`);
+  if (graph.comparison) lines.push(`## 比较目标、本期与基准\n${comparisonContext(graph)}`);
   lines.push(`## 图上三句话结论\n${graph.summary.map((s) => `- ${s}`).join("\n")}`);
   lines.push(`## 所有连线（因素 → 结果）\n${graph.edges.map((e) => edgeLine(graph, e)).join("\n")}`);
   const detail: string[] = [];
@@ -84,7 +85,7 @@ export function askContext(graph: InsightGraph, selection: InsightSelection | nu
     }
   }
   lines.push(`## 用户选中的：${selectionLabel(graph, selection)}\n${detail.join("\n\n")}`);
-  lines.push(`## 读图前要知道的\n${graph.methods.map((m) => `- ${m.title}：${m.text}`).join("\n")}\n- 链路上每一段都是单独测的关联，不能把各段相乘当成效果。`);
+  lines.push(`## 读图前要知道的\n${graph.methods.map((m) => `- ${m.title}：${m.text}`).join("\n")}\n- ${graph.comparison ? "变化拆解是恒等式，同期观察没有因果排序；不能把链路相乘当成效果。" : "链路上每一段都是单独测的关联，不能把各段相乘当成效果。"}`);
   lines.push(`## 可高亮的节点 id\n${graph.nodes.map((n) => `${n.id}=${n.label}`).join("；")}`);
   return lines.join("\n\n");
 }

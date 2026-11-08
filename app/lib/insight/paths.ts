@@ -5,6 +5,14 @@ import type { InsightEdge, InsightGraph, InsightNodeId, InsightSourceKind } from
 export type InsightSelection = { kind: "node"; id: InsightNodeId } | { kind: "edge"; from: InsightNodeId; to: InsightNodeId } | { kind: "source"; source: InsightSourceKind };
 export const edgeKey = (e: { from: string; to: string }) => `${e.from}>${e.to}`;
 
+// 范围切换后，旧 URL 中的对象可能不在精简图上；统一回到概览。
+export function selectionInGraph(graph: InsightGraph, selection: InsightSelection | null): InsightSelection | null {
+  if (!selection) return null;
+  if (selection.kind === "node") return graph.nodes.some((n) => n.id === selection.id) ? selection : null;
+  if (selection.kind === "edge") return graph.edges.some((e) => e.from === selection.from && e.to === selection.to) ? selection : null;
+  return graph.nodes.some((n) => n.source.kind === selection.source) ? selection : null;
+}
+
 export function reach(graph: InsightGraph, id: InsightNodeId, direction: "up" | "down"): Set<InsightNodeId> {
   const seen = new Set<InsightNodeId>([id]); const queue = [id];
   while (queue.length) {
@@ -37,7 +45,7 @@ export function routesThrough(graph: InsightGraph, edge: InsightEdge): InsightEd
 
 // 选中对象要亮的节点和线。节点：它的上下游；线：线的上游和下游；来源：这一类节点，不亮线。
 export function highlightOf(graph: InsightGraph, selection: InsightSelection | null): { nodes: Set<InsightNodeId>; edges: Set<string> } | null {
-  if (!selection) return null;
+  selection = selectionInGraph(graph, selection); if (!selection) return null;
   if (selection.kind === "source") return { nodes: new Set(graph.nodes.filter((n) => n.source.kind === selection.source).map((n) => n.id)), edges: new Set() };
   const [up, down] = selection.kind === "node" ? [reach(graph, selection.id, "up"), reach(graph, selection.id, "down")] : [reach(graph, selection.from, "up"), reach(graph, selection.to, "down")];
   const edges = new Set(graph.edges.filter((e) => (down.has(e.from) && down.has(e.to)) || (up.has(e.from) && up.has(e.to))).map(edgeKey));

@@ -3,7 +3,9 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buildDriverGraph, type DailyRow, type DriverData, type GoldRow, type OfferGroup, type PanelRow, type PtypeRow, type StoreRow, type ThresholdRow, type TradeInRow } from "../app/lib/insight/drivers.ts";
+import { buildDriverGraph, type DailyRow, type DriverData, type GoldRow, type OfferGroup, type PtypeRow, type StoreRow, type ThresholdRow, type TradeInRow } from "../app/lib/insight/drivers.ts";
+import { buildComparisonGraph } from "../app/lib/insight/comparison-graph.ts";
+import type { ComparisonPanelRow } from "../app/lib/insight/comparison.ts";
 import type { InsightGraph } from "../app/lib/insight/types.ts";
 import { checkRange, festivalsOf, isFullRange, rangeLabel, type InsightRange } from "../app/lib/insight/range.ts";
 import type { HistoryConnection } from "./analytics-database.ts";
@@ -70,6 +72,14 @@ const str = (value: unknown) => value === null || value === undefined ? "未知"
 const group = (value: unknown): OfferGroup => (["base", "k50", "k30", "gt"] as const).find((g) => g === value) ?? "other";
 const rowsOf = (result: unknown): Array<Record<string, unknown>> => { if (!Array.isArray(result)) throw new Error("洞察查询结果格式不正确"); return result as Array<Record<string, unknown>>; };
 
+function panelOf(result: unknown): ComparisonPanelRow[] {
+  const fields = { sales: "sales", gp: "gp", revEx: "rev_ex", items: "items", orders: "orders", goldSales: "gold", baseGold: "base_gold", heavyGold: "heavy_gold", goldGrams: "gold_grams", goldQty: "gold_qty", k50: "k50", k30: "k30", gt: "gt" } as const;
+  return rowsOf(result).map((r) => {
+    const invalidFields = Object.entries(fields).filter(([, raw]) => r[raw] === null || r[raw] === undefined || (typeof r[raw] === "string" && !r[raw].trim()) || !Number.isFinite(Number(r[raw]))).map(([key]) => key);
+    return { store: str(r.store), day: str(r.d), ...Object.fromEntries(Object.entries(fields).map(([key, raw]) => [key, num(r[raw])])), ...(invalidFields.length ? { invalidFields } : {}) } as ComparisonPanelRow;
+  });
+}
+
 export function toDriverData(results: Record<string, unknown>, datasetVersion: string, window: InsightRange | null = null): DriverData {
   const scope = rowsOf(results.scope)[0] ?? {};
   const first = str(scope.first_day); const last = str(scope.last_day);
@@ -85,7 +95,7 @@ export function toDriverData(results: Record<string, unknown>, datasetVersion: s
     datasetVersion, rows: num(scope.n), memberShare: num(scope.member_share),
     window: full ? null : window, dataFrom, dataTo,
     period: full || !window ? monthly : `${festival ? `${festival.name} ` : ""}${rangeLabel(window)}`,
-    panel: rowsOf(results.panel).map((r): PanelRow => ({ store: str(r.store), day: str(r.d), sales: num(r.sales), gp: num(r.gp), revEx: num(r.rev_ex), items: num(r.items), orders: num(r.orders), goldSales: num(r.gold), baseGold: num(r.base_gold), heavyGold: num(r.heavy_gold), goldGrams: num(r.gold_grams), goldQty: num(r.gold_qty), k50: num(r.k50), k30: num(r.k30), gt: num(r.gt) })),
+    panel: panelOf(results.panel),
     stores: rowsOf(results.stores).map((r): StoreRow => ({ store: str(r.store), bigRegion: str(r.big_region), region: str(r.region), cityTier: str(r.city_tier), image: str(r.image), shopType: str(r.shop_type), nature: str(r.nature), area: str(r.area), experience: str(r.experience), age: r.age === null || r.age === undefined || r.age === "" ? null : Number(r.age), name: r.name ? String(r.name) : "" })),
     ptype: rowsOf(results.ptype).map((r): PtypeRow => ({ ptype: (["计价金", "一口价黄金"] as const).find((p) => p === r.ptype) ?? "镶嵌及其他", sales: num(r.sales), gp: num(r.gp), revEx: num(r.rev_ex), items: num(r.items), grams: num(r.grams) })),
     daily,
@@ -100,13 +110,17 @@ export function createInsightGraphService(config: Config): InsightGraphService {
 
   // 并发上限内复用连接，按队列取查询。
   async function runAll(queries: Array<{ sql: string; params: string[] }>): Promise<unknown[]> {
-    const results: unknown[] = new Array(queries.length); let next = 0;
+    const results: unknown[] = new Array(queries.length); let next = 0; let failed = false;
     const worker = async () => {
       const connection = await config.connect();
-      try { while (next < queries.length) { const index = next++; const [rows] = await connection.execute(queries[index].sql, queries[index].params); results[index] = rows; } }
+      try { while (!failed && next < queries.length) { const index = next++; const [rows] = await connection.execute(queries[index].sql, queries[index].params); results[index] = rows; } }
+      catch (error) { failed = true; throw error; }
       finally { connection.destroy(); }
     };
-    await Promise.all(Array.from({ length: Math.min(config.concurrency ?? 3, queries.length) }, worker));
+    // 失败也等在途查询释放连接，下一份 build 才能接上，避免越过三连接上限。
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(config.concurrency ?? 3, 3, queries.length) }, worker));
+    const rejected = settled.find((result) => result.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
     return results;
   }
 
@@ -140,12 +154,30 @@ export function createInsightGraphService(config: Config): InsightGraphService {
     return meta;
   }
 
+  // 只在服务端保留同版本的全月面板；范围图不会把原始面板发给浏览器。
+  let fullPanel: { version: string; promise: Promise<ComparisonPanelRow[]> } | null = null;
+  function baselinePanel(version: string): Promise<ComparisonPanelRow[]> {
+    if (fullPanel?.version === version) return fullPanel.promise;
+    const promise = cachedAll(version, [{ sql: insightQueries(config.table).panel, params: [] }]).then(([rows]) => panelOf(rows))
+      .catch((error) => { if (fullPanel?.promise === promise) fullPanel = null; throw error; });
+    fullPanel = { version, promise }; return promise;
+  }
+
   async function build(range: InsightRange | null, version: string): Promise<InsightGraph> {
     const started = performance.now();
     const queries = insightQueries(config.table, Boolean(range));
     const names = Object.keys(queries) as Array<keyof typeof queries>;
-    const results = await cachedAll(version, names.map((k) => ({ sql: queries[k], params: insightParams(k, range) })));
-    const graph = buildDriverGraph(toDriverData(Object.fromEntries(names.map((k, i) => [k, results[i]])), version, range));
+    // 若范围请求已经加载过基准，全月构建复用它，不再次扫描面板。
+    const reusePanel = !range && fullPanel?.version === version;
+    const needed = names.filter((k) => !reusePanel || k !== "panel");
+    const results = await cachedAll(version, needed.map((k) => ({ sql: queries[k], params: insightParams(k, range) })));
+    const data = toDriverData({ panel: [], ...Object.fromEntries(needed.map((k, i) => [k, results[i]])) }, version, range);
+    if (!range) {
+      if (reusePanel) data.panel = await baselinePanel(version);
+      else fullPanel = { version, promise: Promise.resolve(data.panel as ComparisonPanelRow[]) };
+    }
+    // 在同一 build 内直接取基准，绝不递归 graph(null) 等待自己所在的构建队列。
+    const graph = range ? buildComparisonGraph(data, await baselinePanel(version)) : buildDriverGraph(data);
     const elapsed = Math.round(performance.now() - started);
     logger.log(`[insight] 影响因素图谱算好${range ? `（${range.from}–${range.to}）` : ""}，共 ${elapsed}ms`);
     // 证据文件只写全月那份，和原来一样。

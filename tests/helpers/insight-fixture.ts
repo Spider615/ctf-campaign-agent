@@ -2,6 +2,7 @@
 // 120 家店 × 31 天；形象级别决定门店规模，金色星期二在周二、克减从 8/22 起全国铺开，七夕在 8/29。
 import { buildDriverGraph } from "../../app/lib/insight/drivers.ts";
 import { toDriverData } from "../../agent/insight-graph.ts";
+import { buildComparisonGraph } from "../../app/lib/insight/comparison-graph.ts";
 
 const IMAGES = ["重奢场", "时尚购物场/核心珠宝商业街区", "社区生活场/非核心珠宝商业街区"];
 const days = Array.from({ length: 31 }, (_, i) => `202508${String(i + 1).padStart(2, "0")}`);
@@ -58,3 +59,4 @@ export function fakeResultsIn(range: { from: string; to: string } | null) {
     scope: [{ ...all.scope[0], first_day: range.from, last_day: range.to }] };
 }
 export const fakeGraphIn = (range: { from: string; to: string } | null) => buildDriverGraph(toDriverData(fakeResultsIn(range), "v-test", range), "2026-10-20T00:00:00.000Z");
+export const fakeComparisonGraph = () => buildComparisonGraph(toDriverData(fakeResultsIn({ from: "20250823", to: "20250829" }), "v-test", { from: "20250823", to: "20250829" }), toDriverData(fakeResults(), "v-test").panel, "2026-10-20T00:00:00.000Z");

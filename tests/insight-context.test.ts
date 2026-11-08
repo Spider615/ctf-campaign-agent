@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { focusContext, focusOf, locateAnswer, parseSelection, selectionLabel, selectionSearch } from "../app/lib/insight/context.ts";
-import { fakeGraph } from "./helpers/insight-fixture.ts";
+import { fakeGraph, fakeComparisonGraph } from "./helpers/insight-fixture.ts";
 
 test("URL 参数互相还原，不认识的节点整条丢掉", () => {
   for (const s of [{ kind: "node", id: "image" }, { kind: "edge", from: "promo", to: "mix" }, { kind: "source", source: "inferred" }] as const) assert.deepEqual(parseSelection(selectionSearch(s)), s);
@@ -44,4 +44,33 @@ test("选了范围时问答上下文写明范围，全月照旧", async () => {
   const full = focusOf(fakeGraph(), { kind: "node", id: "region" })!;
   assert.equal(full.period, undefined);
   assert.match(focusContext(full), /2025 年 8 月全国/);
+});
+
+test("比较模式整图跳智能问答保留比较目标、同批本期和对照、覆盖及限制", () => {
+  const graph = fakeComparisonGraph();
+  for (const selection of [null, { kind: "node", id: "sales" }, { kind: "source", source: "derived" }, { kind: "node", id: "qixi" }] as const) {
+    const focus = focusOf(graph, selection);
+    assert.ok(focus, "即使没有选中节点也必须保留范围比较目标");
+    const context = focusContext(focus);
+    assert.match(context, /七夕相对可比平日的变化/);
+    assert.match(context, /可比样本本期[\s\S]*对照/);
+    assert.match(context, /同一家店[\s\S]*星期/);
+    assert.match(context, /20250801/);
+    assert.match(context, /840[\s\S]*门店日/);
+    assert.match(context, /无法单独拆出七夕净效果/);
+    assert.match(context, /不是完整客户历史/);
+  }
+});
+
+test("整图比较上下文随对话保存并在刷新后恢复", async () => {
+  const { createHistoryConversationStore } = await import("../app/lib/client/history-conversation.ts");
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  const focus = focusOf(fakeComparisonGraph(), null)!;
+  const store = createHistoryConversationStore(storage);
+  store.setFocus(focus);
+  store.update(() => [{ id: "q", role: "user", text: "哪些变化值得关注？", createdAt: "2026-11-08T00:00:00Z" }]);
+  const restored = createHistoryConversationStore(storage);
+  assert.deepEqual(restored.focus(), focus);
+  assert.match(focusContext(restored.focus()!), /可比样本本期[\s\S]*对照[\s\S]*无法单独拆出七夕净效果/);
 });

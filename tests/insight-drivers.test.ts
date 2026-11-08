@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { dummies, etaSquared, leastSquares, logLinearFit, logSplit, strengthOf, twoWayShares, uniqueContributions, withinStoreDay, withinStoreDayBands, withinStoreDayFit } from "../app/lib/insight/stats.ts";
 import { edgeKey, highlightOf, reach, routes, routesThrough } from "../app/lib/insight/paths.ts";
-import { INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL, type InsightChart } from "../app/lib/insight/types.ts";
+import { FULL_MONTH_NODE_IDS as INSIGHT_NODE_IDS, INSIGHT_NODE_LABEL, type InsightChart } from "../app/lib/insight/types.ts";
 import { fakeGraph, fakeGraphIn, fakeResultsIn } from "./helpers/insight-fixture.ts";
 import { buildDriverGraph } from "../app/lib/insight/drivers.ts";
 import { toDriverData } from "../agent/insight-graph.ts";

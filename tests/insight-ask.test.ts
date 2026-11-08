@@ -91,3 +91,14 @@ test("依据材料带范围：范围名后空一格，节日和克减重叠时�
   assert.match(full, /## 图谱范围\n2025 年 8 月全国销售明细/);
   assert.doesNotMatch(full.split("\n## ")[0], /注意：/, "全月的图谱范围一节没有重叠说明");
 });
+test("问比较图带同批样本本期、对照、覆盖、日期与重叠限制", async () => {
+  const { fakeComparisonGraph } = await import("./helpers/insight-fixture.ts");
+  const context = askContext(fakeComparisonGraph(), null);
+  assert.match(context, /七夕相对可比平日的变化/);
+  assert.match(context, /可比样本本期[\s\S]*对照/);
+  assert.match(context, /同一家店[\s\S]*星期/);
+  assert.match(context, /20250801/);
+  assert.match(context, /840[\s\S]*门店日/);
+  assert.match(context, /无法单独拆出七夕净效果/);
+  assert.match(context, /不是完整客户历史/);
+});

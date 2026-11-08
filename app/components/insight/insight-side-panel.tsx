@@ -1,12 +1,12 @@
 "use client";
 
 import { AlertTriangle, ChevronRight, Database, Lightbulb, MessageCircle, Sparkles, X } from "lucide-react";
-import { edgeKey, findEdge, findNode, routes, routesThrough, type InsightSelection } from "../../lib/insight/paths";
+import { edgeKey, findEdge, findNode, routes, routesThrough, selectionInGraph, type InsightSelection } from "../../lib/insight/paths";
 import { INSIGHT_EDGE_SOURCE, INSIGHT_KIND_LABEL, INSIGHT_SOURCE_LABEL, INSIGHT_STRENGTH_LABEL, type InsightCard, type InsightCardStores, type InsightEdge, type InsightGraph, type InsightNode, type InsightNodeId, type InsightOutliers, type InsightPeers, type InsightTable } from "../../lib/insight/types";
 import { InsightChartView } from "./insight-chart";
 import { SOURCE_TAG, STRENGTH_STYLE, scoreText } from "./insight-graph-view";
 
-const ORDER = { strong: 0, id: 1, med: 2, weak: 3, missing: 4, na: 5 } as const;
+const ORDER = { strong: 0, id: 1, med: 2, weak: 3, missing: 4, na: 5, change: 6, observed: 6 } as const;
 const byStrength = (a: InsightEdge, b: InsightEdge) => ORDER[a.strength] - ORDER[b.strength] || (b.score?.value ?? 0) - (a.score?.value ?? 0);
 
 // 档位小标：有分数显示分数，没有显示档位名。
@@ -69,11 +69,11 @@ const TONE = {
   anomaly: { icon: AlertTriangle, title: "异常", hint: "特殊案例和要注意的地方", bar: "bg-[#f59e0b]", ink: "text-[#b45309]", bg: "bg-[#fffbf2]" },
   advice: { icon: Lightbulb, title: "推荐", hint: "表现最好的取值和搭配", bar: "bg-[#10b981]", ink: "text-[#047857]", bg: "bg-[#f2fbf7]" },
 } as const;
-function Part({ tone, children, empty }: { tone: keyof typeof TONE; children?: React.ReactNode; empty?: string }) {
+function Part({ tone, children, empty, hint }: { tone: keyof typeof TONE; children?: React.ReactNode; empty?: string; hint?: string }) {
   const t = TONE[tone]; const Icon = t.icon;
   return <section aria-label={t.title} className={`relative overflow-hidden rounded-xl ${t.bg} py-3 pl-4 pr-3`}>
     <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-[3px] ${t.bar}`} />
-    <h3 className={`flex items-center gap-1.5 text-[12.5px] font-semibold ${t.ink}`}><Icon aria-hidden="true" className="size-3.5" />{t.title}<span className="font-normal text-[#94a3b8]">· {t.hint}</span></h3>
+    <h3 className={`flex items-center gap-1.5 text-[12.5px] font-semibold ${t.ink}`}><Icon aria-hidden="true" className="size-3.5" />{t.title}<span className="font-normal text-[#94a3b8]">· {hint ?? t.hint}</span></h3>
     <div className="mt-1.5 space-y-1.5 text-[13px] leading-relaxed text-[#334155]">{children ?? <p className="text-[#94a3b8]">{empty}</p>}</div>
   </section>;
 }
@@ -162,22 +162,23 @@ function Header({ kicker, children, onClear }: { kicker: string; children: React
   </header>;
 }
 
-export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph: InsightGraph; selection: InsightSelection | null; onSelect: (s: InsightSelection | null) => void; onAsk: () => void }) {
+export function InsightSidePanel({ graph, selection: requestedSelection, onSelect, onAsk }: { graph: InsightGraph; selection: InsightSelection | null; onSelect: (s: InsightSelection | null) => void; onAsk: () => void }) {
+  const selection = selectionInGraph(graph, requestedSelection);
   const ask = <button type="button" onClick={onAsk} className="mt-3 inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-[#d6e2ff] bg-[#f5f8ff] px-3 text-[13px] font-medium text-[#1d4ed8] transition hover:bg-[#eaf0ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><MessageCircle aria-hidden="true" className="size-4" />去智能问答查更细的数据</button>;
   const clear = () => onSelect(null);
 
   if (!selection) {
     const top = [...graph.edges].filter((e) => e.score).sort((a, b) => b.score!.value - a.score!.value).slice(0, 5);
     return <div className="space-y-3">
-      <header><p className="flex items-center gap-1 text-[11.5px] font-medium text-[#94a3b8]"><Sparkles aria-hidden="true" className="size-3.5 text-[#2f6bff]" />这张图的结论</p><h2 className="mt-0.5 text-[17px] font-semibold tracking-[-0.01em] text-[#0f172a]">销售额、毛利、销量受哪些因素影响</h2></header>
+      <header><p className="flex items-center gap-1 text-[11.5px] font-medium text-[#94a3b8]"><Sparkles aria-hidden="true" className="size-3.5 text-[#2f6bff]" />这张图的结论</p><h2 className="mt-0.5 text-[17px] font-semibold tracking-[-0.01em] text-[#0f172a]">{graph.comparison?.title ?? "销售额、毛利、销量受哪些因素影响"}</h2></header>
       <ol className="space-y-2">{graph.summary.map((line, i) => <li key={line} className="flex gap-2.5 rounded-xl border border-[#e4eaf2] bg-white p-3 text-[13px] leading-relaxed text-[#334155]"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-[#eaf0ff] text-[11px] font-semibold text-[#1d4ed8]">{i + 1}</span>{line}</li>)}</ol>
-      <section><h3 className="mb-1.5 text-[12px] font-medium text-[#64748b]">解释度最高的关系</h3>
+      {graph.comparison ? <p className="rounded-lg bg-[#f5f8ff] p-3 text-[12px] text-[#64748b]">变化拆解说明数额如何变化；同期观察展示同一批样本同时发生的变化，不作因果强弱排名。</p> : <section><h3 className="mb-1.5 text-[12px] font-medium text-[#64748b]">解释度最高的关系</h3>
         <div className="space-y-1">{top.map((e) => <button key={edgeKey(e)} type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-[12.5px] hover:bg-[#f5f8ff]">
           <span className="min-w-0 flex-1 truncate text-[#334155]">{findNode(graph, e.from)?.label} → {findNode(graph, e.to)?.label}</span>
           <span className="h-1.5 w-20 overflow-hidden rounded-full bg-[#eef2f7]"><span className="block h-full rounded-full" style={{ width: `${e.score!.value}%`, background: STRENGTH_STYLE[e.strength].stroke }} /></span>
           <span className="w-8 text-right font-semibold tabular-nums text-[#0f172a]">{scoreText(e)}</span>
         </button>)}</div>
-      </section>
+      </section>}
     </div>;
   }
 
@@ -197,23 +198,23 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
     const edge = findEdge(graph, selection.from, selection.to); if (!edge) return null;
     const all = routesThrough(graph, edge);
     return <div className="space-y-2.5">
-      <Header kicker="影响关系" onClear={clear}>
+      <Header kicker={graph.comparison ? INSIGHT_STRENGTH_LABEL[edge.strength] : "影响关系"} onClear={clear}>
         <button type="button" onClick={() => onSelect({ kind: "node", id: edge.from })} className="hover:text-[#1d4ed8]">{findNode(graph, edge.from)?.label}</button>
         <span className="mx-1.5 font-normal text-[#94a3b8]">→</span>
         <button type="button" onClick={() => onSelect({ kind: "node", id: edge.to })} className="hover:text-[#1d4ed8]">{findNode(graph, edge.to)?.label}</button>
       </Header>
       <BusinessCard card={edge.card} />
       {/* 依据、异常、推荐：紧跟在「可以怎么做」下面，直接展开。 */}
-      <Part tone="basis"><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
+      <Part tone="basis" hint={graph.comparison ? "同口径变化与观察" : undefined}><p>{edge.basis}</p>{edge.chart ? <InsightChartView chart={edge.chart} /> : null}{edge.peers ? <PeerBox peers={edge.peers} /> : null}</Part>
       <Part tone="anomaly" empty="这条线上没有看到特别的案例。">{edge.anomalies.length ? <>{edge.outliers ? <OutlierTable x={edge.outliers} /> : null}{plainAnomalies(edge).map((a) => <p key={a}>{a}</p>)}</> : undefined}</Part>
       <Part tone="advice" empty={edge.noRecommendation}>{edge.recommendation ? <p>{edge.recommendation}</p> : undefined}
         {edge.peers?.laggards.length ? <div className="space-y-1 pt-1">{edge.peers.laggards.map((l) => <p key={l} className="text-[12px]">{l}</p>)}</div> : null}</Part>
       {ask}
       <Group title="经过这条线的完整链路">
         {all.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}
-        <p className="text-[11.5px] text-[#94a3b8]">链路上每一段都是单独测的关联，不能把各段相乘当成效果。</p>
+        <p className="text-[11.5px] text-[#94a3b8]">{graph.comparison ? "变化拆解是恒等式；同期观察不证明因果关系，不能把链路相乘当成效果。" : "链路上每一段都是单独测的关联，不能把各段相乘当成效果。"}</p>
       </Group>
-      <Group title="解释度"><ScoreBar x={edge} /><p className="text-[11.5px] text-[#94a3b8]">{INSIGHT_EDGE_SOURCE[edge.strength]}</p></Group>
+      <Group title={graph.comparison ? "关系口径" : "解释度"}><ScoreBar x={edge} /><p className="text-[11.5px] text-[#94a3b8]">{INSIGHT_EDGE_SOURCE[edge.strength]}</p></Group>
     </div>;
   }
 
@@ -230,7 +231,7 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
     <Header kicker={INSIGHT_KIND_LABEL[node.kind]} onClear={clear}>{node.label}</Header>
     <BusinessCard card={node.card} />
     {/* 依据、异常、推荐：紧跟在「可以怎么做」下面，直接展开。异常和推荐汇总相连的线，点标签看那条线。 */}
-    <Part tone="basis">
+    <Part tone="basis" hint={graph.comparison ? "同口径变化与观察" : undefined}>
       {node.paragraphs.map((p) => <p key={p}>{p}</p>)}
       {node.table ? <div className="pt-1"><Table table={node.table} /></div> : null}
       {node.note ? <p className="text-[12px] text-[#64748b]">{node.note}</p> : null}
@@ -238,10 +239,10 @@ export function InsightSidePanel({ graph, selection, onSelect, onAsk }: { graph:
     <Part tone="anomaly" empty="相连的线上没有看到特别的案例。">{anomalies.length || outlierEdges.length ? <>{outlierEdges.map((e) => <div key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mb-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button><OutlierTable x={e.outliers!} /></div>)}{anomalies.map(({ a, e }) => <p key={a}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#b45309] hover:bg-white">{relName(e)}</button>{a}</p>)}</> : undefined}</Part>
     <Part tone="advice" empty={node.kind === "metric" ? "这是结果指标，推荐看它上游的线。" : "相连的线上没有可推荐的取值。"}>{advice.length ? advice.map((e) => <p key={edgeKey(e)}><button type="button" onClick={() => onSelect({ kind: "edge", from: e.from, to: e.to })} className="mr-1 rounded bg-white/70 px-1 text-[11px] font-medium text-[#047857] hover:bg-white">{relName(e)}</button>{e.recommendation}</p>) : undefined}</Part>
     {ask}
-    {down.length ? <Group title="怎么影响到指标">{down.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</Group> : null}
-    {up.length ? <Group title="受哪些因素影响">{up.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</Group> : null}
+    {down.length ? <Group title={graph.comparison ? "相连的变化与观察" : "怎么影响到指标"}>{down.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</Group> : null}
+    {up.length ? <Group title={graph.comparison ? "变化拆解与同期观察" : "受哪些因素影响"}>{up.map((p) => <Chain key={p.map(edgeKey).join("|")} graph={graph} path={p} onSelect={onSelect} />)}</Group> : null}
     {ins.length ? <Group title="上游">{ins.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</Group> : null}
     {outs.length ? <Group title="下游">{outs.map((e) => <Relation key={edgeKey(e)} graph={graph} edge={e} onSelect={onSelect} />)}</Group> : null}
-    <Group title="数据来源和解释度"><SourceBox node={node} /><ScoreBar x={node} /></Group>
+    <Group title={graph.comparison ? "数据来源和比较口径" : "数据来源和解释度"}><SourceBox node={node} /><ScoreBar x={node} /></Group>
   </div>;
 }

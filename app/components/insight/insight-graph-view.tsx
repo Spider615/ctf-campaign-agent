@@ -34,6 +34,8 @@ export const STRENGTH_STYLE: Record<InsightStrength, { stroke: string; width: nu
   id: { stroke: "#94a3b8", width: 1.3, pill: "恒等式" },
   missing: { stroke: "#c98a1e", width: 1.3, dash: "1.5 4", pill: "缺" },
   na: { stroke: "#cbd5e1", width: 1.1, dash: "2 5", pill: "不适用" },
+  change: { stroke: "#2f6bff", width: 1.8, pill: "变化拆解" },
+  observed: { stroke: "#94a3b8", width: 1.8, dash: "4 4", pill: "同期观察" },
 };
 // 有分数的线按分数加粗：0 分 1.2px，100 分 5px；没分数的按档位默认粗细。
 const edgeWidth = (e: InsightEdge) => e.score ? 1.2 + Math.sqrt(e.score.value / 100) * 3.8 : STRENGTH_STYLE[e.strength].width;
@@ -50,6 +52,19 @@ type Box = { x: number; y: number; w: number; h: number };
 
 // 第一列按分组自上而下排；其余列放在所连节点的平均高度，再往下推开避免重叠。
 function layout(graph: InsightGraph, COL: Col[], size: Size): { boxes: Map<InsightNodeId, Box>; sections: Array<{ label: string; y: number }>; height: number } {
+  if (graph.comparison) {
+    // 精简图按实际存在的列居中排；不借用全月的 shift 或门店节点定位。
+    const boxes = new Map<InsightNodeId, Box>();
+    const order = ["image", "shoptype", "region", "promo", "mix", "orders", "itemsPerOrder", "aov", "revEx", "gm", "qty", "sales", "gp"];
+    const lists = COL.map((_, col) => graph.nodes.filter((node) => node.column === col).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)));
+    const count = Math.max(3, ...lists.map((list) => list.length));
+    const height = size.top + count * size.node + (count - 1) * 30 + 20;
+    for (let col = 0; col < lists.length; col++) {
+      const list = lists[col]; const gap = list.length > 1 ? (height - size.top - size.node - 20) / (list.length - 1) : 0;
+      list.forEach((node, i) => boxes.set(node.id, { x: COL[col].x, y: list.length === 1 ? (height - size.node) / 2 : size.top + i * gap, w: COL[col].w, h: size.node }));
+    }
+    return { boxes, sections: [], height };
+  }
   const boxes = new Map<InsightNodeId, Box>(); const sections: Array<{ label: string; y: number }> = [];
   const { top: TOP, leaf: LEAF_H, gap: GAP, node: NODE_H, f } = size;
   let y = TOP; let section: string | undefined;
@@ -109,7 +124,7 @@ export function InsightLegend({ graph, selection, onSelect }: { graph: InsightGr
   const count = (k: InsightSourceKind) => graph.nodes.filter((n) => n.source.kind === k).length;
   return <div className="flex shrink-0 flex-wrap items-center gap-x-1 gap-y-1 pb-2 pr-2 text-[12px] text-[#64748b]" aria-label="按来源筛选">
     <span className="mr-1">来源</span>
-    {INSIGHT_SOURCE_KINDS.map((k) => { const on = selection?.kind === "source" && selection.source === k;
+    {INSIGHT_SOURCE_KINDS.filter((k) => !graph.comparison || count(k) > 0).map((k) => { const on = selection?.kind === "source" && selection.source === k;
       return <button key={k} type="button" aria-pressed={on} title={INSIGHT_SOURCE_LABEL[k].desc} onClick={() => onSelect(on ? null : { kind: "source", source: k })}
         aria-label={`${INSIGHT_SOURCE_LABEL[k].name} ${count(k)} 个`}
         className={`inline-flex min-h-7 items-center gap-1 rounded-full border py-0.5 pl-1 pr-2 text-[#3b4a63] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${on ? "border-[#247cff]" : "border-transparent hover:border-[#247cff]"}`}>
@@ -118,10 +133,10 @@ export function InsightLegend({ graph, selection, onSelect }: { graph: InsightGr
   </div>;
 }
 
-function LineLegend({ hasNa }: { hasNa: boolean }) {
+function LineLegend({ hasNa, comparison }: { hasNa: boolean; comparison: boolean }) {
   const line = (k: InsightStrength, label: string) => <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><svg aria-hidden="true" viewBox="0 0 22 8" className="h-2 w-[22px]"><line x1="1" y1="4" x2="21" y2="4" stroke={STRENGTH_STYLE[k].stroke} strokeWidth={STRENGTH_STYLE[k].width + 0.4} strokeDasharray={STRENGTH_STYLE[k].dash} strokeLinecap="round" /></svg>{label}</span>;
   return <div aria-label="线的图例" className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-[#e4eaf2] bg-white/95 px-3 py-1.5 text-[11.5px] text-[#64748b] shadow-sm backdrop-blur">
-    <span className="font-medium text-[#334155]">解释度</span>{line("strong", "≥10 强")}{line("med", "2–10 中")}{line("weak", "<2 弱")}{line("id", "拆解")}{line("missing", "缺数据")}{hasNa ? line("na", "不适用") : null}
+    {comparison ? <>{line("change", "变化拆解")}{line("observed", "同期观察")}</> : <><span className="font-medium text-[#334155]">解释度</span>{line("strong", "≥10 强")}{line("med", "2–10 中")}{line("weak", "<2 弱")}{line("id", "拆解")}{line("missing", "缺数据")}{hasNa ? line("na", "不适用") : null}</>}
   </div>;
 }
 // 画布：初始排版按四列算，之后可以拖空白平移、滚轮缩放、拖节点挪位置；「适应窗口」把整张图放进视野，「重排」回到初始位置。
@@ -260,7 +275,7 @@ export function InsightGraphView({ graph, selection, marked, onSelect }: { graph
           // 放在线的 62% 处：靠近终点那端线已经分开，标签不会压在扇出的起点上。
           const [x, y] = samples[i][25]; if (placed.some(([px, py]) => Math.abs(px - x) < 32 && Math.abs(py - y) < 16)) return null; placed.push([x, y]);
           return <span key={key} aria-hidden="true" className={`pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border px-1.5 text-[10.5px] font-semibold leading-[16px] tabular-nums shadow-sm ${e.strength === "strong" ? "border-[#c9d8ff] bg-white text-[#1d4ed8]" : "border-[#e2e8f0] bg-white text-[#64748b]"}`} style={{ left: x, top: y }}>{scoreText(e)}</span>; }); })()}
-      {COLUMN_TITLE.map((title, i) => <div key={title} className="absolute top-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#94a3b8]" style={{ left: COL[i].x }}>{title}</div>)}
+      {(graph.comparison ? ["门店分组", "同期观察", "变化拆解", "结果"] : COLUMN_TITLE).map((title, i) => graph.comparison && !graph.nodes.some((node) => node.column === i) ? null : <div key={title} className="absolute top-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#94a3b8]" style={{ left: COL[i].x }}>{title}</div>)}
       {base.sections.map((s) => <div key={s.label} className="absolute flex items-center gap-1.5 text-[11px] font-medium text-[#64748b]" style={{ left: COL[0].x, top: s.y }}><span className="size-1 rounded-full bg-[#94a3b8]" />{s.label}</div>)}
       {graph.nodes.map((n) => { const b = boxes.get(n.id)!; const on = !lit || lit.nodes.has(n.id); const selected = selection?.kind === "node" && selection.id === n.id;
         const tag = SOURCE_TAG[n.source.kind]; const metric = n.kind === "metric";
@@ -286,8 +301,8 @@ export function InsightGraphView({ graph, selection, marked, onSelect }: { graph
     {/* 浮层：右上角操作提示，左下角线型图例，右下角缩放和排版。它们不跟着画布动。 */}
     <div data-overlay className="pointer-events-none absolute right-3 top-3 hidden rounded-full border border-[#e4eaf2] bg-white/90 px-3 py-1 text-[11.5px] text-[#94a3b8] shadow-sm backdrop-blur sm:block">拖节点 · 滚轮缩放 · 拖空白平移 · 点节点或连线看依据</div>
     {/* 图例和缩放按钮各占一角；画布窄时图例移到顶上，不和按钮挤在一起。 */}
-    <div data-overlay className="absolute left-3 top-3 sm:hidden"><LineLegend hasNa={hasNa} /></div>
-    <div data-overlay className="absolute bottom-3 left-3 hidden max-w-[calc(100%-360px)] sm:block"><LineLegend hasNa={hasNa} /></div>
+    <div data-overlay className="absolute left-3 top-3 sm:hidden"><LineLegend hasNa={hasNa} comparison={Boolean(graph.comparison)} /></div>
+    <div data-overlay className="absolute bottom-3 left-3 hidden max-w-[calc(100%-360px)] sm:block"><LineLegend hasNa={hasNa} comparison={Boolean(graph.comparison)} /></div>
     <div data-overlay className="absolute bottom-3 right-3 flex items-center gap-1.5">
       <button type="button" aria-label="放大" title="放大" onClick={() => zoomAt(1.2, center().x, center().y)} className={tool}><Plus aria-hidden="true" className="size-4" /></button>
       <button type="button" aria-label="缩小" title="缩小" onClick={() => zoomAt(1 / 1.2, center().x, center().y)} className={tool}><Minus aria-hidden="true" className="size-4" /></button>

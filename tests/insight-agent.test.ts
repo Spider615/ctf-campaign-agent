@@ -126,6 +126,51 @@ test("范围不合法：越界、太短抛 InsightRangeError", async () => {
   } finally { await rm(cacheDir, { recursive: true, force: true }); }
 });
 
+test("全月基准面板按版本只载一次，范围与全月排队并发不超过三条查询", async () => {
+  const panelSql = insightQueries("t").panel;
+  const base = fakeConnection(() => {}); let panels = 0; let active = 0; let maximum = 0;
+  const connection: HistoryConnection = { ...base, async execute(sql: string, params: string[] = []) {
+    active++; maximum = Math.max(maximum, active); if (sql === panelSql) panels++;
+    try { await new Promise((r) => setTimeout(r, 2)); return await base.execute(sql, params); } finally { active--; }
+  } };
+  const service = createInsightGraphService({ table: "t", evidenceDir: join(tmpdir(), "insight-evidence-unused"), concurrency: 99, connect: async () => connection, logger: { log() {}, error() {} } });
+  const range = { from: "20250823", to: "20250829" };
+  const [a, b, full] = await Promise.all([service.graph(range), service.graph(range), service.graph(null)]);
+  assert.equal(a, b); assert.ok(a.comparison); assert.equal(full.comparison, undefined);
+  assert.equal(panels, 1, "范围首次加载的基准被全月与其他范围复用");
+  await service.graph({ from: "20250824", to: "20250830" }); assert.equal(panels, 1);
+  assert.ok(maximum <= 3, `最多同时 ${maximum} 条查询`);
+});
+
+test("范围基准读取失败只移除失败缓存，重试可成功且不会自锁", async () => {
+  const base = fakeConnection(() => {}); const panelSql = insightQueries("t").panel; let attempts = 0;
+  const connection: HistoryConnection = { ...base, async execute(sql: string, params: string[] = []) {
+    if (sql === panelSql && ++attempts === 1) throw new Error("基准暂不可读");
+    return base.execute(sql, params);
+  } };
+  const service = createInsightGraphService({ table: "t", evidenceDir: join(tmpdir(), "insight-evidence-unused"), connect: async () => connection, logger: { log() {}, error() {} } });
+  const range = { from: "20250823", to: "20250829" };
+  await assert.rejects(service.graph(range), /基准暂不可读/);
+  const graph = await service.graph(range); assert.equal(graph.comparison!.status, "available");
+  assert.equal(await service.graph(range), graph); assert.equal(attempts, 2);
+});
+
+test("某条范围查询失败后等待其余查询收尾，再启动下一范围", async () => {
+  const base = fakeConnection(() => {}); const panelSql = insightQueries("t", true).panel;
+  let active = 0; let maximum = 0; let failed = false;
+  const connection: HistoryConnection = { ...base, async execute(sql: string, params: string[] = []) {
+    active++; maximum = Math.max(maximum, active);
+    try {
+      if (sql === panelSql && !failed) { failed = true; throw new Error("范围查询失败"); }
+      await new Promise((r) => setTimeout(r, 2)); return await base.execute(sql, params);
+    } finally { active--; }
+  } };
+  const service = createInsightGraphService({ table: "t", evidenceDir: join(tmpdir(), "insight-evidence-unused"), connect: async () => connection, logger: { log() {}, error() {} } });
+  const results = await Promise.allSettled([service.graph({ from: "20250823", to: "20250829" }), service.graph({ from: "20250824", to: "20250830" })]);
+  assert.equal(results[0].status, "rejected"); assert.equal(results[1].status, "fulfilled");
+  assert.ok(maximum <= 3, `失败请求尚未收尾就启动下一个，最多 ${maximum} 条查询`);
+});
+
 test("HTTP：/insight/graph 透传范围，参数错误返回 400 和中文原因", async (t) => {
   const calls: unknown[] = [];
   const insight = { warm: async () => {}, graph: async (range?: unknown) => {

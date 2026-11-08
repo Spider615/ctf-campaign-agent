@@ -74,7 +74,10 @@ const text = (value: unknown) => typeof value === "string" && value.length <= 20
 // 存储里的 focus 只认结构完整的；节点 id 是否还在图上由用的地方再看，这里不依赖图谱。
 const focusValid = (value: unknown): value is InsightFocus => {
   const f = value as Record<string, unknown> | null;
-  return Boolean(f) && typeof f === "object" && text(f!.label) && (f!.kind === "node" ? text(f!.id) : f!.kind === "edge" && text(f!.from) && text(f!.to) && text(f!.basis));
+  return Boolean(f) && typeof f === "object" && text(f!.label) &&
+    (f!.comparison === undefined || (typeof f!.comparison === "string" && f!.comparison.length <= 10000)) &&
+    (f!.period === undefined || text(f!.period)) &&
+    (f!.kind === "node" ? text(f!.id) : f!.kind === "edge" ? text(f!.from) && text(f!.to) && text(f!.basis) : f!.kind === "graph" && text(f!.period) && typeof f!.comparison === "string");
 };
 const threadValid = (t: Thread) => Boolean(t) && typeof t.id === "string" && typeof t.title === "string" && typeof t.updatedAt === "string" && (t.campaignId === null || typeof t.campaignId === "string") && (t.unread === undefined || typeof t.unread === "boolean") && messagesValid(t.messages) && contextValid(t.context);
 const restoreThread = (t: Thread): Thread => { const { focus, ...rest } = t; return { ...rest, messages: restoreMessages(t.messages), ...(focusValid(focus) ? { focus } : {}) }; };
