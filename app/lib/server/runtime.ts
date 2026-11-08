@@ -25,7 +25,7 @@ const agentHeaders = () => ({
   ...(env.AGENT_SERVICE_TOKEN ? { authorization: `Bearer ${env.AGENT_SERVICE_TOKEN}` } : {}),
 });
 
-// 文件字节单独流式转发，身份只来自已验证的浏览器 cookie。
+// 文件字节单独流式转发，空间归属由服务端分析入口确定，不采信客户端身份头。
 export async function forwardAttachmentRequest(request: Request, owner: string, body?: ConversationRequest) {
   const base = (env.AGENT_SERVICE_URL || DEFAULT_AGENT_URL).replace(/\/+$/, "");
   const url = new URL(request.url); const suffix = body ? "/answer/stream" : url.pathname.slice("/api/analytics/attachments".length);

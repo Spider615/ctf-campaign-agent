@@ -85,7 +85,7 @@ export const codeTable = sqliteTable(
   (table) => [primaryKey({ columns: [table.fieldKey, table.value] })],
 );
 
-// 首期只保存有容量限制的导入快照，浏览器访问标识隔离经营数据。
+// 保存有容量限制的导入快照；POC 共享空间兼容旧浏览器归属，保留原字段和数据。
 export const analyticsDatasets = sqliteTable("analytics_dataset", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull(),
@@ -104,7 +104,7 @@ export const analyticsReports = sqliteTable("analytics_report", {
   createdAt: text("created_at").notNull(),
 }, (table) => [index("idx_analytics_report_owner").on(table.ownerId, table.createdAt)]);
 
-// 营销对话（智能问答、活动里的文件问答）按访问标识存整条对话；scope 区分对话列表和各活动的文件问答。
+// 营销对话整条保存；POC 共享空间兼容旧归属，scope 仍区分对话列表和各活动的文件问答。
 export const conversationThreads = sqliteTable("conversation_thread", {
   id: text("id").notNull(),
   ownerId: text("owner_id").notNull(),

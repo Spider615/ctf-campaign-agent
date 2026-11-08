@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,6 +8,8 @@ import test from "node:test";
 import { createAttachmentStore } from "../agent/attachments/store.ts";
 import { createAttachmentTools } from "../agent/attachments/tools.ts";
 import { attachmentPython } from "../agent/attachments/parser.ts";
+import { POC_WORKSPACE_OWNER } from "../app/lib/poc-workspace.ts";
+import { ATTACHMENT_LIMITS } from "../app/lib/attachments/types.ts";
 
 const owner = "11111111-1111-4111-8111-111111111111"; const conversationId = "22222222-2222-4222-8222-222222222222"; const scope = { owner, conversationId };
 async function setup(t: { after(fn: () => Promise<void>): void }) {
@@ -88,6 +90,40 @@ test("文件读取隔离 owner 和会话，删除后包括旧工具引用一同�
   const tools = createAttachmentTools(store, scope, [item.id]); await tools.read({ attachmentId: item.id }); await store.remove(scope, item.id);
   await assert.rejects(tools.read({ attachmentId: item.id }), /不存在|删除/);
   await assert.rejects(store.get(scope, "../../secret"), /标识/);
+});
+
+test("POC 共享空间沿原路径读取旧附件解析结果并继续全表计算", async (t) => {
+  const { store, upload } = await setup(t); const item = await upload("销售.csv");
+  assert.equal(item.status, "ready", item.error);
+  const shared = { ...scope, owner: POC_WORKSPACE_OWNER };
+  const tools = createAttachmentTools(store, shared, [item.id]); const [file] = await tools.list();
+  assert.equal(file.tables[0].rows, 3);
+  const calculation = await tools.calculate({ attachmentId: item.id, tableId: file.tables[0].id, operation: "sum", column: "实收" });
+  assert.ok("value" in calculation); assert.equal(calculation.value, "0.3"); assert.equal(calculation.missingRows, 1);
+  await store.remove(shared, item.id);
+  await assert.rejects(tools.read({ attachmentId: item.id }), /不存在|删除/);
+});
+
+test("POC 共享空间计算附件容量时包含旧浏览器的文件", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "ctf-shared-quota-")); const store = createAttachmentStore({ directory });
+  t.after(async () => { await store.close(); await rm(directory, { recursive: true, force: true }); });
+  const item = await store.upload(scope, { name: "旧资料.txt", body: Readable.from([Buffer.from("资料")]) });
+  const metadata = join(directory, owner, conversationId, item.id, "metadata.json");
+  await writeFile(metadata, JSON.stringify({ ...item, size: ATTACHMENT_LIMITS.conversationBytes - 1 }));
+  await assert.rejects(store.upload({ ...scope, owner: POC_WORKSPACE_OWNER }, { name: "新资料.txt", body: Readable.from([Buffer.from("新资料")]) }), /500 MiB/);
+  assert.deepEqual((await store.list({ ...scope, owner: POC_WORKSPACE_OWNER })).map((file) => file.id), [item.id]);
+});
+
+test("POC 共享空间兼容旧附件时不跟随归属目录和会话目录符号链接", async (t) => {
+  const { directory, store, upload } = await setup(t); const item = await upload("销售.csv");
+  const previousOwner = join(directory, "private", owner); const outside = join(directory, "outside");
+  await rename(previousOwner, outside);
+  await symlink(outside, previousOwner);
+  const anotherOwner = join(directory, "private", crypto.randomUUID()); await mkdir(anotherOwner);
+  await symlink(join(outside, conversationId), join(anotherOwner, conversationId));
+  const shared = { ...scope, owner: POC_WORKSPACE_OWNER };
+  assert.deepEqual(await store.list(shared), []);
+  await assert.rejects(store.get(shared, item.id), /不存在|无权/);
 });
 
 test("压缩路径穿越和文件数超限会明确失败，不写出任务目录", async (t) => {

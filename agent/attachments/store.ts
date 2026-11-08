@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { ATTACHMENT_LIMITS, validAttachmentId, type AttachmentSummary, type ParsedAttachment } from "../../app/lib/attachments/types.ts";
 import { throwIfTurnCancelled } from "../../app/lib/cancellation.ts";
 import { parseAttachment } from "./parser.ts";
+import { POC_WORKSPACE_OWNER } from "../../app/lib/poc-workspace.ts";
 
 export type AttachmentScope = { owner: string; conversationId: string };
 type Config = { directory: string; python?: string; clock?: () => number };
@@ -31,7 +32,24 @@ export function createAttachmentStore(config: Config) {
   const jobs = new Map<string, Job>(); const listeners = new Set<(scope: AttachmentScope, id: string) => void>(); let running = 0; let closed = false;
   let serial: Promise<unknown> = Promise.resolve();
   const locked = <T>(action: () => Promise<T>): Promise<T> => { const next = serial.then(action, action); serial = next.catch(() => {}); return next; };
-  const folder = (scope: AttachmentScope, attachmentId?: string) => join(directory, id(scope.owner), id(scope.conversationId), ...(attachmentId ? [id(attachmentId)] : []));
+  const conversationFolders = (scope: AttachmentScope) => {
+    const owner = id(scope.owner); const conversation = id(scope.conversationId);
+    const current = join(directory, owner, conversation);
+    if (owner !== POC_WORKSPACE_OWNER) return [current];
+    // 旧文件保留原路径；只在共享空间兼容同一对话的旧归属，不跟随目录符号链接。
+    const legacy = readdirSync(directory, { withFileTypes: true }).filter((entry) => entry.isDirectory() && validAttachmentId(entry.name) && entry.name !== owner)
+      .map((entry) => join(directory, entry.name, conversation)).filter((path) => {
+        try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; }
+      });
+    return [current, ...legacy];
+  };
+  const folder = (scope: AttachmentScope, attachmentId?: string) => {
+    const folders = conversationFolders(scope);
+    if (!attachmentId) return folders[0];
+    const paths = folders.map((path) => join(path, id(attachmentId)));
+    return paths.find((path) => existsSync(path)) ?? paths[0];
+  };
+  const attachmentNames = async (scope: AttachmentScope) => [...new Set((await Promise.all(conversationFolders(scope).map((path) => readdir(path).catch(() => [])))).flat())].filter(validAttachmentId);
   const key = (scope: AttachmentScope, attachmentId: string) => `${scope.owner}/${scope.conversationId}/${attachmentId}`;
   const save = async (scope: AttachmentScope, item: AttachmentSummary) => {
     const destination = join(folder(scope, item.id), "metadata.json"); const temp = destination + "." + crypto.randomUUID();
@@ -105,16 +123,16 @@ export function createAttachmentStore(config: Config) {
     return item;
   };
   const list = async (scope: AttachmentScope) => {
-    let names: string[]; try { names = await readdir(folder(scope)); } catch { return []; }
-    const items = await Promise.all(names.filter(validAttachmentId).map((attachmentId) => get(scope, attachmentId).catch(() => null)));
+    const names = await attachmentNames(scope);
+    const items = await Promise.all(names.map((attachmentId) => get(scope, attachmentId).catch(() => null)));
     return items.filter((item): item is AttachmentSummary => item !== null).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   };
   const upload = async (scope: AttachmentScope, input: Upload): Promise<AttachmentSummary> => locked(async () => {
     if (closed) throw new Error("附件服务已停止");
     if (!input.name.trim() || input.name.length > 255 || /[\x00-\x1f]/.test(input.name)) throw new Error("文件名称无效");
     throwIfTurnCancelled(input.signal);
-    const names = await readdir(folder(scope)).catch(() => []);
-    const files = (await Promise.all(names.filter(validAttachmentId).map((attachmentId) => raw(scope, attachmentId).catch(() => null)))).filter((item): item is AttachmentSummary => item !== null && Date.parse(item.expiresAt) > clock());
+    const names = await attachmentNames(scope);
+    const files = (await Promise.all(names.map((attachmentId) => raw(scope, attachmentId).catch(() => null)))).filter((item): item is AttachmentSummary => item !== null && Date.parse(item.expiresAt) > clock());
     let size = 0; const attachmentId = crypto.randomUUID(); const path = folder(scope, attachmentId); const hash = createHash("sha256");
     await mkdir(path, { recursive: true, mode: 0o700 }); const output = await open(join(path, "original.part"), "wx", 0o600);
     try {

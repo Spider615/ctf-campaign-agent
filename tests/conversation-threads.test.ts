@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { createAnalyticsStore } from "../app/lib/server/analytics-store.ts";
+import { analyticsAccess } from "../app/lib/server/analytics-access.ts";
 import { parseConversationScope, parseConversationWrite } from "../app/lib/server/conversation-threads.ts";
 import { createHistoryConversationStore, type RemoteThreads } from "../app/lib/client/history-conversation.ts";
 
@@ -19,7 +20,7 @@ function store() {
   } } as unknown as D1Database;
   return { api: createAnalyticsStore(db), sqlite };
 }
-const thread = (id: string, text: string, updatedAt = "2026-10-24T00:00:00.000Z") => ({ id, title: text, messages: [{ id: `${id}-q`, role: "user", text, createdAt: updatedAt }], context: [text], campaignId: null, updatedAt });
+const thread = (id: string, text: string, updatedAt = "2026-10-24T00:00:00.000Z") => ({ id, title: text, messages: [{ id: `${id}-q`, role: "user" as const, text, createdAt: updatedAt }], context: [text], campaignId: null, updatedAt });
 
 test("对话记录按访问标识隔离，覆盖写不改顺序、不跨范围", async () => {
   const { api, sqlite } = store();
@@ -60,6 +61,84 @@ function fakeRemote(initial: unknown[] = []) {
 }
 const memory = () => { const values = new Map<string, string>(); return { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => { values.set(k, v); } }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("POC 共享空间合并旧浏览器记录，同编号取最新副本并可继续保存和删除", async () => {
+  const { api, sqlite } = store();
+  try {
+    await api.saveConversation("owner-a", "analysis", "t1", thread("t1", "旧内容"), "2026-10-24T00:00:00.000Z");
+    await api.saveConversation("owner-b", "analysis", "t1", thread("t1", "新内容"), "2026-10-24T00:01:00.000Z");
+    await api.saveConversation("owner-b", "analysis", "t2", thread("t2", "另一条"), "2026-10-24T00:02:00.000Z");
+    await api.saveConversation("owner-a", "campaign-files:s1", "files", thread("files", "活动文件"), "2026-10-24T00:00:00.000Z");
+    const shared = analyticsAccess(new Request("http://localhost/api")).owner;
+    assert.deepEqual((await api.listConversations(shared, "analysis") as Array<{ title: string }>).map((item) => item.title), ["新内容", "另一条"]);
+    const updated = thread("t1", "继续提问", "2026-10-24T00:03:00.000Z");
+    await api.saveConversation(shared, "analysis", "t1", updated, updated.updatedAt);
+    assert.deepEqual((await api.listConversations(shared, "analysis") as Array<{ title: string }>).map((item) => item.title), ["继续提问", "另一条"]);
+    assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM conversation_thread WHERE id = 't1'").get()?.count, 2, "保存沿用原行，不添加第三份副本");
+    await api.saveConversation(shared, "campaign-files:s1", "t1", thread("t1", "错误范围"), "2026-10-24T00:04:00.000Z");
+    assert.deepEqual((await api.listConversations(shared, "campaign-files:s1") as Array<{ title: string }>).map((item) => item.title), ["活动文件"]);
+    await api.deleteConversation(shared, "t1");
+    await api.deleteConversation(shared, "t1");
+    assert.deepEqual((await api.listConversations(shared, "analysis") as Array<{ id: string }>).map((item) => item.id), ["t2"]);
+    await api.saveConversation(shared, "analysis", "t1", updated, updated.updatedAt);
+    assert.deepEqual((await api.listConversations(shared, "analysis") as Array<{ id: string }>).map((item) => item.id), ["t2"], "另一浏览器迟到的写入不能复活已删除对话");
+    await api.deleteConversation(shared, "inflight");
+    await api.saveConversation(shared, "analysis", "inflight", thread("inflight", "迟到的首次保存"), "2026-10-24T00:05:00.000Z");
+    assert.deepEqual((await api.listConversations(shared, "analysis") as Array<{ id: string }>).map((item) => item.id), ["t2"]);
+    assert.deepEqual(new Set(await api.listDeletedConversations(shared, "analysis")), new Set(["t1", "inflight"]));
+  } finally { sqlite.close(); }
+});
+
+test("共享空间收到服务端删除标记时移除旧缓存，刷新后不会重新补写", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const cache = memory();
+  cache.setItem("ctf:conversations:v2", JSON.stringify({ activeId: "t1", threads: [thread("t1", "另一浏览器已删除")] }));
+  const { remote, calls } = fakeRemote([{ id: "t1", deleted: true }]);
+  const reopened = createHistoryConversationStore(cache, remote);
+  reopened.activeId(); await tick(); await tick();
+  assert.deepEqual(reopened.threadsSnapshot(), []);
+  assert.notEqual(reopened.activeId(), "t1");
+  t.mock.timers.tick(1000); await tick(); await tick();
+  assert.deepEqual(calls, ["list"]);
+  reopened.update(() => thread("new", "开启新对话").messages);
+  await reopened.retrySave();
+  assert.deepEqual(reopened.snapshot().map((message) => message.text), ["开启新对话"]);
+});
+
+test("POC 两个独立浏览器缓存从同一服务端空间读取和继续对话", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { api, sqlite } = store();
+  try {
+    const remote = (cookie?: string): RemoteThreads => {
+      const owner = analyticsAccess(new Request("http://localhost/api", { headers: cookie ? { cookie } : {} })).owner;
+      return {
+        list: async () => [...await api.listConversations(owner, "analysis"), ...(await api.listDeletedConversations(owner, "analysis")).map((id) => ({ id, deleted: true }))],
+        save: (value) => api.saveConversation(owner, "analysis", value.id, value, value.updatedAt),
+        remove: (id) => api.deleteConversation(owner, id),
+      };
+    };
+    const first = createHistoryConversationStore(memory(), remote("ctf_analytics_owner=11111111-1111-4111-8111-111111111111"));
+    const conversationId = first.activeId(); await tick(); await tick();
+    first.update(() => thread("q1", "分析七夕表现").messages, conversationId);
+    await first.retrySave();
+    const secondCache = memory();
+    const second = createHistoryConversationStore(secondCache, remote());
+    second.activeId(); await tick(); await tick();
+    assert.equal(second.activeId(), conversationId);
+    assert.equal(second.snapshot()[0].text, "分析七夕表现");
+    second.update((messages) => [...messages, ...thread("q2", "继续看门店差异").messages]);
+    await second.retrySave();
+    const reopened = createHistoryConversationStore(memory(), remote("ctf_analytics_owner=22222222-2222-4222-8222-222222222222"));
+    reopened.activeId(); await tick(); await tick();
+    assert.deepEqual(reopened.snapshot().map((message) => message.text), ["分析七夕表现", "继续看门店差异"]);
+    await api.deleteConversation(analyticsAccess(new Request("http://localhost/api")).owner, conversationId);
+    const refreshed = createHistoryConversationStore(secondCache, remote());
+    refreshed.activeId(); await tick(); await tick();
+    assert.deepEqual(refreshed.threadsSnapshot(), []);
+    await refreshed.retrySave();
+    assert.deepEqual(await api.listConversations(analyticsAccess(new Request("http://localhost/api")).owner, "analysis"), []);
+  } finally { sqlite.close(); }
+});
 
 test("浏览器存储清空后从服务端读回对话，进行中的回答标为已结束", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });

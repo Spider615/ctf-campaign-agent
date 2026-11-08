@@ -53,11 +53,12 @@ test("每次改变筛选生成独立报告，历史计算不会被覆盖", async
   } finally { sqlite.close(); }
 });
 
-test("首次读取初始化 cookie，写入需要访问标识且拒绝跨源", async () => {
-  assert.throws(() => analyticsAccess(new Request("http://localhost/api", { method: "POST" })), /初始化/);
-  const access = analyticsAccess(new Request("http://localhost/api"), true);
-  assert.match(access.cookie!, /HttpOnly/);
-  assert.match(access.cookie!, /SameSite=Lax/);
+test("POC 不同浏览器和无 Cookie 请求共用空间，写入仍拒绝跨源", async () => {
+  const access = analyticsAccess(new Request("http://localhost/api"));
+  const previous = analyticsAccess(new Request("http://localhost/api", { headers: { cookie: "ctf_analytics_owner=11111111-1111-4111-8111-111111111111" } }));
+  assert.equal(previous.owner, access.owner);
+  assert.equal(analyticsAccess(new Request("http://localhost/api", { method: "POST", headers: { origin: "http://localhost" } })).owner, access.owner);
+  assert.equal(access.cookie, null);
   assert.throws(() => analyticsAccess(new Request("http://localhost/api", { method: "POST", headers: { origin: "https://other.example", cookie: `ctf_analytics_owner=${access.owner}` } })), /同源/);
   // 反向代理后面：应用看到 http://，浏览器发 https:// 的 Origin，同一主机要放行，换主机或端口仍拒绝。
   const site = "https://ctf.example.com"; const cookie = `ctf_analytics_owner=${access.owner}`;
@@ -65,7 +66,24 @@ test("首次读取初始化 cookie，写入需要访问标识且拒绝跨源", a
   assert.equal(analyticsAccess(new Request("http://ctf.example.com/api", { method: "POST", headers: { origin: site, cookie } })).owner, access.owner);
   assert.throws(() => analyticsAccess(new Request("http://ctf.example.com/api", { method: "POST", headers: { origin: "https://evil.example.com", cookie, "x-forwarded-proto": "https" } })), /同源/);
   assert.throws(() => analyticsAccess(new Request("http://ctf.example.com/api", { method: "POST", headers: { origin: "https://ctf.example.com:8443", cookie } })), /同源/);
-  assert.match(analyticsAccess(new Request("http://ctf.example.com/api", { headers: { "x-forwarded-proto": "https" } }), true).cookie!, /Secure/);
   await assert.rejects(readAnalyticsJson(new Request("http://localhost/api", { method: "POST", body: "x", headers: { "content-type": "application/json" } })), /JSON/);
   await assert.rejects(readAnalyticsJson(new Request("http://localhost/api", { method: "POST", body: "x".repeat(2 * 1024 * 1024 + 1), headers: { "content-type": "application/json" } })), /过大/);
+});
+
+test("POC 共享空间直接读回旧浏览器的数据和报告，原内容保持不变", async () => {
+  const { api, sqlite } = store();
+  try {
+    const first = await createDataset("owner-a", { sample: true }, api);
+    const second = await createDataset("owner-b", { sample: true }, api);
+    const query = { period: { start: "2026-08-01", end: "2026-09-30" }, filters: {} };
+    const original = await createReport("owner-a", { datasetId: first.id, query }, api);
+    const shared = analyticsAccess(new Request("http://localhost/api")).owner;
+    assert.deepEqual(new Set((await api.listDatasets(shared)).map((item) => item.id)), new Set([first.id, second.id]));
+    assert.deepEqual(await api.loadDataset(shared, first.id), await api.loadDataset("owner-a", first.id));
+    assert.deepEqual(await api.loadReport(shared, original.id), original);
+    assert.deepEqual((await api.listReports(shared)).map((item) => item.id), [original.id]);
+    const next = await createReport(shared, { datasetId: first.id, query, question: "继续复盘" }, api);
+    assert.notEqual(next.id, original.id);
+    assert.deepEqual(await api.loadReport(shared, original.id), original);
+  } finally { sqlite.close(); }
 });

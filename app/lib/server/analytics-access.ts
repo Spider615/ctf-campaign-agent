@@ -1,5 +1,6 @@
 import { AnalyticsError } from "./analytics-store.ts";
 import { RETIRED_ANALYSIS_ANSWER_SCHEMA } from "../analytics/analysis-v2-types.ts";
+import { POC_WORKSPACE_OWNER } from "../poc-workspace.ts";
 
 // 旧页面仍发 v2 头时直接提示刷新，不静默降级为旧版回答。
 export function rejectStaleAnswerSchema(request: Request) {
@@ -28,16 +29,10 @@ export function assertSameOrigin(request: Request) {
 
 export function isHttps(request: Request) { return publicUrl(request).protocol === "https:"; }
 
-export function analyticsAccess(request: Request, bootstrap = false) {
-  const url = publicUrl(request);
+export function analyticsAccess(request: Request) {
   assertSameOrigin(request);
-  const owner = /(?:^|;\s*)ctf_analytics_owner=([0-9a-f-]{36})(?:;|$)/.exec(request.headers.get("cookie") ?? "")?.[1];
-  const issue = (id: string) => `ctf_analytics_owner=${id}; Path=/api/analytics; HttpOnly; SameSite=Lax; Max-Age=31536000${url.protocol === "https:" ? "; Secure" : ""}`;
-  // 对话记录挂在这个标识上：打开页面（bootstrap 读取）时续期，常用的浏览器不会因为过期丢记录。
-  if (owner && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(owner)) return { owner, cookie: bootstrap ? issue(owner) : null };
-  if (!bootstrap) throw new AnalyticsError("请先打开或刷新营销分析工作台，初始化访问标识", 401);
-  const generated = crypto.randomUUID();
-  return { owner: generated, cookie: issue(generated) };
+  // POC 不区分浏览器；旧 Cookie 不再决定数据归属，也不要求首次写入前初始化身份。
+  return { owner: POC_WORKSPACE_OWNER, cookie: null };
 }
 
 export async function readAnalyticsJson(request: Request): Promise<unknown> {
